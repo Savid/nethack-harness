@@ -100,6 +100,7 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("hp_drop_min", "", "...and by at least this many points; the same fight re-escalates only after "
                                 "another step of loss"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
+            ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
             ("last_prayer", "", "turn of a prayer you made by hand")]),
     "modes": "MODES (--mode M resets the mode-owned keys (%s) to defaults, then applies the mode; other settings "
              "such as mines, avoid, dig and effort are kept; --set after --mode wins)\n" % ", ".join(MODE_KEYS) + "\n".join(

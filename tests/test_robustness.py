@@ -272,3 +272,43 @@ class LycanthropyTest(unittest.TestCase):
         p2 = nh.Pilot(FakeTerm(), None)
         p2.last_prayer = 300           # prayed recently: not safe, so the outer loop hears about it
         self.assertTrue(p2.message("You feel feverish.", p2.term.view()))
+
+
+class SettleTest(unittest.TestCase):
+    """A multi-turn command redraws the status line on the way; send() must not return at the first redraw."""
+
+    class Scripted(nh.Term):
+        def __init__(self, chunks):
+            self.vt, self.cursor, self.sends, self.send_time = nh.term.VT(), 0, 0, 0.0
+            self.chunks, self.t0 = chunks, None     # (seconds after the keys, bytes)
+
+        def poll(self, data=b"", hold_wait=2.0):
+            if data:
+                self.t0 = time.monotonic()
+            now = time.monotonic() - self.t0 if self.t0 else 0.0
+            out = b""
+            while self.chunks and self.chunks[0][0] <= now:
+                out += self.chunks.pop(0)[1]
+            if out:
+                self.vt.feed(out)
+            return out
+
+    def game(self):
+        def status(t):
+            return b"\x1b[24;1HDlvl:1 $:0 HP:14(14) Pw:3(3) AC:7 Xp:1 T:%d\x1b[12;40H" % t
+
+        start = b"\x1b[2J\x1b[12;40H@" + status(1)
+        return start, [(0.0, status(8)), (0.08, status(15)), (0.16, status(21))]
+
+    def test_counted_search_waits_for_the_last_redraw(self):
+        start, chunks = self.game()
+        t = self.Scripted(chunks)
+        t.vt.feed(start)
+        t.send(b"20s")
+        self.assertIn("T:21", t.view().rows[23])
+
+    def test_multi_turn_classification(self):
+        for keys in (b"20s", b"_@ll.", b"Gl", b"L", b"n20s", b"m2s"):
+            self.assertTrue(nh.transport.MULTI_TURN.match(keys), keys)
+        for keys in (b"s", b"l", b"Fh", b"\x04l", b"Za.", b"#pray\\r"):
+            self.assertFalse(nh.transport.MULTI_TURN.match(keys), keys)

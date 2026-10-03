@@ -107,10 +107,12 @@ class Term:
             return True
         return y == 0 or any("--More--" in r or re.search(r"\((end|\d+ of \d+)\)", r) for r in lines)
 
-    def settle(self, status_before=None):
+    def settle(self, status_before=None, multi=False):
         """Wait until the game is quiet. A changed status line with the cursor back on the map means the turn
-        finished, so a short quiet suffices; otherwise wait CFG['quiet']."""
+        finished, so a short quiet suffices; otherwise wait CFG['quiet']. A multi-turn command (a count, travel
+        or a run) redraws the status line on the way, so it gets no shortcut and a longer quiet."""
         start = last = time.monotonic()
+        need = max(CFG["quiet"], CFG.get("multi_quiet", 0.12)) if multi else CFG["quiet"]
         seen = False
         while True:
             time.sleep(0.02)
@@ -119,10 +121,10 @@ class Term:
                 last, seen = now, True
                 continue
             quiet = now - last
-            if seen and quiet >= 0.025 and status_before is not None and self.vt.lines()[23] != status_before \
-                    and 1 <= self.vt.y <= 21 and self.ready():
+            if not multi and seen and quiet >= 0.025 and status_before is not None and \
+                    self.vt.lines()[23] != status_before and 1 <= self.vt.y <= 21 and self.ready():
                 return
-            if (seen and quiet >= CFG["quiet"] and (self.ready() or quiet > 0.4)) or \
+            if (seen and quiet >= need and (self.ready() or quiet > 0.4)) or \
                     (not seen and now - start > 0.4) or now - start > 3:
                 return
 
@@ -140,13 +142,21 @@ class Term:
         self.sends += 1
         self.poll()
         before = self.vt.lines()[23]
-        self.poll(keys.encode() if isinstance(keys, str) else keys)
-        self.settle(before)
+        data = keys.encode() if isinstance(keys, str) else keys
+        self.poll(data)
+        self.settle(before, multi=bool(MULTI_TURN.match(data)))
         self.send_time += time.monotonic() - started
 
     def view(self):
         vt = self.vt
         return View(vt.lines(), vt.fg, vt.bold, vt.rev, (vt.y, vt.x))
+
+
+# Commands that take many turns: a count prefix (20s), travel (_), runs (G, shift-moves) and the m/n prefixes.
+# With the default runmode the game draws them in steps about 50 ms apart, each redrawing the status line with
+# the cursor on the hero, which is why settle gives them no shortcut. (runmode:teleport would avoid the steps,
+# but then the game leaves T: stale after a counted command, so the harness keeps the default.)
+MULTI_TURN = re.compile(rb"^(?:n?\d+|_|G|[HJKLYUBN]|m[0-9])")
 
 
 def serve_local(args):

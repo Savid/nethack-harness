@@ -41,6 +41,7 @@ DEFAULTS = {
     "hp_drop_min": 5,       # ...and by at least this many points (one bite at low max HP is not news)
     "pickup_food": 1,       # pick up known-safe food the hero steps on
     "ranged": 1,            # fire the quivered missiles (f) at hostiles approaching in a line
+    "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
     "quiet": 0.06,          # seconds of terminal silence that end a key send
     "last_prayer": -1,      # set to the turn of a prayer made by hand
 }
