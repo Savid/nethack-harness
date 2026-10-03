@@ -83,6 +83,7 @@ class Pilot:
         self.progress_time, self.inbox_lines = self.clock(), []
         self.ladder = ""                  # last escape-ladder step taken on this level
         self.rng = random.Random(0)
+        self.lookup = None                 # optional p -> farlook text, instead of asking the game
         self.log = None
         self.hooks = Hooks()
 
@@ -536,6 +537,10 @@ class Pilot:
         return K.ROLE_LEAD.get(self.role, 3) + val("lead")
 
     def farlook(self, v, p, cache=True):
+        """What the game says is at p (the ; command), cached per glyph or square. A `lookup` function, when
+        set, answers instead of the game (replay fixtures and tests)."""
+        if self.lookup is not None:
+            return self.lookup(p) or "unknown"
         ch = v.ch(*p)
         base, bright = v.col(*p)
         key = (v.st.get("dlvl"), ch, base, bright) if ch not in K.AMBIGUOUS and cache else \
@@ -695,7 +700,7 @@ class Pilot:
                     blocked = any(re.search(r"door is closed|bump into a door", x) for x in list(self.msgs)[-2:])
                     new = q in lv.door_frontier or v.ch(2 * q[0] - hero[0], 2 * q[1] - hero[1]) == " "
                     acts.append(Act("open_" + k, "Open the closed door to the " + K.DN[k], k, "door",
-                                    6 if blocked else 3 if new else 1 if fr else 2.4, q))
+                                    6 if blocked else 5 if new else 1 if fr else 2.4, q))     # before probes
                 elif lv.kicks[q] < K.KICK_TRIES and self.kickable(q, c):
                     acts.append(Act("kick_" + k, "Kick open the locked door to the " + K.DN[k], "\x04" + k, "kick",
                                     0.8 if fr else 4.0, q))

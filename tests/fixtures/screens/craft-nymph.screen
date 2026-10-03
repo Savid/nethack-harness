@@ -1,0 +1,53 @@
+cursor 3 4
+lookup 3,5 water nymph
+expect elbereth move_h move_j
+==== chars
+
+ --------
+ |......|
+ |..@n..|
+ |......|
+ --------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Hero the Stripling   St:16 Dx:12 Co:14 In:9 Wi:10 Ch:8 Lawful
+Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:400
+==== colour
+
+
+
+.....b
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
