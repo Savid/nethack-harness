@@ -35,6 +35,20 @@ class CliTest(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertIn(nh.__version__, out.stdout)
 
+    def test_zipapp_is_reproducible_and_runs(self):
+        d = tempfile.mkdtemp()
+        outs = []
+        for name in ("a.pyz", "b.pyz"):
+            out = os.path.join(d, name)
+            subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_pyz.py"), "--commit", "abc123",
+                            "--out", out], check=True, capture_output=True, timeout=60)
+            with open(out, "rb") as f:
+                outs.append(f.read())
+        self.assertEqual(outs[0], outs[1])
+        run = subprocess.run([sys.executable, os.path.join(d, "a.pyz"), "--version"], capture_output=True,
+                             text=True, timeout=30, cwd=d)
+        self.assertEqual(run.stdout.strip(), "%s (commit abc123)" % nh.__version__)
+
 
 if __name__ == "__main__":
     unittest.main()

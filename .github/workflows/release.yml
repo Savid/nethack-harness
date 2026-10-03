@@ -1,0 +1,38 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # create the release and upload its assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Test
+        run: python -m unittest discover -s tests -v
+      - name: Build the zipapp
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python tools/build_pyz.py --commit "$GITHUB_SHA" --out dist/nethack-harness.pyz
+          python tools/build_pyz.py --commit "$GITHUB_SHA" --out dist/check.pyz
+          cmp dist/nethack-harness.pyz dist/check.pyz      # reproducible
+          rm dist/check.pyz
+          out=$(python3 dist/nethack-harness.pyz --version)
+          echo "$out"
+          [ "$out" = "${TAG#v} (commit $GITHUB_SHA)" ]       # the tag, the package version and the commit agree
+          (cd dist && sha256sum nethack-harness.pyz > SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/nethack-harness.pyz dist/SHA256SUMS --verify-tag --notes-from-tag --title "$TAG"

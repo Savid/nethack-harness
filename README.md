@@ -34,7 +34,22 @@ its own terminal emulator.
 
 ## Install
 
-Fetch a commit's source tarball, record the commit, and check that it runs:
+**One file (a release).** Each release ships a single-file zipapp and its
+checksum:
+
+```sh
+curl -fsSLO https://github.com/Savid/nethack-harness/releases/latest/download/nethack-harness.pyz
+curl -fsSLO https://github.com/Savid/nethack-harness/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS
+python3 nethack-harness.pyz --version      # prints the version and commit
+python3 nethack-harness.pyz help
+```
+
+Releases are milestones, built reproducibly by CI from a `v*` tag
+(`tools/build_pyz.py`). Rebuilding the same tag gives the same bytes.
+
+**Latest master (the live default).** Fetch a commit's source tarball, record
+the commit, and check that it runs:
 
 ```sh
 SHA=$(git ls-remote https://github.com/Savid/nethack-harness refs/heads/master | cut -f1)
@@ -223,6 +238,11 @@ python3 -m unittest discover -s tests
 ```
 
 The tests need no NetHack and no network.
+
+`python3 tools/build_pyz.py --commit SHA --out dist/nethack-harness.pyz` builds
+the release zipapp. Pushing a `v*` tag whose version matches `__version__`
+runs the release workflow, which tests, builds twice to check the bytes match,
+and publishes the zipapp and `SHA256SUMS` with the tag message as notes.
 
 ## License
 
