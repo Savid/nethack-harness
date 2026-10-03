@@ -1,0 +1,134 @@
+"""What the outer loop reads: escalation reports, the startup briefing and status."""
+import json
+import time
+
+from . import knowledge as K
+from .level import compass
+from .settings import CFG, describe, effort, val
+
+RESUME_HINT = ("resume [--directive TEXT] [--mode descend|explore|careful] [--set k=v] [--plan ITEM] "
+               "[--questions F] [--plugin F] [--enable/--disable KEY] --timeout S   (help: capability map)")
+
+
+def capabilities(p):
+    kit = p.kit()
+    caps = ["explore (travel, corridor runs)", "stairs and trap doors (travel+descend in one send)",
+            "stairs probe via the travel prompt" + ("" if CFG["probe"] else " [off]"),
+            "fight by rules (never-melee and threat tables)", "rest and search with count prefixes",
+            "pray when the game's trouble rule holds and the timeout is safe",
+            "quaff healing potions" + ("" if CFG["potions"] and kit["healing"] else " [none known]" if CFG["potions"]
+                                       else " [off]"),
+            "Elbereth" + ("" if CFG["elbereth"] else " [off]"),
+            "dig down: --set dig=1" + (" [ON]" if CFG["dig"] else "") + ("" if kit["dig"] else " [no digging tool]")]
+    if p.role == "Healer":
+        caps.append("cast healing (Za.)" + ("" if CFG["spells"] else " [off]"))
+    return caps
+
+
+def suggestions(p):
+    kit, out = p.kit(), []
+    out.append("--set mines=%s (race %s; auto picks %s)" % (p.mines_policy(), p.race, p.mines_policy()))
+    out.append("depth lead XL+%d for %s (--set lead=N, or --set risk=low|normal|high)" % (p.lead(), p.role))
+    if kit["dig"] and not CFG["dig"]:
+        out.append("you carry a digging tool: --set dig=1 descends by digging (fast, skips levels' contents)")
+    if kit["mapping"]:
+        out.append("magic mapping scrolls: read one on a level that stalls (send r + letter while paused)")
+    if not kit["food"]:
+        out.append("no food in the pack: prayer fixes Weak once every ~900 turns; fresh corpses are eaten")
+    if p.role in ("Healer", "Tourist", "Wizard", "Archeologist", "Rogue"):
+        out.append("a weak melee role: consider --mode careful or --set risk=low early")
+    return out
+
+
+def briefing(p):
+    v = p.term.view()
+    kit = p.kit()
+    lines = ["BRIEFING: you are a %s %s %s (title %s), Dlvl %s, HP %s/%s, AC %s, T %s." % (
+        p.align or "?", p.race or "?", p.role or "?", v.title, v.st.get("dlvl"), v.st.get("hp"), v.st.get("hpmax"),
+        v.st.get("ac"), v.st.get("turn"))]
+    for k in ("food", "healing", "dig", "mapping", "wands", "ranged", "spellbooks"):
+        if kit[k]:
+            lines.append("kit %s: %s" % (k, "; ".join(kit[k])[:240]))
+    lines.append("capabilities: " + " | ".join(capabilities(p)))
+    lines.append("settings: " + describe() + " | effective: descend_hp=%.2f rest_hp=%.2f hp_escalate=%.2f lead=%d" % (
+        val("descend_hp"), val("rest_hp"), val("hp_escalate"), p.lead()))
+    lines.append("hooks: " + hooks_line(p))
+    lines.append("suggested: " + " ; ".join(suggestions(p)))
+    lines.append("Set a plan now with resume (or just resume to play with these defaults).")
+    return "\n".join(lines)
+
+
+def hooks_line(p):
+    h = p.hooks
+    names = ["%s%s" % (k, " [off]" if k in h.disabled else "") for k in list(h.questions) + list(h.plugins)]
+    return ", ".join(names) or "none"
+
+
+def summary(p, reason):
+    v = p.term.view()
+    if reason == "briefing":
+        return briefing(p) + "\n" + footer(p) + "\n--- screen ---\n" + v.text_screen()
+    st, lp = v.st, p.last_prayer
+    out = ["ESCALATION: " + reason,
+           "Dlvl %s HP %s/%s AC %s XL %s T %s %s | %s %s | last prayer %s%s | mode %s risk %s effort %s | orders: %s" % (
+               st.get("dlvl"), st.get("hp"), st.get("hpmax"), st.get("ac"), st.get("xl"), st.get("turn"),
+               " ".join(v.cond), p.race or "", p.role or "", "never" if lp is None else "T%d (%d ago)" % (
+                   lp, (st.get("turn") or 0) - lp), " (prayer broken)" if p.prayer_broken else "", CFG["mode"],
+               CFG["risk"], CFG["effort"], p.directive or "-")]
+    if p.pending:
+        acts, i = p.pending
+        out.append("model: %s | danger %.2f | confidence %.2f" % (", ".join("%s %.2f" % kv for kv in i["top"]),
+                                                                 i["danger"], i.get("conf", 0)))
+        out.append("options (rule order): " + " | ".join("%s: %s" % (a.key, a.desc) for a in acts[:8]))
+    if reason.startswith("hook:") and p.hook_answers:
+        out.append("hook answers: " + "; ".join("%s %s" % (k, json.dumps(x)) for k, x in p.hook_answers.items()))
+    for label, group in (("hostiles", p.hostiles), ("never melee", p.obst)):
+        if group:
+            out.append(label + ": " + "; ".join("%s (%s) %d %s" % (
+                h["name"], h["ch"], h["dist"], compass(v.hero or h["pos"], h["pos"])) for h in group[:6]))
+    lv = p.lv.get(st.get("dlvl"))
+    if lv:
+        out.append("level: %d search turns, probes %s, %d bans, %d excluded targets%s%s" % (
+            lv.search_turns, ",".join(sorted(lv.probed)) or "-", len(lv.bans), len(lv.excluded),
+            ", shop" if lv.shop else "", ", Mines" if lv.mines else ""))
+    if p.plan:
+        out.append("plan queue: " + " | ".join(p.plan))
+    food = p.food_letters()
+    out.append("food: %s | prayer: %s | model since start: %d disagreements, %d overrides by orders | stairs known: %s" % (
+        ", ".join(t for _, t in food[:3]) or "none in pack",
+        "broken (a prayer failed)" if p.prayer_broken else "safe now" if p.prayer_safe(st.get("turn") or 0)
+        else "not safe until about T%d" % ((p.last_prayer or 0) + 900 if p.last_prayer is not None else 150),
+        p.disagreements, p.overrides,
+        ", ".join("%s%s" % (pos, "" if kind == "main" else " " + kind) for pos, kind in (lv.downs.items() if lv else []))
+        or "none"))
+    if lv and lv.excluded:
+        out.append("unreachable targets: " + ", ".join(str(t) for t, until in lv.excluded.items()
+                                                       if until > p.decisions))
+    recent = []
+    for h in list(p.hist)[-30:]:
+        if h["kind"] not in ("act", "msg", "level", "prompt", "plan", "manual"):
+            continue
+        text = h["text"][:80]
+        if recent and recent[-1][0] == text:
+            recent[-1][1] += 1
+        else:
+            recent.append([text, 1])
+    out.append("recent: " + " / ".join(t + (" x%d" % n if n > 1 else "") for t, n in recent[-10:]))
+    out.append(footer(p))
+    return "\n".join(out + ["--- screen ---", v.text_screen()])
+
+
+def footer(p):
+    breaker = max(0, int(p.breaker_until - time.time()))
+    return ("inner loop: %d keys, %d decisions, %d model calls (%d reused, avg %d ms, effort %s%s), %d escalations, "
+            "%.0fs | next: %s" % (p.keys, p.decisions, p.calls, p.reused, 1000 * p.mtime / max(1, p.calls),
+                                  CFG["effort"], ", model paused %ds after errors" % breaker if breaker else "",
+                                  p.escs, time.time() - p.t0, RESUME_HINT))
+
+
+def status(p):
+    return {"settings": dict(CFG), "effort": dict(effort(), level=CFG["effort"]), "hooks": hooks_line(p),
+            "role": p.role, "race": p.race, "alignment": p.align, "max_dlvl": p.max_dl, "keys": p.keys,
+            "decisions": p.decisions, "model_calls": p.calls, "reused_answers": p.reused,
+            "plan": list(p.plan), "orders": p.directive, "prayer": {"last": p.last_prayer, "broken": p.prayer_broken},
+            "kit": p.kit() if p.inv else {}, "known_symbols": len(K.NEVER_MELEE)}
