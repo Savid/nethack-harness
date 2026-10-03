@@ -79,7 +79,7 @@ class PrayerTest(unittest.TestCase):
         p = nh.Pilot(FakeTerm(), None)
         v = p.term.view()
         p.message("Welcome to Asidonhopo's general store!", v)
-        self.assertTrue(p.lv[3].shop and p.lv[3].no_kick)
+        self.assertTrue(p.lv[3].shop and p.lv[3].no_dig and (2, 3) in p.lv[3].shop_doors)
         p.last_try = {"kind": "push", "hero": (2, 3), "key": "push_l"}
         p.message("You try to move the boulder, but in vain.", v)
         self.assertTrue(p.lv[3].banned((2, 3), "push_l", 0))

@@ -57,6 +57,8 @@ class Level:
         self.traps = {}                            # pos -> farlook description
         self.up, self.up_branch, self.shop, self.mines = None, False, False, False
         self.no_kick = self.no_dig = False
+        self.extra_budget = 0                      # search turns granted after an "exhausted" report
+        self.shop_doors = set()                    # doors (and doorways) of shops: never kicked
         self.probed = set()                        # escape-ladder probes already tried here
         self.arrived = None                        # wall-clock time of arrival
         self.now = 0                               # the pilot's decision counter, for expiring exclusions
@@ -70,7 +72,8 @@ class Level:
                 self.terr[(r, c)], self.tfg[(r, c)] = ch, v.fgs[r][c]
                 base, bright = v.col(r, c)
                 if ch == ">":
-                    self.downs[(r, c)] = "branch" if base == "brown" and bright else "main"
+                    if self.downs.get((r, c)) != "branch":      # an unused branch staircase looks like a main one
+                        self.downs[(r, c)] = "branch" if base == "brown" and bright else "main"
                 elif ch == "<":
                     self.up, self.up_branch = (r, c), base == "brown" and bright
                 elif ch == "^" and (r, c) not in self.traps:

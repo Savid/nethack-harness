@@ -31,7 +31,7 @@ MAJOR = ("Weak", "Fainting", "Fainted", "FoodPois", "TermIll", "Stone", "Slime",
 HIT = re.compile(r"\b(hits|bites|stings|kicks|butts|touches|claws|misses|stabs|thrusts|swings|grabs|engulfs)!")
 ALARM = re.compile(r"You are slowing down|limbs are stiffening|deathly sick|can't breathe|You turn into|feverish|"
                    r"You are slimed|turning into green slime|closed for inventory|You stole|strangled|"
-                   r"You can't move|How dare you|break my door|You owe|You feel like a hypocrite")
+                   r"You can't move(?! diagonally)|How dare you|break my door|You owe|You feel like a hypocrite")
 STONING = re.compile(r"You are slowing down|limbs are stiffening")
 SHOP = re.compile(r"Welcome to [A-Z][\w' -]*'s|cash register|shoplifters|[Cc]losed for inventory|"
                   r"leave your (?:pick-axe|dwarvish mattock) outside")
@@ -168,3 +168,5 @@ ALIGNMENT = re.compile(r"You are (lawful|neutral|chaotic)")
 DIG_TOOLS = ("pick-axe", "dwarvish mattock")
 HEALING = re.compile(r"potions? of (?:full |extra )?healing")
 MAPPING = re.compile(r"scrolls? of magic mapping")
+
+KICK_TRIES = 12      # kicks at one locked door before giving up on it (weak heroes need many)

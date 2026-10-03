@@ -1,8 +1,11 @@
 """Outside strategies: declarative questions and plugin modules (hook API 1)."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
+import threading
 
 HOOK_API = 1
 RULES = ("noul_gte", "noul_lte", "score_gte", "score_lte", "choice_in", "min_confidence")
@@ -76,7 +79,8 @@ class Hooks:
 
     def __init__(self):
         self.questions, self.plugins, self.disabled = {}, {}, set()
-        self.fired, self.asked = {}, {}
+        self.fired, self.asked, self.errors = {}, {}, {}
+        self.log_path = None          # where plugin output goes (the daemon sets STATE/hooks.log)
 
     def load_questions(self, path):
         with open(path) as f:
@@ -168,20 +172,77 @@ class Hooks:
                 self.call(name, "on_resume", facts, orders)
 
     def call(self, name, fn, *args):
+        """Run one plugin function under a time limit, with its output sent to a capped log. A plugin that
+        overruns, or fails twice, is disabled (and the error says so) so it cannot stall or flood the loop."""
+        box = {}
+
+        def run():
+            try:
+                with contextlib.redirect_stdout(Sink(self.log_path)), contextlib.redirect_stderr(Sink(self.log_path)):
+                    box["out"] = getattr(self.plugins[name], fn)(*args)
+            except BaseException as e:       # noqa: B902 - a plugin may raise anything, even SystemExit
+                box["err"] = e
+
+        t = threading.Thread(target=run, name="hook-" + name, daemon=True)
+        t.start()
+        t.join(HOOK_SECS)
+        if t.is_alive():
+            self.disabled.add(name)
+            raise HookError("hook %s.%s ran over %ds; plugin disabled (re-enable with --enable %s)" % (
+                name, fn, HOOK_SECS, name))
+        if "err" in box:
+            if isinstance(box["err"], KeyboardInterrupt):
+                raise box["err"]
+            self.errors[name] = self.errors.get(name, 0) + 1
+            off = self.errors[name] >= 2
+            if off:
+                self.disabled.add(name)
+                self.errors[name] = 0
+            e = box["err"]
+            raise HookError("hook error in %s.%s: %s: %s%s" % (name, fn, type(e).__name__, str(e)[:300],
+                                                               "; plugin disabled after 2 errors" if off else ""))
+        out = box.get("out")
         try:
-            out = getattr(self.plugins[name], fn)(*args)
-        except KeyboardInterrupt:
+            if fn == "extra_questions" and out is not None and not isinstance(out, dict):
+                raise HookError("hook error in %s.extra_questions: must return a dict" % name)
+            if fn == "on_answers" and out is not None:
+                if not isinstance(out, dict):
+                    raise HookError("hook error in %s.on_answers: must return None or a dict" % name)
+                if len(str(out.get("action", ""))) > 1024:
+                    raise HookError("hook error in %s.on_answers: action longer than 1024 keys" % name)
+        except HookError:
+            self.errors[name] = self.errors.get(name, 0) + 1
+            if self.errors[name] >= 2:
+                self.disabled.add(name)
+                self.errors[name] = 0
             raise
-        except BaseException as e:
-            raise HookError("hook error in %s.%s: %s: %s" % (name, fn, type(e).__name__, e))
-        if fn == "extra_questions" and out is not None and not isinstance(out, dict):
-            raise HookError("hook error in %s.extra_questions: must return a dict" % name)
-        if fn == "on_answers" and out is not None:
-            if not isinstance(out, dict):
-                raise HookError("hook error in %s.on_answers: must return None or a dict" % name)
-            if len(str(out.get("action", ""))) > 1024:
-                raise HookError("hook error in %s.on_answers: action longer than 1024 keys" % name)
         return out
+
+
+HOOK_SECS = 5
+LOG_CAP = 1 << 20
+
+
+class Sink(io.TextIOBase):
+    """Plugin print output: appended to a log file until it reaches LOG_CAP bytes, then dropped."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def writable(self):
+        return True
+
+    def write(self, text):
+        if not self.path:
+            return len(text)
+        try:
+            size = os.path.getsize(self.path) if os.path.exists(self.path) else 0
+            if size < LOG_CAP:
+                with open(self.path, "a") as f:
+                    f.write(text[:LOG_CAP])
+        except OSError:
+            pass
+        return len(text)
 
 
 def describe(answer):

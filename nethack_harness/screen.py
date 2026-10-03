@@ -16,7 +16,7 @@ class View:
         self.menu = any(re.search(r"\((end|\d+ of \d+)\)\s*$", r.rstrip()) for r in rows[:23])
         # A question is live only while the cursor waits on the message line; once answered, its text can stay
         # on screen but must not be answered again.
-        asking = cursor[0] == 0
+        asking = self.asking = cursor[0] == 0 and not self.more
         m = re.search(r"\[([a-zA-Z\-]+)\](?: \(.\))?\s*$", msg)
         self.yn = m.group(1) if m and not self.more and asking else None
         m = re.search(r"\[([^\]]*?)(?: or \?\*)?\]\s*$", msg)
@@ -51,7 +51,7 @@ class View:
         self.hero = None
         if 1 <= y <= 21 and not self.prompt and self.rows[y][x:x + 1].strip():
             self.hero = (y, x)       # tty leaves the cursor on the hero, whatever its symbol
-        elif not self.prompt:
+        elif not self.prompt and not (asking and msg):   # a cursor on the message line means a question is open
             ats = [(r, c) for r in range(1, 22) for c in range(80) if self.rows[r][c] == "@"]
             self.hero = min(ats, key=lambda p: abs(p[0] - y) + abs(p[1] - x)) if ats else None
         self.engulfed = bool(self.hero) and self._engulfed()

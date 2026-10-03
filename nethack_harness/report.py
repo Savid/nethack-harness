@@ -78,7 +78,7 @@ def summary(p, reason):
                st.get("dlvl"), st.get("hp"), st.get("hpmax"), st.get("ac"), st.get("xl"), st.get("turn"),
                " ".join(v.cond), p.race or "", p.role or "", "never" if lp is None else "T%d (%d ago)" % (
                    lp, (st.get("turn") or 0) - lp), " (prayer broken)" if p.prayer_broken else "", CFG["mode"],
-               CFG["risk"], CFG["effort"], p.directive or "-")]
+               CFG["risk"], CFG["effort"], clip(p.directive) or "-")]
     if p.pending:
         acts, i = p.pending
         out.append("model: %s | danger %.2f | confidence %.2f" % (", ".join("%s %.2f" % kv for kv in i["top"]),
@@ -90,7 +90,8 @@ def summary(p, reason):
         if group:
             out.append(label + ": " + "; ".join("%s (%s) %d %s" % (
                 h["name"], h["ch"], h["dist"], compass(v.hero or h["pos"], h["pos"])) for h in group[:6]))
-    lv = p.lv.get(st.get("dlvl"))
+    branch = getattr(p, "branch", "main")
+    lv = p.lv.get(st.get("dlvl") if branch == "main" else (branch, st.get("dlvl")))
     if lv:
         out.append("level: %d search turns, probes %s, %d bans, %d excluded targets%s%s" % (
             lv.search_turns, ",".join(sorted(lv.probed)) or "-", len(lv.bans), len(lv.excluded),
@@ -122,6 +123,12 @@ def summary(p, reason):
     return "\n".join(out + ["--- screen ---", v.text_screen()])
 
 
+def clip(text, n=300):
+    """Long orders are the outer loop's own text: echo a prefix, not all of it, in every report."""
+    text = text or ""
+    return text if len(text) <= n else "%s... [%d chars]" % (text[:n], len(text))
+
+
 def footer(p):
     breaker = max(0, int(p.breaker_until - time.time()))
     return ("inner loop: %d keys, %d decisions, %d model calls (%d reused, avg %d ms, effort %s%s), %d escalations, "
@@ -134,5 +141,7 @@ def status(p):
     return {"settings": dict(CFG), "effort": dict(effort(), level=CFG["effort"]), "hooks": hooks_line(p),
             "role": p.role, "race": p.race, "alignment": p.align, "max_dlvl": p.max_dl, "keys": p.keys,
             "decisions": p.decisions, "model_calls": p.calls, "reused_answers": p.reused,
-            "plan": list(p.plan), "orders": p.directive, "prayer": {"last": p.last_prayer, "broken": p.prayer_broken},
-            "kit": p.kit() if p.inv else {}, "known_symbols": len(K.NEVER_MELEE)}
+            "plan": list(p.plan), "orders": clip(p.directive, 2000), "prayer": {"last": p.last_prayer, "broken": p.prayer_broken},
+            "kit": p.kit() if p.inv else {}, "known_symbols": len(K.NEVER_MELEE),
+            "model_errors": p.breaker_trips, "last_model_error": getattr(p, "last_model_error", ""),
+            "recent_ms": [int(x * 1000) for x in getattr(p, "latencies", [])]}

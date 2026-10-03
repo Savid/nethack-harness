@@ -77,11 +77,10 @@ level, plan item, hook type and plugin function, with examples.
 | Exit | Meaning |
 | --- | --- |
 | 0 | Paused with a report (the first one is the BRIEFING). The keyboard is yours until you resume. |
-| 2 | Timeout and still playing fine; call `wait` again. |
+| 2 | Timeout and still playing; call `wait` again. The line names any decision-model trouble (errors, rules-only time, slow calls). |
 | 3 | Game over (or the terminal socket closed). |
-| 1 | Not running, or a setup error; see `daemon.log` in `--dir`. |
-
-(`send` without keys is a usage error and exits 2.)
+| 1 | No inner loop in `--dir`, not running, a setup error, or stuck (no heartbeat for 15 s; `stop` ends a stuck loop). See `daemon.log`. |
+| 64 | Usage error (unknown flag, bad `--set` value, `send` without keys); nothing happened. |
 
 While paused:
 - `send 'keys'` or `send --hex 1b` sends keys and prints the new screen;
@@ -91,7 +90,9 @@ While paused:
 Resume options can be combined:
 - `--directive TEXT`: orders shown to the model. While orders are set, the
   model decides contested steps among the safe options.
-- `--mode descend|explore|careful`: resets every setting to that mode.
+- `--mode descend|explore|careful`: sets only the keys modes own (`mode`,
+  `risk`, `danger_max`, `p_min`, `esc_gap`); `mines`, `avoid` and the rest
+  are kept.
 - `--set k=v`: any setting.
 - `--plan ITEM`: queue a step, such as `keys:Za.`, `goal:stairs`, `goal:dig`,
   `goal:rest:0.9`, `goal:search:30`, `goal:travel:R,C` or `goal:pray`.
@@ -108,7 +109,7 @@ decisions, model calls (and how many reused an earlier answer) and escalations.
 | `risk` | normal | `low`, `normal`, `high`: HP gates for descending, resting, Elbereth and escalating, plus the depth lead |
 | `effort` | medium | Decision effort: `off` (rules only), `low`, `medium`, `high` |
 | `lead` | by role | Max depth = XL + lead |
-| `mines` | auto | `allow` for gnome or dwarf heroes, otherwise `avoid`; or `escalate` |
+| `mines` | auto | `allow` for gnome or dwarf heroes, otherwise `avoid`; or `escalate`. An unused Mines staircase looks like any other, so the harness reads the dungeon overview (`^O`) on each new level, leaves at once under `avoid`, and never takes that staircase again |
 | `dig` | 0 | 1 = dig down with a pick-axe or mattock |
 | `avoid` | | Regex of monster names never to melee |
 | `quiet` | 0.06 | Seconds of terminal silence that end a key send |

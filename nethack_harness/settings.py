@@ -1,4 +1,5 @@
-"""Tunables. Every key can be changed at runtime with `--set k=v`; `--mode` resets them to the mode's values."""
+"""Tunables. Every key can be changed at runtime with `--set k=v`; `--mode` sets the keys modes own."""
+import re
 
 DEFAULTS = {
     "mode": "descend",      # descend | explore | careful (careful = risk low)
@@ -20,6 +21,7 @@ DEFAULTS = {
     "stall_turns": 800,     # ...or this many game turns
     "decide_timeout": 4.0,  # seconds per decision call; slower answers trip the breaker
     "breaker": 20,          # seconds of rules-only play after a failed or slow decision call
+    "slow_ms": 1500,        # trip the breaker when the median of the last 5 calls is slower than this
     "search_budget": 150,   # search turns per level before moving down the escape ladder
     "cap_lift": 120,        # seconds on a level after which the depth lead no longer blocks descending
     "potions": 1,           # quaff known healing potions in emergencies
@@ -71,24 +73,52 @@ def coerce(key, value):
     if default is None:
         if value in (None, "", "none", "None", "auto"):
             return None
-        return int(value) if key == "lead" else float(value)
+        return int(value) if key == "lead" else finite(float(value))
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        v = str(value).strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off"):
+            return False
+        raise ValueError("%s wants on/off" % key)
+    if isinstance(default, float):
+        return finite(float(value))
+    if isinstance(default, int) and str(value).strip().lower() in ("on", "off", "true", "false", "yes", "no"):
+        return int(str(value).strip().lower() in ("on", "true", "yes"))
     return type(default)(value)
+
+
+def finite(x):
+    if x != x or x in (float("inf"), float("-inf")):
+        raise ValueError("not a finite number")
+    return x
 
 
 ALIASES = {"xl_lead": "lead"}     # older names keep working
 
 
+MODE_KEYS = sorted({k for m in MODES.values() for k in m})
+
+
 def apply_settings(mode=None, sets=None):
-    """A mode resets every tunable to its default, then applies the mode; explicit sets come last."""
+    """A mode resets only the settings modes own (mode, risk and the escalation thresholds) and then applies its
+    values; everything else (mines, avoid, dig, effort, ...) is kept. Explicit sets come last."""
+    pending = validate(sets)
     if mode:
         if mode not in MODES:
             raise ValueError("unknown mode %s (known: %s)" % (mode, ", ".join(MODES)))
-        keep = CFG["last_prayer"]
-        CFG.clear()
-        CFG.update(DEFAULTS)
+        for k in MODE_KEYS:
+            CFG[k] = DEFAULTS[k]
         CFG.update(MODES[mode])
-        CFG["last_prayer"] = keep
-    for k, v in (sets or {}).items():
+    CFG.update(pending)
+
+
+def validate(sets):
+    """Check every k=v before anything changes; returns the coerced values or raises ValueError."""
+    pending = {}
+    for k, v in (sets or {}).items():         # validate everything before changing anything
         k = ALIASES.get(k, k)
         if k not in DEFAULTS:
             raise ValueError("unknown setting %s (known: %s)" % (k, ", ".join(sorted(DEFAULTS))))
@@ -98,7 +128,17 @@ def apply_settings(mode=None, sets=None):
             raise ValueError("effort must be off, low, medium or high")
         if k == "mines" and v not in ("auto", "allow", "avoid", "escalate"):
             raise ValueError("mines must be auto, allow, avoid or escalate")
-        CFG[k] = coerce(k, v)
+        try:
+            value = coerce(k, v)
+        except (TypeError, ValueError):
+            raise ValueError("bad value for %s: %r" % (k, v))
+        if k == "avoid" and value:
+            try:
+                re.compile(value)
+            except re.error as e:
+                raise ValueError("avoid is not a valid regex: %s" % e)
+        pending[k] = value
+    return pending
 
 
 def effort():

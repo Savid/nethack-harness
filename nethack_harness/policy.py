@@ -50,6 +50,9 @@ class Pilot:
         self.last_model_esc, self.last_new_level = 0.0, time.time()
         self.plan = collections.deque()
         self.cache, self.reused = None, 0
+        self.latencies, self.engulfed, self.esc_seen = collections.deque(maxlen=5), False, {}
+        self.esc_counts, self.last_model_error = {}, ""
+        self.overviewed, self.mines_entry, self.branch, self.branch_dl = set(), None, "main", None
         self.breaker_until, self.breaker_trips, self.new_level_pending = 0.0, 0, set()
         self.hp_hist = collections.deque(maxlen=12)        # (turn, hp)
         self.trail = collections.deque(maxlen=24)          # (dlvl, hero, action key) per decision
@@ -65,15 +68,49 @@ class Pilot:
         self.hooks = Hooks()
 
     # ------------------------------------------------------------ plumbing
-    def level(self, dl):
-        if dl not in self.lv:
-            self.lv[dl] = Level(dl)
-            self.lv[dl].arrived = time.time()
-        return self.lv[dl]
+    def level(self, dl, branch=None):
+        """Levels are remembered per branch: Mines level 5 and Dlvl 5 of the main dungeon are different maps."""
+        branch = branch or getattr(self, "branch", "main")
+        k = dl if branch == "main" else (branch, dl)
+        if k not in self.lv:
+            self.lv[k] = Level(dl)
+            self.lv[k].mines = branch == "mines"
+            self.lv[k].arrived = time.time()
+        return self.lv[k]
+
+    def resolved(self, dl):
+        """True once the branch of the level we are on is known (see track_branch)."""
+        return getattr(self, "branch_dl", None) in (None, dl)
+
+    def track_branch(self, dl, v):
+        """On a level change, work out which branch we are in before anything reads the level's map."""
+        prev_dl, prev_branch = self.branch_dl, self.branch
+        self.branch_dl = dl
+        if prev_dl is None or dl == prev_dl:
+            return
+        prev = self.level(prev_dl)
+        if dl > prev_dl and self.last_down and self.last_down[0] == prev_dl and \
+                prev.downs.get(self.last_down[1]) == "branch" and prev_branch == "main":
+            self.branch = "mines"
+        elif dl < prev_dl and prev_branch == "mines" and self.mines_entry is not None and dl <= self.mines_entry:
+            self.branch = "main"
+        if 3 <= dl <= 14 or prev_branch == "mines":
+            here = self.overview(dl)
+            if here:
+                self.branch = here
+        if self.branch == "mines" and prev_branch == "main" and dl > prev_dl and self.last_down and \
+                self.last_down[0] == prev_dl:
+            prev.downs[self.last_down[1]] = "branch"         # the staircase we just took leads into the Mines
+            self.mines_entry = prev_dl
+        if self.branch == "main" and prev_branch == "mines" and dl < prev_dl:
+            hero = v.hero
+            if hero:
+                self.level(dl).downs[hero] = "branch"         # we climbed out: the > underfoot leads back in
+            self.mines_entry = dl
 
     def view(self):
         v = self.term.view()
-        if v.normal and not v.engulfed:
+        if v.normal and not v.engulfed and self.resolved(v.st.get("dlvl", 0)):
             self.level(v.st.get("dlvl", 0)).observe(v)
         return v
 
@@ -81,8 +118,11 @@ class Pilot:
         kw.update(step=self.keys, kind=kind, text=text, t=round(time.time() - self.t0, 1))
         self.hist.append(kw)
         if self.log:
-            self.log.write(__import__("json").dumps(kw) + "\n")
-            self.log.flush()
+            try:
+                self.log.write(__import__("json").dumps(kw) + "\n")
+                self.log.flush()
+            except (OSError, ValueError):
+                pass              # a full disk must not stop play
 
     def send(self, keys):
         self.term.send(keys)
@@ -102,9 +142,16 @@ class Pilot:
         if not text:
             return None
         dl = v.st.get("dlvl", 0)
-        lv = self.level(dl)
-        if K.HIT.search(text):
+        # Until the step loop has worked out the branch of a new level, keep its facts off the remembered maps.
+        lv = self.level(dl) if self.resolved(dl) else Level(dl)
+        if K.HIT.search(text) or re.search(r"engulfs you|swallows you|can barely breathe|You are pummeled|"
+                                           r"You are laden|You are blasted", text):
             self.hit_turn = v.st.get("turn", 0)
+        if re.search(r"engulfs you|swallows you|You are engulfed", text):
+            self.engulfed = v.st.get("turn", 0) or 1      # remembered even when blindness hides the box
+        if re.search(r"You get (?:expelled|regurgitated)|You are released|regurgitates you|expels you|"
+                     r"You (?:destroy|kill) ", text):
+            self.engulfed = False
         self.msgs.append(text)
         self.note("msg", text[:200])
         if "You begin praying" in text and v.st.get("turn") is not None:
@@ -120,8 +167,13 @@ class Pilot:
         if re.search(r"WHAMM|leg is in no shape", text) and self.last_act and self.last_act.kind == "kick":
             if "no shape" in text:
                 lv.no_kick = True
+        if re.search(r"[Cc]losed for inventory", text) and v.hero:
+            lv.shop_doors.update(q for _, q in nbrs(v.hero))       # the engraving lies before a shop door
+        text = re.sub(r'You read: ".*?"|"[^"]*"', "", text)    # engravings and epitaphs are not events
         if K.SHOP.search(text):
-            lv.shop = lv.no_kick = lv.no_dig = True
+            lv.shop = lv.no_dig = True
+            if v.hero:                                 # greeted in the doorway: never kick around here
+                lv.shop_doors.update([v.hero] + [q for _, q in nbrs(v.hero)])
         if K.BOULDER_FAIL.search(text) and self.last_try and self.last_try["kind"] == "push":
             lv.ban(self.last_try["hero"], self.last_try["key"])
         if K.BOULDER_BUSY.search(text) and self.last_try and self.last_try["kind"] == "push":
@@ -261,6 +313,25 @@ class Pilot:
                 break
             self.send("\x1b")
         return lines
+
+    def overview(self, dl):
+        """Read the dungeon overview (^O): is this level in the Gnomish Mines, and where does the branch start?"""
+        section, here, last_level = None, None, None
+        for line in self.read_pages("\x0f"):
+            if re.search(r"The Gnomish Mines\b", line) and "Stairs" not in line:
+                section = "mines"
+            elif re.search(r"The Dungeons of Doom|Gehennom|Sokoban|Fort Ludios|The Quest|Vlad's Tower", line) \
+                    and "Stairs" not in line:
+                section = "other"
+            m = re.search(r"Level (\d+):", line)
+            if m and "You are here" in line:
+                here = {"mines": "mines", "other": "main"}.get(section)
+            if m:
+                last_level = int(m.group(1))
+            if "Stairs down to The Gnomish Mines" in line and section == "other":
+                self.mines_entry = last_level
+        self.overviewed.add(dl)
+        return here
 
     def learn_character(self):
         for line in self.read_pages("\x18"):
@@ -427,9 +498,9 @@ class Pilot:
                     new = q in lv.door_frontier or v.ch(2 * q[0] - hero[0], 2 * q[1] - hero[1]) == " "
                     acts.append(Act("open_" + k, "Open the closed door to the " + K.DN[k], k, "door",
                                     6 if blocked else 3 if new else 1 if fr else 2.4, q))
-                elif lv.kicks[q] < 6 and not (lv.shop or lv.no_kick or c["watch"]):
+                elif lv.kicks[q] < K.KICK_TRIES and self.kickable(q, c):
                     acts.append(Act("kick_" + k, "Kick open the locked door to the " + K.DN[k], "\x04" + k, "kick",
-                                    0.8 if fr else 2.2, q))
+                                    0.8 if fr else 4.0, q))
             elif q in lv.traps and lv.traps[q] in ("trap door", "hole") and CFG["trapdoors"] and \
                     self.descend_ok(c) and dist.get(q) == 1:
                 acts.append(Act("trapdoor_" + k, "Step onto the %s %s (a free descent)" % (lv.traps[q], K.DN[k]), k,
@@ -486,7 +557,7 @@ class Pilot:
                 pr = 1.5          # explore mode: see the level first
             acts.append(Act("goto_stairs", "Travel to the down stairs %d squares %s%s" % (d, compass(hero, p), label),
                             keys, "travel", pr, p))
-        if lv.mines and lv.up_branch and policy == "avoid" and not th:
+        if lv.mines and (lv.up or c["under"] == "<") and policy == "avoid" and not th:
             acts.append(Act("leave_mines", "Leave the Gnomish Mines by the up stairs",
                             "<" if c["under"] == "<" else travel(hero, lv.up or hero) + "<", "travel", 7, lv.up))
         if c["under"] == "<" and dl > 1 and hpf < 1 / 3 and th and min(h["dist"] for h in th) >= 2:
@@ -536,12 +607,21 @@ class Pilot:
     def lv_downs_usable(self, c):
         return any(p in c["dist"] for p in c["lv"].downs)
 
+    def kickable(self, q, c):
+        """Kick a locked door, but never a shop's (an angry shopkeeper kills) or in front of the watch."""
+        lv = c["lv"]
+        if lv.no_kick or c["watch"] or q in lv.shop_doors:
+            return False
+        return not any("shopkeeper" in h["name"] and cheb(h["pos"], q) <= 3 for h in c["peace"] + c["obst"])
+
     def ladder_actions(self, v, c):
         """No frontier and no usable stairs: the escape ladder, one rung at a time."""
         hero, lv, dist = c["hero"], c["lv"], c["dist"]
         acts = []
         lv.locked = {q for q in lv.locked if v.ch(*q) in "+ "}       # broken or opened doors are no longer locked
-        doors = [q for q in lv.locked if lv.kicks[q] < 6] if not (lv.shop or lv.no_kick or c["watch"]) else []
+        doors = [q for q in lv.locked if lv.kicks[q] < K.KICK_TRIES and self.kickable(q, c)]
+        if any(cheb(q, hero) == 1 and (q[0] == hero[0] or q[1] == hero[1]) for q in doors):
+            doors = []          # kick the door beside you first (the kick action outranks travelling)
         for q in sorted(doors, key=lambda q: min([dist.get(n, 999) for _, n in nbrs(q)] or [999])):
             spot = min((n for k, n in nbrs(q) if k in "hjkl" and n in dist), key=dist.get, default=None)
             if spot is not None and spot != hero:
@@ -556,7 +636,8 @@ class Pilot:
         if CFG["mapping"] and "mapping" not in lv.probed and self.items(K.MAPPING.pattern) and \
                 (lv.search_turns >= CFG["search_budget"] // 2 or lv.dlvl <= 2 or lv.mines):
             acts.append(Act("read_mapping", "Read a scroll of magic mapping to reveal the level", "r", "read", 3.8))
-        budget_left = lv.search_turns < CFG["search_budget"] and lv.search_actions < 25
+        extra = getattr(lv, "extra_budget", 0)          # granted each time the level is reported exhausted
+        budget_left = lv.search_turns < CFG["search_budget"] + extra and lv.search_actions < 25 + extra // 6
         spots = lv.spots(v, dist) if budget_left else []
         if spots:
             here = next((s for s, p in spots if p == hero), None)
@@ -566,7 +647,7 @@ class Pilot:
             else:
                 acts.append(Act("goto_search", "Go to a likely hidden-passage spot %s to search" % compass(hero, best),
                                 travel(hero, best), "explore", 3, best))
-        elif not (lv.dlvl <= 2 or lv.mines) and budget_left:
+        elif budget_left and (not (lv.dlvl <= 2 or lv.mines) or lv.search_turns < 45 + extra):
             acts.append(Act("search", "Search here 15 turns for hidden passages", "15s", "search", 1))
         return acts
 
@@ -884,13 +965,14 @@ class Pilot:
     def oscillation(self, dl):
         """A generic futility check: two positions or two actions alternating, or the level toggling."""
         levels = list(self.level_trail)[-8:]
-        if len(levels) >= 6 and len(set(levels)) <= 2 and self.max_dl <= max(levels):
+        if len(levels) >= 4 and len(set(levels[-4:])) <= 2 and levels[-1] == levels[-3] and \
+                levels[-2] == levels[-4] and self.max_dl <= max(levels):
             self.level_trail.clear()
             for d in set(levels):
                 self.level(d).stair_ban_until = self.decisions + 60
             return "oscillating: Dlvl %s <-> %s %d times; the involved stairs are now avoided" % (
                 levels[-1], levels[-2], len(levels))
-        t = list(self.trail)[-12:]
+        t = [x for x in self.trail if x[2] != "search_more"][-12:]   # deliberate searching is not a loop
         if len(t) >= 10:
             spots = collections.Counter((x[0], x[1]) for x in t)
             keys = collections.Counter(x[2] for x in t)
@@ -919,6 +1001,12 @@ class Pilot:
         if not v.normal:
             self.term.settle()          # output may still be arriving
             v = self.view()
+            if v.asking and not v.prompt and v.msg:
+                time.sleep(0.3)
+                self.term.poll()
+                v = self.view()
+                if v.asking and not v.prompt and v.msg:
+                    raise Hard("unknown text prompt (nothing sent): " + v.msg[:160])
             if not v.normal:
                 self.bad_screens += 1
                 if self.bad_screens > 6:
@@ -943,14 +1031,26 @@ class Pilot:
         if self.inv_turn == -2 or (self.turn or 0) - self.inv_turn > 1500:
             self.read_inventory()
             return None
-        if v.engulfed:
+        if self.engulfed and not v.engulfed and v.st.get("turn", 0) - self.engulfed > 30:
+            self.engulfed = False          # no box and no news for 30 turns: it is over
+        if v.engulfed or self.engulfed:
             self.engulf_sends += 1
+            hp, hpmax, xl = v.st.get("hp", 1), max(1, v.st.get("hpmax", 1)), v.st.get("xl", 1)
+            div = 5 if xl <= 5 else 6 if xl <= 13 else 7
+            if (hp <= 5 or hp * div <= min(hpmax, 15 * xl)) and self.prayer_safe(v.st.get("turn", 0)):
+                self.do(v, {"turn": v.st.get("turn", 0), "lv": self.level(v.st.get("dlvl", 0)),
+                            "hero": v.hero, "dl": v.st.get("dlvl", 0)}, Act("pray", "pray", "", "pray"))
+                return None
             if self.engulf_sends > 15:
                 self.engulf_sends = 0
                 raise Hard("engulfed for 15 attacks")
             self.send("Fh")
+            self.note("act", "attack the engulfer (Fh)", turn=v.st.get("turn", 0))
             return None
         self.engulf_sends = 0
+        if v.st.get("dlvl") is not None and v.st["dlvl"] != self.branch_dl:
+            self.track_branch(v.st["dlvl"], v)
+            v = self.view()
         c = self.context(v)
         v = self.view()
         if not v.normal:
@@ -968,27 +1068,17 @@ class Pilot:
             if self.prev_dl is not None:
                 self.note("level", "arrived on Dlvl %d (turn %s)" % (dl, c["turn"]))
                 self.level_trail.append(dl)
-                prev = self.lv.get(self.prev_dl)
                 if dl > self.prev_dl:
-                    if prev and prev.mines:
-                        lv.mines = True
                     if self.last_down and self.last_down[0] == self.prev_dl:
                         self.edges[self.last_down] = dl
                         if c["under"] == "?" and not any(K.FELL.search(m) for m in list(self.msgs)[-3:]):
                             lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # came down the stairs
-                            c["under"] = "<"
+                            c["under"], lv.up = "<", c["hero"]
                     if dl - self.prev_dl >= 2 or dl > c["xl"] + 3:
                         branch_reason = "depth jump: Dlvl %d -> %d at XL %d" % (self.prev_dl, dl, c["xl"])
-                elif prev and prev.mines and not lv.mines:
-                    lv.downs[c["hero"]] = "branch"     # we climbed out of the Mines: the > underfoot leads back in
             if dl > self.max_dl:
                 self.last_new_level = time.time()
             self.prev_dl, self.ladder = dl, ""
-        if lv.up_branch and dl >= 2 and not lv.mines and self.lv.get(dl - 1) is not None:
-            lv.mines = True
-        if lv.mines and self.last_down and self.last_down[0] == dl - 1 and \
-                self.lv.get(dl - 1) and not self.lv[dl - 1].mines:
-            self.lv[dl - 1].downs[self.last_down[1]] = "branch"   # the staircase that brought us here
         if c["under"] == "?" and c["turn"] <= 1:
             lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # the game starts on the up stairs
             c["under"] = "<"
@@ -1061,8 +1151,26 @@ class Pilot:
         elif acts[0].prior <= -2 and not near and (c["frontier"] or self.lv_downs_usable(c)):
             acts.insert(0, Act("wait_blocked", "Wait two turns: the way is blocked for now", "2s", "wait", 0))
         elif acts[0].prior <= -2 and not near:
-            reason = "level exhausted: no frontier, stairs, search budget or tools left (%d search turns)" % \
-                lv.search_turns
+            reason = "level exhausted: no frontier, stairs, search budget or tools left (%d search turns%s)" % (
+                lv.search_turns, "; in the way: " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"]))
+                                                                for h in c["obst"][:3]) if c["obst"] else "")
+        if reason:
+            # An unchanged situation is not news. After a resume, the same kind of escalation waits until the
+            # turn counter moves (150 turns for exhausted/stalled verdicts), the hero moves, or the level changes.
+            kind = " ".join(re.findall(r"[A-Za-z]+", reason)[:2])
+            last = self.esc_seen.get(kind)
+            repeats = self.esc_counts.get((kind, dl), 0)
+            window = 150 * 2 ** min(repeats, 5) if kind in ("level exhausted", "stalled") else 1
+            if last and last[1:] == (dl, c["hero"]) and c["turn"] - last[0] < window:
+                if kind == "level exhausted":
+                    acts.insert(0, Act("search_more", "Search 20 turns (this level was already reported exhausted)",
+                                       "20s", "search", 0))
+                reason = None
+            else:
+                self.esc_seen[kind] = (c["turn"], dl, c["hero"])
+                self.esc_counts[(kind, dl)] = repeats + 1
+                if kind == "level exhausted":
+                    lv.extra_budget = getattr(lv, "extra_budget", 0) + CFG["search_budget"]   # then search on
         if reason and self.esc(reason, hp=c["hp"], hpmax=c["hpmax"]):
             return reason
         reason = None
@@ -1100,23 +1208,41 @@ class Pilot:
         elif builtin or due:
             try:
                 ans, took = self.ask(v, c, acts if builtin else None, due, eff["state"])
+                if builtin and not ("act" in ans and isinstance(ans["act"].get("probabilities"), dict)
+                                    and any(a.key in ans["act"]["probabilities"] for a in acts)):
+                    raise Unhealthy("malformed answer: no usable probabilities for act")
+                if builtin and not all(isinstance(x, (int, float)) and 0.0 <= x <= 1.0
+                                       for x in ans["act"]["probabilities"].values()):
+                    raise Unhealthy("malformed answer: act probabilities must be numbers in [0, 1]")
+                for x in ans.values():
+                    for k in ("noul", "confidence"):
+                        if k in x and not (0.0 <= x[k] <= 1.0):     # NaN fails this too
+                            raise Unhealthy("malformed answer: %s out of range" % k)
                 if builtin:
                     self.cache = (sig, self.decisions, ans)
                 if due:
                     self.hooks.answered([k for k in due if k in ans], self.decisions)
                     if any(k in ans for k in due):
                         self.new_level_pending.discard(dl)
-                if took > CFG["decide_timeout"]:
-                    raise Unhealthy("slow answer (%.1fs)" % took)
+                self.latencies.append(took)
+                slow = sorted(self.latencies)[len(self.latencies) // 2] if len(self.latencies) >= 5 else 0
+                if took > CFG["decide_timeout"] or slow > CFG["slow_ms"] / 1000:
+                    self.latencies.clear()
+                    raise Unhealthy("slow answers (last %.1fs, median %.1fs)" % (took, slow))
             except Exception as e:     # endpoint trouble: play on the rules for a while
                 self.breaker_until, self.breaker_trips = time.time() + CFG["breaker"], self.breaker_trips + 1
                 self.note("model_error", "%s; rules only for %ds" % (str(e)[:160], CFG["breaker"]))
-                ans = ans if isinstance(ans, dict) else {}
-            if "act" in ans and any(a.key in ans["act"]["probabilities"] for a in acts):
+                self.last_model_error = str(e)[:160]
+                ans = {}
+                if self.breaker_trips in (3, 10) or (self.directive and self.breaker_trips == 1):
+                    reason = "decision endpoint degraded: rules only (%d failures, last: %s)%s" % (
+                        self.breaker_trips, self.last_model_error,
+                        "; your orders cannot be applied while it is down" if self.directive else "")
+            if "act" in ans:
                 probs = {k: x for k, x in ans["act"]["probabilities"].items() if any(a.key == k for a in acts)}
                 ranked = sorted(probs.items(), key=lambda kv: -kv[1])
                 conf = confidence(probs)
-                danger = ans.get("danger", {}).get("noul", 0.0)
+                danger = min(1.0, max(0.0, ans.get("danger", {}).get("noul", 0.0)))
                 pick = next(a for a in acts if a.key == ranked[0][0])
                 info = {"src": "model", "p": round(ranked[0][1], 3), "conf": round(conf, 3), "danger": round(danger, 3),
                         "ms": int(took * 1000), "rule": top.key, "agree": pick is top,

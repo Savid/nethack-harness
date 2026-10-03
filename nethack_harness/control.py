@@ -16,7 +16,7 @@ from .decide import decider
 from .hooks import HookError, Hooks
 from .policy import GAME_OVER, Pilot
 from .report import status as status_of, summary
-from .settings import ALIASES, CFG, DEFAULTS, EFFORT, MODES, RISK, apply_settings, describe
+from .settings import ALIASES, CFG, DEFAULTS, EFFORT, MODES, RISK, apply_settings, describe, validate, MODE_KEYS
 from .transport import Closed, Held, Term, serve_local
 
 HELP = {
@@ -24,10 +24,11 @@ HELP = {
 You are the outer loop; this program is the inner loop. It plays routine NetHack fast and stops when judgment
 is needed. Every blocking command (start, wait, resume) returns at an escalation, at game over or at --timeout:
   exit 0  paused: an ESCALATION (or BRIEFING) report follows; the keyboard is yours until you resume
-  exit 2  timeout, all fine: call wait again
+  exit 2  timeout, still playing: call wait again (the line names decision-model trouble, if any)
   exit 3  game over (or the terminal socket closed)
-  exit 1  not running or a setup error: start again (memory is kept unless --fresh); see daemon.log
-  exit 64 a usage error (unknown flag or setting, send without keys): nothing happened
+  exit 1  no loop in --dir, not running, a setup error, or stuck (no heartbeat for 15s: stop, then start);
+          start again keeps memory unless --fresh; see daemon.log
+  exit 64 a usage error (unknown flag, bad --set value, send without keys): nothing happened
 The first stop is a BRIEFING: role, race, kit, capabilities, settings and suggestions. Set your plan, then resume.
 WHILE PAUSED (the keyboard is yours until you resume):
   screen                     look; status shows settings, effort, plan, hooks, counters and kit
@@ -55,7 +56,7 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
                 --enable KEY  --disable KEY""",
     "settings": "SETTINGS (--set k=v at start or resume; status shows them)\n" + "\n".join(
         "  %-14s %-9s %s" % (k, DEFAULTS[k], doc) for k, _, doc in [
-            ("mode", "", "descend | explore | careful (a mode resets every setting to its values)"),
+            ("mode", "", "descend | explore | careful (a mode sets only the keys it owns; others are kept)"),
             ("risk", "", "low | normal | high: HP gates and depth lead (e.g. --set risk=high to dive)"),
             ("effort", "", "decision effort: off | low | medium | high (see help effort)"),
             ("descend_hp", "", "descend only at or above this HP fraction (None = from risk)"),
@@ -85,7 +86,8 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("briefing", "", "1 = pause once at start with role, kit and capabilities"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("last_prayer", "", "turn of a prayer you made by hand")]),
-    "modes": "MODES (--mode M resets all settings, then applies)\n" + "\n".join(
+    "modes": "MODES (--mode M resets the mode-owned keys (%s) to defaults, then applies the mode; other settings "
+             "such as mines, avoid, dig and effort are kept; --set after --mode wins)\n" % ", ".join(MODE_KEYS) + "\n".join(
         "  %-8s %s" % (m, " ".join("%s=%s" % kv for kv in v.items())) for m, v in MODES.items()) +
         "\nRISK levels: " + "; ".join("%s: %s" % (k, " ".join("%s=%s" % kv for kv in v.items()))
                                       for k, v in RISK.items()),
@@ -152,10 +154,21 @@ class Store:
         return os.path.join(self.dir, name)
 
     def write(self, name, obj):
+        self.publish(name, json.dumps(obj, default=str))
+
+    def publish(self, name, data):
+        """Write a complete file atomically; on failure (disk full) leave no temporary file behind."""
         tmp = self.path("%s.%d.%d.tmp" % (name, os.getpid(), random.randrange(1 << 30)))
-        with open(tmp, "w") as f:
-            json.dump(obj, f, default=str)
-        os.replace(tmp, self.path(name))
+        try:
+            with open(tmp, "w") as f:
+                f.write(data)
+            os.replace(tmp, self.path(name))
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     def read(self, name):
         try:
@@ -171,22 +184,45 @@ class Store:
                     return f.read()
             except OSError:
                 return ""
-        tmp = self.path("%s.%d.%d.tmp" % (name, os.getpid(), random.randrange(1 << 30)))
-        with open(tmp, "w") as f:
-            f.write(value)
-        os.replace(tmp, self.path(name))
+        self.publish(name, value)
         return value
 
 
 def save_pilot(store, p):
+    """Returns None, or the error when the state directory cannot be written. A memory that could not be
+    updated is removed, so a restart never resumes from stale knowledge."""
     kept = (p.term, p.log, p.decide, p.hooks)
     p.term = p.log = p.decide = p.hooks = None
     try:
         with open(store.path("memory.tmp"), "wb") as f:
-            pickle.dump((p, dict(CFG), __version__), f)
+            pickle.dump((p, dict(CFG), MEMORY), f)
         os.replace(store.path("memory.tmp"), store.path("memory.pkl"))
+        return None
+    except OSError as e:
+        for name in ("memory.tmp", "memory.pkl"):
+            try:
+                os.unlink(store.path(name))
+            except OSError:
+                pass
+        return "%s: %s" % (type(e).__name__, e.strerror or e)
     finally:
         p.term, p.log, p.decide, p.hooks = kept
+
+
+LOG_CAP = 32 << 20
+
+
+def trim_logs(store, p):
+    """Keep log.jsonl and daemon.log bounded: the log rotates once to log.jsonl.1; daemon.log is cut."""
+    try:
+        if p.log and p.log.tell() > LOG_CAP:
+            p.log.close()
+            os.replace(store.path("log.jsonl"), store.path("log.jsonl.1"))
+            p.log = open(store.path("log.jsonl"), "a")
+        if os.fstat(2).st_size > LOG_CAP // 4 and os.path.samefile("/proc/self/fd/2", store.path("daemon.log")):
+            os.ftruncate(2, 0)
+    except (OSError, ValueError):
+        pass
 
 
 def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
@@ -206,8 +242,16 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
+MEMORY = "%s/m2" % __version__      # bump the suffix when the pickled pilot changes shape
+
+
 def commit():
-    """The fetched commit, when a COMMIT file sits beside the entry script or the package."""
+    """The build's commit: stamped into release zipapps, or a COMMIT file beside the entry script or package."""
+    try:
+        from ._commit import COMMIT
+        return COMMIT
+    except ImportError:
+        pass
     here = os.path.dirname(os.path.abspath(__file__))
     for d in (os.path.dirname(here), here):
         try:
@@ -243,7 +287,7 @@ def daemon(args):
         try:
             with open(store.path("memory.pkl"), "rb") as f:
                 p, saved, version = pickle.load(f)
-            if version != __version__:
+            if version != MEMORY:
                 raise ValueError("memory from another version")
             CFG.update({k: v for k, v in saved.items() if k in DEFAULTS})
         except (OSError, EOFError, pickle.PickleError, AttributeError, ValueError, ImportError, TypeError):
@@ -258,6 +302,7 @@ def daemon(args):
     if CFG["last_prayer"] >= 0:
         p.last_prayer, CFG["last_prayer"] = CFG["last_prayer"], -1
     p.term, p.decide, p.log, p.hooks = term, decide, open(store.path("log.jsonl"), "a"), Hooks()
+    p.hooks.log_path = store.path("hooks.log")
     p.pending, p.progress, p.calm_until = None, p.decisions, p.decisions + CFG["calm"]
     if cfg.get("directive") is not None:
         p.directive = cfg["directive"]
@@ -279,8 +324,16 @@ def daemon(args):
                       max_dlvl=p.max_dl, model_ms=int(1000 * p.mtime / max(1, p.calls)), done=done,
                       last=next((h["text"] for h in reversed(p.hist) if h["kind"] == "act"), "")[:120],
                       settings=dict(CFG), details=status_of(p),
-                      breaker=max(0, int(p.breaker_until - time.time())))
-        store.write("status.json", status)
+                      breaker=max(0, int(p.breaker_until - time.time())), beat=time.time(),
+                      home=os.path.realpath(store.dir))
+        beat["at"] = time.time()
+        try:
+            store.write("status.json", status)
+        except OSError:
+            pass                  # disk full: wait sees the heartbeat go stale
+        trim_logs(store, p)
+
+    beat = {"at": 0.0}
 
     inbox = {"path": cfg.get("inbox"), "offset": 0}
 
@@ -313,7 +366,16 @@ def daemon(args):
         if ended:
             ended_at = time.time()
         p.note("pause", reason)
-        save_pilot(store, p)
+        save(p)
+
+    def save(p):
+        err = save_pilot(store, p)
+        if err and not disk["warned"]:
+            disk["warned"] = err
+        elif not err:
+            disk["warned"] = None
+
+    disk = {"warned": None, "told": None}
 
     def handle(c):
         nonlocal paused
@@ -357,7 +419,7 @@ def daemon(args):
                 p.prayer_broken = True
             paused, p.pending = None, None
             p.progress, p.calm_until = p.decisions, p.decisions + CFG["calm"]
-            p.note("resume", "orders=%r %s plan=%s" % (p.directive, describe(), list(p.plan)))
+            p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None)
             term.sync()
         elif cmd in ("send", "screen"):
@@ -387,6 +449,8 @@ def daemon(args):
         publish()
     try:
         while True:
+            if time.time() - beat["at"] > 2:
+                publish()                 # the heartbeat that lets wait tell a stuck loop from a busy one
             for c in take_commands(store, done):
                 done = c["seq"]
                 try:
@@ -427,7 +491,11 @@ def daemon(args):
             if reason or p.decisions % 5 == 0:
                 publish()
             if p.decisions and p.decisions % 50 == 0:
-                save_pilot(store, p)
+                save(p)
+            if disk["warned"] and disk["told"] != disk["warned"] and not paused:
+                disk["told"] = disk["warned"]
+                pause("state dir not writable (%s): free space in %s, then resume" % (disk["warned"], store.dir))
+                publish()
     finally:
         save_pilot(store, p)
 
@@ -465,6 +533,24 @@ def spawn_daemon(store):
     os.waitpid(pid, 0)
 
 
+STUCK_SECS = 15
+
+
+def stuck(st):
+    """Seconds since the daemon's last heartbeat, when that is too long; 0 otherwise (older daemons have none)."""
+    beat = st.get("beat")
+    if not isinstance(beat, (int, float)) or st.get("state") in ("stopped", "ended"):
+        return 0
+    age = time.time() - beat
+    return int(age) if age > STUCK_SECS else 0
+
+
+def ours(store, st):
+    """status.json copied from another directory names a process that serves that directory, not this one."""
+    home = st.get("home")
+    return not home or home == os.path.realpath(store.dir)
+
+
 def alive(status):
     try:
         os.kill(int(status["pid"]), 0)
@@ -484,8 +570,16 @@ def wait(store, timeout, since):
                 return 0
             print("\n[game over: %s]" % st.get("reason"))
             return 3
-        if st.get("state") == "stopped" or (st and not alive(st)):
+        if not st:
+            print("no inner loop in %s; start it" % store.dir)
+            return 1
+        if st.get("state") == "stopped" or not alive(st) or not ours(store, st):
             print("inner loop not running (state: %s); see %s" % (st.get("state"), store.path("daemon.log")))
+            return 1
+        stale = stuck(st)
+        if stale:
+            print("inner loop stuck: no heartbeat for %ds (state %s, last: %s); stop it (stop ends a stuck loop) "
+                  "and start again" % (stale, st.get("state"), st.get("last")))
             return 1
         time.sleep(0.2)
     st = store.read("status.json")
@@ -494,9 +588,19 @@ def wait(store, timeout, since):
     if st.get("held"):
         print("game input is held for now (waiting for the game to accept keys); call wait again")
         return 2
-    print("still running fine, call wait again: %s keys, %s decisions, %s model calls (%s ms), max Dlvl %s, "
-          "effort %s, last: %s" % (st.get("keys"), st.get("decisions"), st.get("model_calls"), st.get("model_ms"),
-                                   st.get("max_dlvl"), (st.get("settings") or {}).get("effort"), st.get("last")))
+    d = st.get("details") or {}
+    health = ""
+    if st.get("breaker") or d.get("model_errors"):
+        health = "; decision model: %s errors%s, last: %s" % (
+            d.get("model_errors"), ", rules only for %ss" % st["breaker"] if st.get("breaker") else "",
+            d.get("last_model_error") or "-")
+    recent = d.get("recent_ms") or []
+    if recent and sorted(recent)[len(recent) // 2] > 1000:
+        health += "; slow decision calls (recent ms: %s)" % ",".join(str(x) for x in recent)
+    print("still running%s, call wait again: %s keys, %s decisions, %s model calls (%s ms), max Dlvl %s, "
+          "effort %s, last: %s%s" % (" fine" if not health else "", st.get("keys"), st.get("decisions"),
+                                     st.get("model_calls"), st.get("model_ms"), st.get("max_dlvl"),
+                                     (st.get("settings") or {}).get("effort"), st.get("last"), health))
     return 2
 
 
@@ -530,6 +634,11 @@ def parse_sets(items):
             print("unknown setting %s (known: %s)" % (k, ", ".join(sorted(DEFAULTS))), file=sys.stderr)
             raise SystemExit(64)
         out[k] = v
+    try:
+        validate(out)
+    except ValueError as e:
+        print("--set: %s" % e, file=sys.stderr)
+        raise SystemExit(64)
     return out
 
 
@@ -617,18 +726,23 @@ def main(argv=None):
         print(json.dumps({"options": {x.key: x.desc for x in acts}, "rule": acts[0].key, "answers": ans,
                           "ms": int(took * 1000)}, indent=1))
         return 0
-    store = Store(a.dir)
+    sets = parse_sets(getattr(a, "set", None))       # bad settings are usage errors (64) before anything runs
+    try:
+        store = Store(a.dir)
+    except OSError as e:
+        print("cannot use --dir %s: %s" % (a.dir, e.strerror or e))
+        return 1
     if a.cmd == "_daemon":
         with open(store.path("daemon.log"), "a") as log:
             os.dup2(log.fileno(), 2)
         return daemon(a)
     if a.cmd == "start":
         st = store.read("status.json")
-        if st.get("state") in ("running", "paused") and alive(st):
+        if st.get("state") in ("running", "paused") and alive(st) and ours(store, st):
             print("already running (%s); use wait, resume or stop" % st["state"])
             return 1
         cfg = {"socket": a.socket, "decide": a.decide, "model": a.model, "key_env": a.key_env, "fresh": a.fresh,
-               "seed": a.seed, "inbox": os.path.abspath(a.inbox) if a.inbox else None, "directive": a.directive, "mode": a.mode, "set": parse_sets(a.set), "plan": a.plan,
+               "seed": a.seed, "inbox": os.path.abspath(a.inbox) if a.inbox else None, "directive": a.directive, "mode": a.mode, "set": sets, "plan": a.plan,
                "questions": [os.path.abspath(x) for x in a.questions],
                "plugins": [os.path.abspath(x) for x in a.plugin], "enable": a.enable, "disable": a.disable}
         store.write("config.json", cfg)
@@ -673,11 +787,27 @@ def main(argv=None):
                 continue
             print(d.get("step"), d.get("kind"), d.get("text", "")[:120], d.get("p", ""))
         return 0
-    if not alive(st):
+    if not st:
+        print("no inner loop in %s; start it" % store.dir)
+        return 1
+    if not alive(st) or not ours(store, st):
         print("inner loop not running; use start")
         return 1
     if a.cmd == "pause" and st.get("state") == "paused":
         return wait(store, 1, st.get("escalation", 0) - 1)
+    if a.cmd == "stop" and stuck(st):
+        pid = int(st["pid"])
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not alive(st):
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+        st.update(state="stopped")
+        store.write("status.json", st)
+        print("stopped a stuck inner loop (pid %d)" % pid)
+        return 0
     if a.cmd in ("pause", "stop"):
         control(store, a.cmd)
         if a.cmd == "pause":
@@ -689,7 +819,7 @@ def main(argv=None):
             print("not paused (state: %s); use wait" % st.get("state"))
             return 1
         control(store, "resume", answering=st.get("escalation"), directive=a.directive, mode=a.mode,
-                set=parse_sets(a.set), plan=a.plan,
+                set=sets, plan=a.plan,
                 questions=[os.path.abspath(x) for x in a.questions], plugins=[os.path.abspath(x) for x in a.plugin],
                 enable=a.enable, disable=a.disable)
         return wait(store, a.timeout, st.get("escalation", 0))
