@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from helpers import Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
+from helpers import Case, Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
 
 
-class HookTest(unittest.TestCase):
+class HookTest(Case):
     def write(self, text, suffix):
         fd, path = tempfile.mkstemp(suffix=suffix)
         with os.fdopen(fd, "w") as f:

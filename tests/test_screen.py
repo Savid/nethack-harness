@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from helpers import Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
+from helpers import Case, Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
 
 
-class ViewTest(unittest.TestCase):
+class ViewTest(Case):
     def test_status_and_hero(self):
         rows = [" ---- ", " |.@.| ", " ---- "]
         v = view(screen("", rows), (2, 3))
@@ -24,7 +24,7 @@ class ViewTest(unittest.TestCase):
         self.assertFalse(v.normal)
 
 
-class ScreenRobustnessTest(unittest.TestCase):
+class ScreenRobustnessTest(Case):
     def test_short_condition_forms(self):
         v = view(screen("", status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:400 TermIll Ston Blnd Trap"), (0, 0))
         self.assertEqual(set(v.cond), {"TermIll", "Stone", "Blind", "Trapped"})

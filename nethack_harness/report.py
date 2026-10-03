@@ -49,7 +49,7 @@ def suggestions(p):
         hit = p.items(rx)
         if hit:
             out.append("%s (%s): %s" % (hit[0][1][:40], hit[0][0], advice))
-    wielded = next((t for k, t in p.items(r"weapon in hand|wielded")), "")
+    wielded = next((t for k, t in p.items() if "wielded" in K.item_state(t)), "")
     if kit["dig"] and ("bullwhip" in wielded or not wielded):
         letter = p.items("|".join(K.DIG_TOOLS))[0][0]
         out.append("fight with the digging tool rather than %s: --plan 'keys:w%s'" % (wielded or "bare hands", letter))
@@ -107,7 +107,7 @@ def summary(p, reason):
         if group:
             out.append(label + ": " + "; ".join("%s (%s) %d %s" % (
                 h["name"], h["ch"], h["dist"], compass(v.hero or h["pos"], h["pos"])) for h in group[:6]))
-    branch = getattr(p, "branch", "main")
+    branch = p.branch
     lv = p.lv.get(st.get("dlvl") if branch == "main" else (branch, st.get("dlvl")))
     if lv:
         out.append("level: %d search turns, probes %s, %d bans, %d excluded targets%s%s" % (
@@ -164,5 +164,5 @@ def status(p):
             "depth_cap": p.depth_cap(p.term.view().st.get("xl", 1), p.term.view().st.get("hpmax", 1),
                                      p.term.view().st.get("ac", 10)) if p.term else None,
             "milestones": list(p.milestones),
-            "model_errors": p.breaker_trips, "last_model_error": getattr(p, "last_model_error", ""),
-            "recent_ms": [int(x * 1000) for x in getattr(p, "latencies", [])]}
+            "model_errors": p.breaker_trips, "last_model_error": p.last_model_error,
+            "recent_ms": [int(x * 1000) for x in p.latencies]}

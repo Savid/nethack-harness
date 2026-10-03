@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from helpers import Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
+from helpers import Case, Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
 
 
-class ProtocolTest(unittest.TestCase):
+class ProtocolTest(Case):
     def test_send_poll_and_refusals(self):
         game = FakeGame([b"\x1b[2J\x1b[1;1HHello\x1b[3;4H@"], refusals=[(503, b"busy"), (410, b"waiting for it")])
         try:
@@ -24,7 +24,7 @@ class ProtocolTest(unittest.TestCase):
             game.close()
 
 
-class RefusalTest(unittest.TestCase):
+class RefusalTest(Case):
     def test_410_bodies(self):
         game = FakeGame([b"x"] * 10, refusals=[(410, b"game is stopping")])
         try:

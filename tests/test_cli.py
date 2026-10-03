@@ -6,12 +6,12 @@ import sys
 import tempfile
 import unittest
 
-from helpers import nh
+from helpers import Case, nh
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 
-class CliTest(unittest.TestCase):
+class CliTest(Case):
     def test_help_is_a_full_map_and_creates_nothing(self):
         d = tempfile.mkdtemp()
         out = io.StringIO()

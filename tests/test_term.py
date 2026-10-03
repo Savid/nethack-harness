@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from helpers import Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
+from helpers import Case, Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
 
 
-class VTTest(unittest.TestCase):
+class VTTest(Case):
     def test_clear_position_colour(self):
         vt = nh.VT()
         vt.feed(b"\x1b[H\x1b[2Jhello\x1b[3;5H\x1b[1;33m@\x1b[0m.")

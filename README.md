@@ -155,9 +155,9 @@ questions run every step:
 | Level | Ask | State | Reuse | Ungated hooks |
 | --- | --- | --- | --- | --- |
 | off | never | | | never |
-| low | contested *and* risky steps | compact | 20 decisions | with calls |
-| medium | contested steps | full | 6 decisions | with calls |
-| high | most steps | full | none | always |
+| low | contested steps with an adjacent hostile or HP below half | compact | 20 decisions | with calls |
+| medium | contested steps with a monster within 3, a recent hit or HP below half | full | 6 decisions | with calls |
+| high | every contested step | full | none | always |
 
 Engines of this kind have no reasoning-effort parameter: each call is one
 forward pass, and its cost grows with input tokens and the number of

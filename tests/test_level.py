@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from helpers import Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
+from helpers import Case, Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
 
 
-class PathTest(unittest.TestCase):
+class PathTest(Case):
     def test_frontier_through_doorway(self):
         rows = [" ------",
                 " |.@..|",

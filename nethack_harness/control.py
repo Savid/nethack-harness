@@ -16,7 +16,7 @@ from .decide import decider
 from .hooks import HookError, Hooks
 from .policy import GAME_OVER, Pilot
 from .report import status as status_of, summary
-from .settings import ALIASES, CFG, DEFAULTS, EFFORT, MODES, RISK, apply_settings, describe, validate, MODE_KEYS
+from .settings import CFG, DEFAULTS, EFFORT, MODE_KEYS, MODES, RISK, apply_settings, describe, validate
 from .knowledge import ALARM as K_ALARM, MON
 from .transport import Closed, Held, Term, serve_local
 
@@ -106,6 +106,12 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("fight_handoff", "", "losing fast: ladder (pray, quaff, stairs underfoot, verified Elbereth, retreat, "
                                   "then fight; escalate only if HP keeps falling) | escalate (hand over at once)"),
             ("crisis_turns", "", "turns the crisis ladder runs before a still-falling HP is handed over"),
+            ("branch_points", "", "1 = pause once at each branch point (Mines, trap door or hole, depth jump, "
+                                  "two down staircases)"),
+            ("stall_secs", "", "...or after this many seconds of play without new squares or depth"),
+            ("pickup_food", "", "1 = pick up known-safe food the hero steps on"),
+            ("ranged", "", "1 = fire quivered missiles at hostiles approaching in a line"),
+            ("auto", "", "1 = log escalations and play on without pausing (benchmarks only)"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
             ("last_prayer", "", "turn of a prayer you made by hand")]),
@@ -116,7 +122,8 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
                                       for k, v in RISK.items()),
     "effort": "EFFORT (--set effort=LEVEL; when and how much the decision model is asked)\n" + "\n".join(
         "  %-7s %s" % (k, ", ".join("%s=%s" % kv for kv in v.items())) for k, v in EFFORT.items()) +
-        "\n  ask: never | risky (contested and monsters near or hurt) | contested | most steps."
+        "\n  ask: never | danger (contested steps with an adjacent hostile or HP below half) | risky (contested steps"
+        "\n       with a monster within 3, a recent hit or HP below half) | contested (every contested step)."
         "\n  cache: reuse the last answer for this many decisions while the situation is unchanged."
         "\n  Example: --set effort=high in a dangerous spot, --set effort=low while crawling corridors.",
     "plan": """PLAN QUEUE (--plan ITEM, repeatable, runs before normal play, in order)
@@ -269,8 +276,10 @@ def guarded_repeat(term, p, keys, c):
 def save_pilot(store, p):
     """Returns None, or the error when the state directory cannot be written. A memory that could not be
     updated is removed, so a restart never resumes from stale knowledge."""
-    kept = (p.term, p.log, p.decide, p.hooks)
+    kept = (p.term, p.log, p.decide, p.hooks, p.paused_at)
     p.term = p.log = p.decide = p.hooks = None
+    if p.paused_at is None:
+        p.paused_at = time.time()       # a restart from this memory does not count the downtime as play
     try:
         with open(store.path("memory.tmp"), "wb") as f:
             pickle.dump((p, dict(CFG), MEMORY), f)
@@ -284,7 +293,7 @@ def save_pilot(store, p):
                 pass
         return "%s: %s" % (type(e).__name__, e.strerror or e)
     finally:
-        p.term, p.log, p.decide, p.hooks = kept
+        p.term, p.log, p.decide, p.hooks, p.paused_at = kept
 
 
 LOG_CAP = 32 << 20
@@ -320,7 +329,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m4" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m1" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -382,6 +391,8 @@ def daemon(args):
     p.term, p.decide, p.log, p.hooks = term, decide, open(store.path("log.jsonl"), "a"), Hooks()
     p.hooks.log_path = store.path("hooks.log")
     p.pending, p.progress, p.calm_until = None, p.decisions, p.decisions + CFG["calm"]
+    p.start_clock()                       # time while the loop was stopped is not play time
+    p.progress_time = p.clock()
     if cfg.get("directive") is not None:
         p.directive = cfg["directive"]
     p.plan.extend(cfg.get("plan") or [])
@@ -433,6 +444,7 @@ def daemon(args):
     def pause(reason, ended=False):
         nonlocal paused, ended_at
         paused = reason
+        p.stop_clock()
         p.escs += 1
         notes = read_inbox()
         try:
@@ -488,7 +500,7 @@ def daemon(args):
                                 {k: c.get(k) for k in ("directive", "mode", "set", "enable", "disable")})
             except HookError as e:
                 p.note("hook_error", str(e))
-            seen, term.seen = getattr(term, "seen", ""), ""
+            seen, term.seen = term.seen, ""
             turn = term.view().st.get("turn")
             if "You begin praying" in seen and turn is not None and CFG["last_prayer"] < 0:
                 p.last_prayer = turn          # a prayer made by hand while paused
@@ -496,7 +508,8 @@ def daemon(args):
             if re.search(r"You feel that .+ is displeased|Thou hast angered me|You feel guilty", seen):
                 p.prayer_broken = True
             paused, p.pending = None, None
-            p.progress, p.calm_until = p.decisions, p.decisions + CFG["calm"]
+            p.start_clock()
+            p.progress, p.calm_until, p.progress_time = p.decisions, p.decisions + CFG["calm"], p.clock()
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None)
             term.sync()
@@ -713,7 +726,6 @@ def parse_sets(items):
             print("--set wants k=v, got %r" % item, file=sys.stderr)
             raise SystemExit(64)
         k, v = item.split("=", 1)
-        k = ALIASES.get(k, k)
         if k not in DEFAULTS:
             print("unknown setting %s (known: %s)" % (k, ", ".join(sorted(DEFAULTS))), file=sys.stderr)
             raise SystemExit(64)

@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from helpers import nh, screen, view
+from helpers import Case, nh, screen, view
 
 K = nh.knowledge
 
@@ -20,7 +20,7 @@ class FakeTerm:
         return self.v
 
 
-class PromptTableTest(unittest.TestCase):
+class PromptTableTest(Case):
     def test_fixed_answers(self):
         self.assertEqual(K.prompt_answer("Really step onto that trap door? [yn] (n)"), "y")
         self.assertEqual(K.prompt_answer("Really attack the watchman? [yn] (n)"), "ESC")
@@ -46,7 +46,7 @@ class PromptTableTest(unittest.TestCase):
         self.assertEqual(p.term.sent, ["n", "y"])
 
 
-class TablesTest(unittest.TestCase):
+class TablesTest(Case):
     def test_colour_normalisation(self):
         self.assertEqual(K.colour("brown", True), ("brown", True))
         self.assertEqual(K.colour("brightgreen", False), ("green", True))
@@ -63,7 +63,7 @@ class TablesTest(unittest.TestCase):
         self.assertEqual(K.threat_xl("a", "blue", False), 99)
 
 
-class PrayerTest(unittest.TestCase):
+class PrayerTest(Case):
     def test_timing_and_failure(self):
         p = nh.Pilot(FakeTerm(), None)
         self.assertFalse(p.prayer_safe(100))
@@ -85,10 +85,7 @@ class PrayerTest(unittest.TestCase):
         self.assertTrue(p.lv[3].banned((2, 3), "push_l", 0))
 
 
-class SettingsTest(unittest.TestCase):
-    def tearDown(self):
-        nh.apply_settings("descend")
-
+class SettingsTest(Case):
     def test_modes_reset_everything(self):
         nh.apply_settings("careful")
         self.assertEqual(nh.settings.val("descend_hp"), 0.85)
@@ -110,7 +107,7 @@ class SettingsTest(unittest.TestCase):
         self.assertAlmostEqual(nh.confidence({"a": 0.4, "b": 0.2, "c": 0.2, "d": 0.2}), 0.2)
 
 
-class CharacterTest(unittest.TestCase):
+class CharacterTest(Case):
     def test_attributes_line(self):
         m = K.ATTRIBUTES.search("  You are a Rhizotomist, a level 1 male gnomish Healer.")
         self.assertEqual((m.group(2), m.group(3)), ("gnomish", "Healer"))
@@ -125,7 +122,7 @@ class CharacterTest(unittest.TestCase):
         self.assertEqual(p.lead(), 4)
 
 
-class StallTest(unittest.TestCase):
+class StallTest(Case):
     def test_two_square_oscillation_is_detected_and_banned(self):
         p = nh.Pilot(FakeTerm(), None)
         p.decisions, p.progress = 40, 20

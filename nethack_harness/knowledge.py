@@ -218,3 +218,20 @@ def keep_away(name, race=None, role=None):
         if re.search(rx, name or "") and race not in immune and role not in immune:
             return True
     return False
+
+# What an inventory line's suffix says about the item (NetHack 3.6 and 3.7 wordings).
+ITEM_STATE = {
+    "wielded": r"\((?:weapon|weapons) in (?:hand|hands|right hand|left hand)\b[^)]*\)|\(wielded[^)]*\)",
+    "worn": r"\(being worn\)|\(on (?:left|right) (?:hand|foreclaw|paw|pectoral fin)\)|\(in use\)",
+    "quivered": r"\((?:at the ready|in quiver|in quiver pouch|quivered)\)",
+    "alternate": r"\(alternate weapon; not wielded\)",
+}
+
+
+def item_state(text):
+    """The set of states (wielded, worn, quivered, alternate) an inventory line shows."""
+    return {k for k, rx in ITEM_STATE.items() if re.search(rx, text)}
+
+
+# Monsters that explode or burst when killed: attack them only from a distance of at least 2.
+EXPLODERS = re.compile(r"gas spore|flaming sphere|freezing sphere|shocking sphere|yellow light|black light")

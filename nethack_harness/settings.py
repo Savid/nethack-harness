@@ -49,6 +49,7 @@ DEFAULTS = {
     "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
     "quiet": 0.06,          # seconds of terminal silence that end a key send
     "last_prayer": -1,      # set to the turn of a prayer made by hand
+    "auto": 0,              # 1: log escalations and play on without pausing (benchmarks only)
 }
 RISK = {
     "low": {"descend_hp": 0.85, "rest_hp": 0.85, "hp_escalate": 0.5, "elbereth_hp": 0.5, "lead": -1},
@@ -106,7 +107,14 @@ def finite(x):
     return x
 
 
-ALIASES = {"xl_lead": "lead"}     # older names keep working
+# Allowed values, by key: discrete choices, on/off flags, fractions and signed numbers. Everything else numeric
+# must be zero or more.
+CHOICES = {"mines": ("auto", "allow", "avoid", "escalate"), "milestone": ("off", "depth", "xl", "both"),
+           "fight_handoff": ("ladder", "escalate"), "mapping": (0, 1, 2)}
+FLAGS = ("dig", "potions", "spells", "elbereth", "trapdoors", "probe", "briefing", "branch_points", "pickup_food",
+         "ranged", "auto")
+FRACTIONS = ("descend_hp", "rest_hp", "hp_escalate", "elbereth_hp", "danger_max", "p_min", "hp_drop", "milestone_hp")
+SIGNED = ("lead", "fragile_lead", "last_prayer")
 
 
 MODE_KEYS = sorted({k for m in MODES.values() for k in m})
@@ -128,24 +136,23 @@ def apply_settings(mode=None, sets=None):
 def validate(sets):
     """Check every k=v before anything changes; returns the coerced values or raises ValueError."""
     pending = {}
+    choices = dict(CHOICES, risk=tuple(RISK), effort=tuple(EFFORT), **{k: (0, 1) for k in FLAGS})
     for k, v in (sets or {}).items():         # validate everything before changing anything
-        k = ALIASES.get(k, k)
+        if k == "mode":
+            raise ValueError("use --mode descend|explore|careful to change the mode")
         if k not in DEFAULTS:
             raise ValueError("unknown setting %s (known: %s)" % (k, ", ".join(sorted(DEFAULTS))))
-        if k == "risk" and v not in RISK:
-            raise ValueError("risk must be low, normal or high")
-        if k == "effort" and v not in EFFORT:
-            raise ValueError("effort must be off, low, medium or high")
-        if k == "mines" and v not in ("auto", "allow", "avoid", "escalate"):
-            raise ValueError("mines must be auto, allow, avoid or escalate")
-        if k == "milestone" and v not in ("off", "depth", "xl", "both"):
-            raise ValueError("milestone must be off, depth, xl or both")
-        if k == "fight_handoff" and v not in ("ladder", "escalate"):
-            raise ValueError("fight_handoff must be ladder or escalate")
         try:
             value = coerce(k, v)
         except (TypeError, ValueError):
             raise ValueError("bad value for %s: %r" % (k, v))
+        if k in choices and value not in choices[k]:
+            raise ValueError("%s must be one of %s" % (k, ", ".join(str(x) for x in choices[k])))
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and k not in choices:
+            if k in FRACTIONS and not 0 <= value <= 1:
+                raise ValueError("%s is a fraction between 0 and 1" % k)
+            if k not in SIGNED and k not in FRACTIONS and value < 0:
+                raise ValueError("%s must be zero or more" % k)
         if k == "avoid" and value:
             try:
                 re.compile(value)

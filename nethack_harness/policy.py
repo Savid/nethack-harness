@@ -18,6 +18,7 @@ RACE_MONSTER = {"dwarvish": "dwarf", "gnomish": "gnome", "elven": "elf", "orcish
 class Act:
     def __init__(self, key, desc, keys, kind, prior=0.0, target=None):
         self.key, self.desc, self.keys, self.kind, self.prior, self.target = key, desc, keys, kind, prior, target
+        self.door = None           # goto_door: the locked door this trip is for
 
     def __repr__(self):
         return "Act(%s %.1f)" % (self.key, self.prior)
@@ -30,7 +31,9 @@ class Hard(Exception):
 class Pilot:
     def __init__(self, term, decide):
         self.term, self.decide = term, decide
+        self.paused_total, self.paused_at = 0.0, None     # the play clock stops while the outer loop has it
         self.lv = {}
+        self.branch, self.branch_dl = "main", None          # which branch the current level is in (track_branch)
         self.species = {}                 # (dlvl, symbol, colour, bright) -> farlook name
         self.inv, self.inv_turn = {}, -1  # letter -> (text, section)
         self.role = self.race = self.align = None
@@ -47,7 +50,7 @@ class Pilot:
         self.visits, self.outcomes = collections.deque(maxlen=10), collections.deque(maxlen=10)
         self.move_ban_until = self.boost_until = self.frozen = self.engulf_sends = 0
         self.unknown_prompts, self.elbereth_at, self.blind_since = {}, None, None
-        self.last_model_esc, self.last_new_level = 0.0, time.time()
+        self.last_model_esc, self.last_new_level = -1e9, self.clock()
         self.plan = collections.deque()
         self.cache, self.reused = None, 0
         self.latencies, self.engulfed, self.esc_seen = collections.deque(maxlen=5), False, {}
@@ -69,7 +72,7 @@ class Pilot:
         self.last_down = None                              # (dlvl, pos) we last went down from
         self.branch_seen, self.waits, self.disagree = set(), 0, 0
         self.overrides = self.disagreements = 0
-        self.progress_time, self.inbox_lines = time.time(), []
+        self.progress_time, self.inbox_lines = self.clock(), []
         self.ladder = ""                  # last escape-ladder step taken on this level
         self.rng = random.Random(0)
         self.log = None
@@ -78,17 +81,17 @@ class Pilot:
     # ------------------------------------------------------------ plumbing
     def level(self, dl, branch=None):
         """Levels are remembered per branch: Mines level 5 and Dlvl 5 of the main dungeon are different maps."""
-        branch = branch or getattr(self, "branch", "main")
+        branch = branch or self.branch
         k = dl if branch == "main" else (branch, dl)
         if k not in self.lv:
             self.lv[k] = Level(dl)
             self.lv[k].mines = branch == "mines"
-            self.lv[k].arrived = time.time()
+            self.lv[k].arrived = self.clock()
         return self.lv[k]
 
     def resolved(self, dl):
         """True once the branch of the level we are on is known (see track_branch)."""
-        return getattr(self, "branch_dl", None) in (None, dl)
+        return self.branch_dl in (None, dl)
 
     def milestone(self, c):
         """milestone=depth|xl|both: pause once at each new deepest level and/or new XL, when healthy (HP at or
@@ -153,6 +156,21 @@ class Pilot:
                 self.log.flush()
             except (OSError, ValueError):
                 pass              # a full disk must not stop play
+
+    def clock(self):
+        """Seconds of play: wall time minus the time spent paused, so a long think by the outer loop never looks
+        like a stall, lifts a depth cap or spends an escalation budget."""
+        now = time.time()
+        return now - self.paused_total - ((now - self.paused_at) if self.paused_at is not None else 0.0)
+
+    def stop_clock(self):
+        if self.paused_at is None:
+            self.paused_at = time.time()
+
+    def start_clock(self):
+        if self.paused_at is not None:
+            self.paused_total += time.time() - self.paused_at
+            self.paused_at = None
 
     def send(self, keys):
         self.term.send(keys)
@@ -432,12 +450,16 @@ class Pilot:
                 "ranged": [t for _, t in self.items(r"dagger|dart|arrow|\bya\b|yumi|bow|shuriken|spear|knife|boomerang|sling")],
                 "spellbooks": [t for _, t in self.items(section="Spellbooks")]}
 
+    @staticmethod
+    def min_range(h):
+        """Closest distance at which to kill this monster: exploders must die at least 2 squares away."""
+        return 2 if K.EXPLODERS.search(h["name"]) else 1
+
     def spare_missile(self):
         """(letter, name) of something safe to throw: missiles and rocks first, then plain fruit."""
         for rx in (K.SPARE_MISSILES, K.SPARE_FOOD):
             for k, t in self.items(rx):
-                if not re.search(r"weapon in hand|being worn|alternate weapon|at the ready|in quiver|quivered|"
-                                 r"\bcursed|loadstone", t):
+                if not K.item_state(t) and not re.search(r"\bcursed|loadstone", t):
                     return k, t
         return None
 
@@ -566,7 +588,7 @@ class Pilot:
     def descend_ok(self, c):
         lv = c["lv"]
         cap = self.depth_cap(c["xl"], c["hpmax"], c.get("ac", 10))
-        lift = time.time() - (lv.arrived or time.time()) > CFG["cap_lift"] and \
+        lift = self.clock() - (lv.arrived or self.clock()) > CFG["cap_lift"] and \
             (c["xl"] >= 3 or not self.fragile(c["hpmax"], c.get("ac", 10)))
         return (c["dl"] < cap or lift) and c["hpf"] >= val("descend_hp")
 
@@ -610,7 +632,7 @@ class Pilot:
                 what = {"#": "corridor", "<": "the up stairs", ">": "the down stairs", "^": "a TRAP"}.get(ch, "floor")
                 acts.append(Act("move_" + k, "Step %s onto %s (%s the %s)" % (K.DN[k], what, rel, t["name"]), k,
                                 "move", 0.5 if rel == "away from" and hurt and t["dist"] == 1 else -1, q))
-        quiver = self.items(r"\(at the ready\)|\(in quiver\)|\(quivered\)")
+        quiver = [(k, t) for k, t in self.items() if "quivered" in K.item_state(t)]
         if quiver and CFG["ranged"] and not adjacent:
             for h in hs:
                 dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
@@ -622,7 +644,7 @@ class Pilot:
         if quiver and not adjacent and not fr:
             for h in c["obst"]:
                 dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
-                if h["dist"] <= 6 and (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
+                if self.min_range(h) <= h["dist"] <= 6 and (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
                     k = next(k for k, d in K.DIRS.items() if d == ((dr > 0) - (dr < 0), (dc > 0) - (dc < 0)))
                     acts.append(Act("fire_" + k, "Fire %s at the %s %s (it must not be meleed)" % (
                         quiver[0][1], h["name"], K.DN[k]), "f" + k, "fire", 3.2, h["pos"]))
@@ -631,7 +653,7 @@ class Pilot:
         if spare and not adjacent and not fr:
             for h in c["obst"]:          # a passive blocker on the way: throw something at it, never melee it
                 dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
-                if h["dist"] <= 4 and (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
+                if self.min_range(h) <= h["dist"] <= 4 and (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
                     k = next(k for k, d in K.DIRS.items() if d == ((dr > 0) - (dr < 0), (dc > 0) - (dc < 0)))
                     acts.append(Act("throw_" + k, "Throw %s at the %s %s (it must not be meleed)" % (
                         spare[1], h["name"], K.DN[k]), "t" + spare[0] + k, "throw", 3.0, h["pos"]))
@@ -679,6 +701,8 @@ class Pilot:
             pr += 2 if self.decisions < self.boost_until else 0
             acts.append(Act("explore", "Explore toward the nearest unexplored area, %d squares %s" % (
                 d, compass(hero, p)), keys, "explore", pr, p))
+        if CFG["mapping"] == 2 and "mapping" not in lv.probed and not th and self.items(K.MAPPING.pattern):
+            acts.append(Act("read_mapping", "Read a scroll of magic mapping on arrival (mapping=2)", "r", "read", 6.0))
         calm_level = not hs and not c["hit"]
         if calm_level and not fr and not usable:
             acts += self.ladder_actions(v, c)
@@ -713,7 +737,7 @@ class Pilot:
         if adjacent or c["hit"]:   # never start a counted search, rest or wait with a hostile next to you
             acts = [a for a in acts if a.kind not in ("search", "rest", "wait") or a.key == "rest_s" and c["on_elbereth"]]
         acts = [a for a in acts if not lv.banned(hero, a.key, self.decisions)]
-        if getattr(lv, "stair_ban_until", 0) > self.decisions:
+        if lv.stair_ban_until > self.decisions:
             acts = [a for a in acts if a.key not in ("descend", "goto_stairs", "leave_mines", "flee_up")]
         if self.directive and self.decisions < self.calm_until:
             pass
@@ -825,7 +849,7 @@ class Pilot:
         if CFG["mapping"] and "mapping" not in lv.probed and self.items(K.MAPPING.pattern) and \
                 (lv.search_turns >= CFG["search_budget"] // 2 or lv.dlvl <= 2 or lv.mines):
             acts.append(Act("read_mapping", "Read a scroll of magic mapping to reveal the level", "r", "read", 3.8))
-        extra = getattr(lv, "extra_budget", 0)          # granted each time the level is reported exhausted
+        extra = lv.extra_budget          # granted each time the level is reported exhausted
         budget_left = lv.search_turns < CFG["search_budget"] + extra and lv.search_actions < 25 + extra // 6
         spots = lv.spots(v, dist) if budget_left else []
         if spots:
@@ -1030,7 +1054,7 @@ class Pilot:
             lv.probed.add("mapping")
         if a.kind == "throw":
             self.inv_turn = -2           # the pack changed: re-read it
-        if a.key == "goto_door" and getattr(a, "door", None):
+        if a.key == "goto_door" and a.door:
             if not self.door_plan or self.door_plan[1] != a.door:
                 self.door_plan = (c["dl"], a.door, a.target, self.decisions + 30)
         if a.kind == "pray":
@@ -1453,7 +1477,7 @@ class Pilot:
                     if dl - self.prev_dl >= 2 or dl > c["xl"] + 3:
                         branch_reason = "depth jump: Dlvl %d -> %d at XL %d" % (self.prev_dl, dl, c["xl"])
             if dl > self.max_dl:
-                self.last_new_level = time.time()
+                self.last_new_level = self.clock()
             self.prev_dl, self.ladder = dl, ""
         if c["under"] == "?" and c["turn"] <= 1:
             lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # the game starts on the up stairs
@@ -1489,7 +1513,7 @@ class Pilot:
         mark = (self.max_dl, sum(len(x.near) for x in self.lv.values()))   # level toggles are not progress
         if mark != self.mark:
             self.mark, self.progress, self.progress_turn = mark, self.decisions, c["turn"]
-            self.progress_time = time.time()
+            self.progress_time = self.clock()
         acts = self.actions(v, c)
         near = [h for h in c["hostiles"] if h["dist"] <= 3]
         reason = None
@@ -1549,8 +1573,8 @@ class Pilot:
             reason = "Hungry with no food in the pack and prayer not safe yet: plan food (corpses, shops, prayer at T%s)" % (
                 (self.last_prayer or 0) + 900)
         elif self.decisions - self.progress > CFG["stall"] or c["turn"] - self.progress_turn > CFG["stall_turns"] \
-                or time.time() - self.progress_time > CFG["stall_secs"]:
-            self.progress, self.progress_turn, self.progress_time = self.decisions, c["turn"], time.time()
+                or self.clock() - self.progress_time > CFG["stall_secs"]:
+            self.progress, self.progress_turn, self.progress_time = self.decisions, c["turn"], self.clock()
             reason = "stalled: no new squares or depth (ladder tried: %s%s)" % (
                 ", ".join(sorted(lv.probed)) or "-",
                 "; blocked by " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"])) for h in c["obst"][:3])
@@ -1599,7 +1623,7 @@ class Pilot:
                 self.esc_seen[kind] = (c["turn"], dl, c["hero"])
                 self.esc_counts[(kind, dl)] = repeats + 1
                 if kind == "level exhausted":
-                    lv.extra_budget = getattr(lv, "extra_budget", 0) + CFG["search_budget"]   # then search on
+                    lv.extra_budget += CFG["search_budget"]   # then search on
         if reason and self.esc(reason, hp=c["hp"], hpmax=c["hpmax"]):
             return reason
         reason = None
@@ -1687,14 +1711,14 @@ class Pilot:
                     if pick is not top:
                         self.overrides += 1
                     chosen = pick
-                budget_ok = time.time() - self.last_model_esc >= CFG["esc_gap"] and self.decisions >= self.calm_until
+                budget_ok = self.clock() - self.last_model_esc >= CFG["esc_gap"] and self.decisions >= self.calm_until
                 if budget_ok and danger > CFG["danger_max"] and (pick is not top or hpf < 0.5):
                     reason = "danger %.2f (rules want %s, model wants %s %.2f)" % (danger, top.key, pick.key,
                                                                                   ranked[0][1])
                 elif budget_ok and danger > 0.5 and hpf < 0.5 and conf < CFG["p_min"]:
                     reason = "uncertain in a risky spot: %s" % ", ".join("%s %.2f" % kv for kv in ranked[:3])
                 if reason:
-                    self.last_model_esc = time.time()
+                    self.last_model_esc = self.clock()
         if not reason:
             try:
                 reason, keys = self.hooks.judge(facts, ans)

@@ -12,6 +12,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import nethack_harness as nh  # noqa: E402,F401
 
 
+class Case(unittest.TestCase):
+    """Every test starts and ends with the default settings: CFG is process-global."""
+
+    def setUp(self):
+        reset_settings()
+
+    def tearDown(self):
+        reset_settings()
+
+
+def reset_settings():
+    nh.CFG.clear()
+    nh.CFG.update(nh.settings.DEFAULTS)
+
+
 def screen(top="", rows=None, status1="Hero the Stripling   St:16 Dx:12 Co:14 In:9 Wi:10 Ch:8 Lawful",
            status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:400"):
     lines = [top] + (rows or []) + [""] * 24

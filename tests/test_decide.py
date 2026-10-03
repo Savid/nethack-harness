@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from helpers import Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
+from helpers import Case, Endpoint, FakeGame, facts, nh, screen, view  # noqa: F401
 
 
-class DecideTest(unittest.TestCase):
+class DecideTest(Case):
     def test_request_shape_and_normalised_answers(self):
         ep = Endpoint(lambda body: {"act": {"type": "choice", "choice": "b", "probabilities": {"a": 0.2, "b": 0.8}},
                                     "danger": {"type": "noul", "noul": "0.1"}})

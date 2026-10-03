@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 
-from helpers import FakeGame
+from helpers import Case, FakeGame
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SCREEN = (b"\x1b[H\x1b[2J" + b"\x1b[3;20H------" + b"\x1b[4;20H|.@..|" + b"\x1b[5;20H------" +
@@ -28,8 +28,9 @@ def cli(state, *args, timeout=40):
                           capture_output=True, text=True, timeout=timeout)
 
 
-class DaemonTest(unittest.TestCase):
+class DaemonTest(Case):
     def setUp(self):
+        super().setUp()
         self.game = StaticGame()
         self.state = tempfile.mkdtemp()
 
@@ -37,6 +38,7 @@ class DaemonTest(unittest.TestCase):
         cli(self.state, "stop")
         time.sleep(0.5)
         self.game.close()
+        super().tearDown()
 
     def status(self):
         return json.loads(cli(self.state, "status").stdout)

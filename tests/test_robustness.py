@@ -8,16 +8,13 @@ import tempfile
 import time
 import unittest
 
-from helpers import facts, nh, screen, view
+from helpers import Case, facts, nh, screen, view
 from test_policy import FakeTerm
 
 K = nh.knowledge
 
 
-class SettingsRobustnessTest(unittest.TestCase):
-    def tearDown(self):
-        nh.CFG.update(nh.settings.DEFAULTS)
-
+class SettingsRobustnessTest(Case):
     def test_mode_keeps_settings_it_does_not_own(self):
         nh.apply_settings(None, {"mines": "allow", "avoid": "soldier ant"})
         nh.apply_settings("careful")
@@ -38,7 +35,7 @@ class SettingsRobustnessTest(unittest.TestCase):
         self.assertEqual((nh.CFG["potions"], nh.CFG["elbereth"], nh.CFG["probe"]), (0, 0, 1))
 
 
-class LevelMemoryTest(unittest.TestCase):
+class LevelMemoryTest(Case):
     def test_branch_mark_survives_observation(self):
         lv = nh.Level(4)
         lv.downs[(5, 6)] = "branch"
@@ -72,7 +69,7 @@ class LevelMemoryTest(unittest.TestCase):
         self.assertEqual(p.mines_entry, 4)
 
 
-class EngulfTest(unittest.TestCase):
+class EngulfTest(Case):
     def test_engulf_is_remembered_from_messages(self):
         p = nh.Pilot(FakeTerm(), None)
         v = p.term.view()
@@ -82,7 +79,7 @@ class EngulfTest(unittest.TestCase):
         self.assertFalse(p.engulfed)
 
 
-class PromptTest(unittest.TestCase):
+class PromptTest(Case):
     def test_unknown_text_prompt_is_not_a_map(self):
         v = view(screen("To what level do you want to teleport?", [" ---- ", " |.@.| ", " ---- "]), (0, 39))
         self.assertTrue(v.asking)
@@ -106,7 +103,7 @@ class PromptTest(unittest.TestCase):
         self.assertEqual(t.sent, [])
 
 
-class DoorTest(unittest.TestCase):
+class DoorTest(Case):
     def test_shop_doors_are_never_kicked(self):
         p = nh.Pilot(FakeTerm(), None)
         v = p.term.view()
@@ -120,7 +117,7 @@ class DoorTest(unittest.TestCase):
         self.assertFalse(p.kickable((10, 40), c))
 
 
-class HookRobustnessTest(unittest.TestCase):
+class HookRobustnessTest(Case):
     def plugin(self, body):
         fd, path = tempfile.mkstemp(suffix=".py")
         with os.fdopen(fd, "w") as f:
@@ -168,7 +165,7 @@ class HookRobustnessTest(unittest.TestCase):
             nh.hooks.LOG_CAP = old
 
 
-class ControlRobustnessTest(unittest.TestCase):
+class ControlRobustnessTest(Case):
     def run_cli(self, *argv):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
@@ -215,10 +212,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class LiveFindingsTest(unittest.TestCase):
-    def tearDown(self):
-        nh.CFG.update(nh.settings.DEFAULTS)
-
+class LiveFindingsTest(Case):
     def test_fragile_heroes_get_a_shallow_depth_cap(self):
         p = nh.Pilot(FakeTerm(), None)
         p.role = "Valkyrie"
@@ -263,7 +257,7 @@ class LiveFindingsTest(unittest.TestCase):
             self.assertFalse(K.NOT_A_MONSTER.search(name), name)
 
 
-class LycanthropyTest(unittest.TestCase):
+class LycanthropyTest(Case):
     def test_feverish_prays_when_safe(self):
         p = nh.Pilot(FakeTerm(), None)
         p.last_prayer = None
@@ -274,12 +268,12 @@ class LycanthropyTest(unittest.TestCase):
         self.assertTrue(p2.message("You feel feverish.", p2.term.view()))
 
 
-class SettleTest(unittest.TestCase):
+class SettleTest(Case):
     """A multi-turn command redraws the status line on the way; send() must not return at the first redraw."""
 
     class Scripted(nh.Term):
         def __init__(self, chunks):
-            self.vt, self.cursor, self.sends, self.send_time = nh.term.VT(), 0, 0, 0.0
+            self.vt, self.cursor, self.sends, self.send_time, self.seen = nh.term.VT(), 0, 0, 0.0, ""
             self.chunks, self.t0 = chunks, None     # (seconds after the keys, bytes)
 
         def poll(self, data=b"", hold_wait=2.0):
@@ -314,11 +308,8 @@ class SettleTest(unittest.TestCase):
             self.assertFalse(nh.transport.MULTI_TURN.match(keys), keys)
 
 
-class CrisisTest(unittest.TestCase):
+class CrisisTest(Case):
     """The loop keeps a losing fight: ladder first, hand-over only when it fails."""
-
-    def tearDown(self):
-        nh.CFG.update(nh.settings.DEFAULTS)
 
     def pilot(self, rows, cursor):
         p = nh.Pilot(FakeTerm(screen("", rows), cursor), None)
@@ -393,10 +384,7 @@ def cheb_(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
-class MilestoneTest(unittest.TestCase):
-    def tearDown(self):
-        nh.CFG.update(nh.settings.DEFAULTS)
-
+class MilestoneTest(Case):
     def c(self, p, dl, xl, hpf=1.0, hostiles=()):
         return {"dl": dl, "xl": xl, "hp": int(20 * hpf), "hpmax": 20, "hpf": hpf, "turn": 100 * dl,
                 "hostiles": list(hostiles), "lv": p.level(dl)}
@@ -421,3 +409,37 @@ class MilestoneTest(unittest.TestCase):
         with self.assertRaises(nh.policy.Hard):
             p.milestone(self.c(p, 2, 2))
         self.assertRaises(ValueError, nh.apply_settings, None, {"milestone": "sometimes"})
+
+
+class CodeReviewTest(Case):
+    def test_help_lists_every_setting_once(self):
+        import re as re_
+        names = re_.findall(r"^  (\w+)", nh.control.help_text("settings"), re_.M)
+        self.assertEqual(sorted(names), sorted(nh.settings.DEFAULTS))
+
+    def test_values_are_validated(self):
+        for bad in ({"mode": "banana"}, {"mapping": "3"}, {"danger_max": "1.5"}, {"stall": "-1"}, {"dig": "2"},
+                    {"xl_lead": "2"}):
+            with self.assertRaises(ValueError, msg=bad):
+                nh.apply_settings(None, bad)
+        nh.apply_settings(None, {"mapping": "2", "lead": "-1"})
+        self.assertEqual((nh.CFG["mapping"], nh.CFG["lead"]), (2, -1))
+
+    def test_play_clock_stops_while_paused(self):
+        p = nh.Pilot(FakeTerm(), None)
+        t0 = p.clock()
+        p.stop_clock()
+        time.sleep(0.3)
+        self.assertLess(p.clock() - t0, 0.1)
+        p.start_clock()
+        time.sleep(0.1)
+        self.assertGreaterEqual(p.clock() - t0, 0.09)
+        self.assertLess(p.clock() - t0, 0.25)
+
+    def test_wielded_weapons_are_never_thrown(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.inv = {"a": ("a +1 dwarvish spear (weapon in right hand)", "Weapons"),
+                 "b": ("a +0 dagger (alternate weapon; not wielded)", "Weapons"),
+                 "c": ("2 apples", "Comestibles")}
+        self.assertEqual(p.spare_missile()[0], "c")
+        self.assertEqual(nh.Pilot.min_range({"name": "gas spore"}), 2)

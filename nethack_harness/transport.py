@@ -65,6 +65,7 @@ class Term:
     def __init__(self, where):
         self.link = Link(where)
         self.vt = VT()
+        self.seen = ""                 # recent decoded output (prayers typed by hand are spotted in it)
         self.cursor = 0
         self.sends = 0
         self.send_time = 0.0
@@ -84,7 +85,7 @@ class Term:
                 self.vt.feed(out)
                 self.cursor = d["cursor"]
                 if out:
-                    self.seen = (getattr(self, "seen", "") + out.decode("utf-8", "replace"))[-65536:]
+                    self.seen = (self.seen + out.decode("utf-8", "replace"))[-65536:]
                 return bool(out)
             text = raw.decode(errors="replace").strip()
             if status == 410 and "waiting" in text:
@@ -145,6 +146,12 @@ class Term:
         data = keys.encode() if isinstance(keys, str) else keys
         self.poll(data)
         self.settle(before, multi=bool(MULTI_TURN.match(data)))
+        if COUNTED.match(data) and self.ready() and 1 <= self.vt.y <= 21 and \
+                not any("--More--" in r for r in self.vt.lines()):
+            # The game can leave T: stale after a counted command (notably one that follows travel or a run),
+            # even though the turn counter itself moved on. A redraw (^R) takes no game time and fixes the screen.
+            self.poll(b"\x12")
+            self.settle()
         self.send_time += time.monotonic() - started
 
     def view(self):
@@ -157,6 +164,7 @@ class Term:
 # the cursor on the hero, which is why settle gives them no shortcut. (runmode:teleport would avoid the steps,
 # but then the game leaves T: stale after a counted command, so the harness keeps the default.)
 MULTI_TURN = re.compile(rb"^(?:n?\d+|_|G|[HJKLYUBN]|m[0-9])")
+COUNTED = re.compile(rb"^(?:n|m)?\d+")
 
 
 def serve_local(args):
