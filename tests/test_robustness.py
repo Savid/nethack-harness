@@ -261,3 +261,14 @@ class LiveFindingsTest(unittest.TestCase):
             self.assertTrue(K.NOT_A_MONSTER.search(name), name)
         for name in ("floating eye", "water moccasin", "stone giant", "peaceful watchman"):
             self.assertFalse(K.NOT_A_MONSTER.search(name), name)
+
+
+class LycanthropyTest(unittest.TestCase):
+    def test_feverish_prays_when_safe(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.last_prayer = None
+        self.assertIsNone(p.message("The werejackal bites!  You feel feverish.", p.term.view()))
+        self.assertEqual(p.plan[0], "goal:pray")
+        p2 = nh.Pilot(FakeTerm(), None)
+        p2.last_prayer = 300           # prayed recently: not safe, so the outer loop hears about it
+        self.assertTrue(p2.message("You feel feverish.", p2.term.view()))

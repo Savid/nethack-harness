@@ -211,6 +211,10 @@ class Pilot:
                 return None
             raise Hard("stoning (%s) and prayer is not safe: act now (eat a lizard or acidic corpse, or pray anyway)"
                        % text[:80])
+        if "You feel feverish" in text and self.prayer_safe(v.st.get("turn", 0)) and "goal:pray" not in self.plan:
+            self.plan.appendleft("goal:pray")    # lycanthropy is major trouble: a safe prayer cures it
+            self.note("lycanthropy", "feverish: praying while the timeout is safe")
+            return None
         if K.ALARM.search(text):
             return self.esc("alarming message: " + text[:160])
         return None
