@@ -461,6 +461,8 @@ class PostmortemTest(Case):
         p.last_prayer = 300
         self.assertTrue(p.prayer_band(400).startswith("fails (last T300, 100 ago)"))
         self.assertTrue(p.prayer_band(700).startswith("uncertain (last T300, 400 ago"))
+        self.assertTrue(p.prayer_band(1000).startswith("likely in major trouble (last T300, 700 ago"))
+        self.assertIn("1/7", p.prayer_band(1300, trouble=False))
         self.assertEqual(p.prayer_band(1300), "safe")
         p.prayer_broken = True
         self.assertTrue(p.prayer_band(5000).startswith("broken"))
@@ -496,3 +498,21 @@ class PersonaTest(Case):
         self.assertIsNone(K.food_index("a +1 spear (weapon in right hand)"))
         self.assertIsNotNone(K.food_index("2 pears"))
         self.assertIsNotNone(K.food_index("an uncursed food ration"))
+
+
+class PersonaP1Test(Case):
+    def test_send_escapes_and_one_based_positions(self):
+        self.assertEqual(nh.control.unescape(r"#pray\r"), "#pray\r")
+        self.assertEqual(nh.control.unescape(r"\e\x04l"), "\x1b\x04l")
+        self.assertEqual(nh.level.pos1((5, 50)), "6,51")
+
+    def test_spells_are_learned_and_used_by_cost(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.read_pages = lambda keys: ["   a - force bolt             1   attack         0%      100%",
+                                     "   b - healing                1   healing        0%      100%"]
+        p.learn_spells()
+        v = p.term.view()                          # Pw 2 on the test status line
+        self.assertIsNone(p.spell("attack", v))
+        v.st["pw"] = 10
+        self.assertEqual(p.spell("attack", v), ("a", "force bolt"))
+        self.assertEqual(p.spell("heal", v), ("b", "healing"))

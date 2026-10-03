@@ -49,6 +49,7 @@ Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --
   log [N]                                 recent inner-loop events
   screen                                  the screen as the loop sees it        e.g. screen
   send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
+                                          KEYS take escapes: \\r Enter, \\e Escape, \\xHH   e.g. send '#pray\\r'
   postmortem                              the death (or last crisis) in one block, also saved at game over
                                           as postmortem.txt: killer, HP trail, ladder steps, escalations
   repeat KEYS --times N [--stop-hp F] [--stop-on REGEX] [--allow-hp-loss]
@@ -94,7 +95,7 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("cap_lift", "", "seconds on a level after which the depth lead stops blocking descent "
                              "(never before XL 3 for a fragile hero)"),
             ("potions", "", "1 = quaff known healing potions in emergencies"),
-            ("spells", "", "1 = cast healing in emergencies (Healer)"),
+            ("spells", "", "1 = cast known spells: healing when hurt, force bolt at dangerous foes and blockers"),
             ("elbereth", "", "1 = engrave Elbereth in emergencies"),
             ("trapdoors", "", "1 = use known trap doors and holes as free descents"),
             ("probe", "", "1 = ask the game where the stairs are when none are visible"),
@@ -239,14 +240,26 @@ def monsters_near(v, reach=7):
                if (r, col) != hero and v.rows[r][col] in MON and not v.pet(r, col))
 
 
+def dismiss_more(term, note):
+    """Dismiss --More-- prompts, recording their text; returns it."""
+    for _ in range(5):
+        w = term.view()
+        if not w.more:
+            break
+        note.append(w.msg.replace("--More--", "").strip()[:160])
+        term.send(b" ")
+    return note
+
+
 def guarded_repeat(term, p, keys, c):
-    """Send KEYS up to c["times"] times while paused; stop at the first sign of trouble. Returns the reply."""
+    """Send KEYS up to c["times"] times while paused; stop at the first sign of trouble. Returns the reply.
+    Ordinary --More-- prompts are dismissed and read; alarming ones stop the batch."""
     stop_on = re.compile(c["stop_on"]) if c.get("stop_on") else None
     term.poll()
+    seen = dismiss_more(term, [])
     v = term.view()
-    if v.more or v.prompt:
-        return "repeat: nothing sent: a --More-- or prompt is open (%s); answer it first\n%s\n" % (
-            v.msg[:120], v.text_screen())
+    if v.prompt:
+        return "repeat: nothing sent: a prompt is open (%s); answer it first\n%s\n" % (v.msg[:120], v.text_screen())
     done, why = 0, "done"
     for _ in range(c["times"]):
         before = term.view()
@@ -254,28 +267,46 @@ def guarded_repeat(term, p, keys, c):
         term.send(keys)
         p.note("manual", "repeat %r" % keys[:40])
         done += 1
+        msgs = [term.view().msg.replace("--More--", "").strip()]
+        alarm = next((m for m in msgs if K_ALARM.search(m)), None)
+        if not alarm:
+            msgs = dismiss_more(term, msgs)
+            alarm = next((m for m in msgs if K_ALARM.search(m)), None)
+        text = "  ".join(m for m in msgs if m)
+        seen += [m for m in msgs if m]
         v = term.view()
         hp, hpmax = v.st.get("hp"), max(1, v.st.get("hpmax") or 1)
+        falling = hp is not None and hp0 is not None and hp < hp0
         if v.dead:
             why = "the hero died"
+        elif alarm:
+            why = "alarming message: %s" % alarm[:120]
         elif v.more or v.prompt:
-            why = "--More-- or a prompt: %s" % v.msg[:120]
-        elif hp is not None and hp0 is not None and hp < hp0 and not c.get("allow_loss"):
+            why = "a prompt is open: %s" % v.msg[:120]
+        elif falling and not c.get("allow_loss"):
             why = "HP fell %d -> %d" % (hp0, hp)
-        elif hp is not None and hp / hpmax < c["stop_hp"]:
-            why = "HP %d/%d is below %.2f" % (hp, hpmax, c["stop_hp"])
+        elif falling and hp / hpmax < c["stop_hp"]:
+            why = "HP %d/%d is below %.2f and falling" % (hp, hpmax, c["stop_hp"])
         elif monsters_near(v) > mon0:
             why = "a new monster came into view"
         elif v.st.get("dlvl") != dl0:
             why = "the level changed"
-        elif stop_on and stop_on.search(v.msg):
-            why = "message matched: %s" % v.msg[:120]
-        elif K_ALARM.search(v.msg):
-            why = "alarming message: %s" % v.msg[:120]
+        elif re.search(r"You attack thin air|You kill|is killed|You destroy|There is nothing here", text):
+            why = "the target is gone (%s)" % text[:80]
+        elif stop_on and stop_on.search(text):
+            why = "message matched: %s" % text[:120]
         else:
             continue
         break
-    return "repeat: sent %d of %d (%s)\n%s\n" % (done, c["times"], why, term.view().text_screen())
+    return "repeat: sent %d of %d (%s)\nmessages: %s\n%s\n" % (
+        done, c["times"], why, " / ".join(seen[-6:]) or "-", term.view().text_screen())
+
+
+def unescape(keys):
+    """Backslash escapes in typed keys: \\r Enter, \\n, \\t, \\e Escape, \\\\ backslash, \\xHH a byte."""
+    table = {"r": "\r", "n": "\n", "t": "\t", "e": "\x1b", "\\": "\\"}
+    return re.sub(r"\\(x[0-9a-fA-F]{2}|[rnte\\])",
+                  lambda m: chr(int(m.group(1)[1:], 16)) if m.group(1)[0] == "x" else table[m.group(1)], keys)
 
 
 def save_pilot(store, p):
@@ -334,7 +365,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m2" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m3" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -450,6 +481,7 @@ def daemon(args):
         nonlocal paused, ended_at
         paused = reason
         p.stop_clock()
+        term.seen = ""                           # what follows is the outer loop's play (hand prayers, etc.)
         p.escs += 1
         notes = read_inbox()
         try:
@@ -511,7 +543,7 @@ def daemon(args):
                 p.note("hook_error", str(e))
             seen, term.seen = term.seen, ""
             turn = term.view().st.get("turn")
-            if "You begin praying" in seen and turn is not None and CFG["last_prayer"] < 0:
+            if "You begin praying" in seen and turn is not None:
                 p.last_prayer = turn          # a prayer made by hand while paused
                 p.note("prayer", "recorded a prayer made by hand at about T%d" % turn)
             if re.search(r"You feel that .+ is displeased|Thou hast angered me|You feel guilty", seen):
@@ -521,6 +553,8 @@ def daemon(args):
             p.progress, p.calm_until, p.progress_time = p.decisions, p.decisions + CFG["calm"], p.clock()
             p.move_ban_until = 0                 # a resume is a fresh start for moves
             p.visits.clear()
+            p.hp_hist.clear()                    # HP lost while the outer loop played is not news any more
+            p.hit_turn = -99
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None)
             term.sync()
@@ -980,7 +1014,7 @@ def main(argv=None):
                 print("%s wants keys or --hex" % a.cmd)
                 return 64
             try:
-                keys = a.keys.encode() if a.keys is not None else bytes.fromhex(a.hex)
+                keys = unescape(a.keys).encode("latin-1") if a.keys is not None else bytes.fromhex(a.hex)
             except ValueError:
                 print("%s --hex wants hex bytes, e.g. '04 6c'" % a.cmd)
                 return 64

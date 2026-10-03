@@ -30,7 +30,7 @@ DEFAULTS = {
     "pace_xl": 4,           # ...from this XL a sturdy hero may go one level deeper (XL + fragile_lead + 1)
     "cap_lift": 120,        # seconds on a level after which the depth lead no longer blocks descending
     "potions": 1,           # quaff known healing potions in emergencies
-    "spells": 1,            # cast healing in emergencies when the hero knows it
+    "spells": 1,            # cast known spells: healing when hurt, force bolt at dangerous foes and blockers
     "elbereth": 1,          # engrave Elbereth in emergencies
     "trapdoors": 1,         # use known trap doors and holes as free descents
     "probe": 1,             # ask the game where the stairs are (travel prompt) when none are visible

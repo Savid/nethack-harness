@@ -4,7 +4,7 @@ import re
 import time
 
 from . import knowledge as K
-from .level import compass
+from .level import compass, pos1
 from .settings import CFG, describe, effort, val
 
 RESUME_HINT = ("resume [--directive TEXT] [--mode descend|explore|careful] [--set k=v] [--plan ITEM] "
@@ -21,8 +21,12 @@ def capabilities(p):
                                        else " [off]"),
             "Elbereth" + ("" if CFG["elbereth"] else " [off]"),
             "dig down: --set dig=1" + (" [ON]" if CFG["dig"] else "") + ("" if kit["dig"] else " [no digging tool]")]
-    if p.role == "Healer":
-        caps.append("cast healing (Za.)" + ("" if CFG["spells"] else " [off]"))
+    for name, (letter, level, fail) in sorted(p.spells.items(), key=lambda kv: kv[1][0]):
+        use = K.SPELLS.get(name, (None, None))[1]
+        caps.append("spell %s (Z%s, %d%% fail)%s" % (name, letter, fail, "" if not use else
+                                                      " cast %s" % ("at foes in a line" if use == "attack"
+                                                                    else "on yourself when hurt") +
+                                                      ("" if CFG["spells"] else " [off]")))
     return caps
 
 
@@ -52,7 +56,8 @@ def suggestions(p):
         letter = p.items("|".join(K.DIG_TOOLS))[0][0]
         out.append("fight with the digging tool rather than %s: --plan 'keys:w%s'" % (wielded or "bare hands", letter))
     if kit["dig"] and not CFG["dig"]:
-        out.append("you carry a digging tool: --set dig=1 descends by digging (fast, skips levels' contents)")
+        out.append("you carry a digging tool: --set dig=1 descends by digging (fast, skips levels' contents; you "
+                   "land mid-level with no up stairs nearby, and the depth cap still applies)")
     if not kit["food"]:
         out.append("no food in the pack: prayer fixes Weak once every ~900 turns; fresh corpses are eaten")
     return out
@@ -87,7 +92,7 @@ def summary(p, reason):
     v = p.term.view()
     if reason == "briefing":
         return briefing(p) + "\n" + footer(p) + "\n--- screen ---\n" + v.text_screen()
-    st, lp = v.st, p.last_prayer
+    st, lp = (v.st if v.st.get("dlvl") is not None else p.last_st), p.last_prayer   # game over: last known
     out = ["ESCALATION: " + reason,
            "Dlvl %s HP %s/%s AC %s XL %s T %s %s | %s %s | last prayer %s%s | mode %s risk %s effort %s | orders: %s" % (
                st.get("dlvl"), st.get("hp"), st.get("hpmax"), st.get("ac"), st.get("xl"), st.get("turn"),
@@ -118,10 +123,11 @@ def summary(p, reason):
         ", ".join(t for _, t in food[:3]) or ("none in pack" if p.inv_complete else "unknown (check with send i)"),
         p.prayer_band(st.get("turn") or 0),
         p.disagreements, p.overrides,
-        ", ".join("%s%s" % (pos, "" if kind == "main" else " " + kind) for pos, kind in (lv.downs.items() if lv else []))
+        ", ".join("%s%s" % (pos1(pos), "" if kind == "main" else " " + kind)
+                  for pos, kind in (lv.downs.items() if lv else []))
         or "none"))
     if lv and lv.excluded:
-        out.append("unreachable targets: " + ", ".join(str(t) for t, until in lv.excluded.items()
+        out.append("unreachable targets: " + ", ".join(pos1(t) for t, until in lv.excluded.items()
                                                        if until > p.decisions))
     recent = []
     for h in list(p.hist)[-30:]:
@@ -135,7 +141,7 @@ def summary(p, reason):
     out.append("recent: " + " / ".join(t + (" x%d" % n if n > 1 else "") for t, n in recent[-10:]))
     out.append(footer(p))
     # Repeat the gist last, so a reader that keeps only the tail still has it.
-    return "\n".join(out + ["--- screen ---", v.text_screen(), "ESCALATION (again): %s | %s" % (reason, out[1])])
+    return "\n".join(out + ["--- screen ---", v.text_screen(), "REASON: %s | %s" % (reason, out[1])])
 
 
 def clip(text, n=300):
@@ -166,25 +172,28 @@ def status(p):
 
 
 KILLER = re.compile(r"killed by (?:an? |the )?([^,.!\n]+?)(?:,| while|\.|!|$)|"
-                    r"(?:You (?:die|drown|starve|are turned to stone|choke)[^\n]*)")
-ATTACK = re.compile(r"^(?:The |the )?(.+?) (?:hits|bites|stings|kicks|butts|touches|claws|stabs|thrusts|swings|"
-                    r"zaps|shoots|throws|breathes)\b")
+                    r"\b(starved to death|died of starvation|drowned|turned to stone|choked on [^.!\n]+|"
+                    r"burned to a crisp|died of [^.!\n]+)")
+ATTACK = re.compile(r"(?:^|[.!]\s+)(?:The |the )([a-z][\w' -]*?) (?:hits|bites|stings|kicks|butts|touches|claws|"
+                    r"stabs|thrusts|swings|zaps|shoots|throws|breathes|explodes)\b")
 
 
 def postmortem(p, reason=None):
     """The death, or the last crisis, in one block: what a lesson needs."""
     v = p.term.view() if p.term else None
-    st = v.st if v else {}
+    st = (v.st if v and v.st.get("dlvl") is not None else p.last_st) if p.term else p.last_st
     screen = v.text_screen() if v else ""
     msgs = list(p.msg_log)
     killer = None
     for text in [screen] + [m for _, m in reversed(msgs)]:
         m = KILLER.search(text)
-        if m and m.group(1):
-            killer = m.group(1).strip()
+        if m and (m.group(1) or m.group(2)):
+            killer = (m.group(1) or m.group(2)).strip()
             break
+    if not killer and any(re.search(r"faint from lack of food|You die from starvation|starv", t) for _, t in msgs[-5:]):
+        killer = "starvation"
     if not killer:
-        killer = next((m.group(1) for _, t in reversed(msgs) for m in [ATTACK.search(t)] if m), "unknown")
+        killer = next((found[-1] for _, t in reversed(msgs) for found in [ATTACK.findall(t)] if found), "unknown")
     dead = bool(v and v.dead) or reason == "game_over"
     out = ["POSTMORTEM: %s at T%s on Dlvl %s, XL %s; %s %s; killer (best guess): %s" % (
         "died" if dead else "alive", st.get("turn", p.turn), st.get("dlvl"), st.get("xl"), p.race or "?",

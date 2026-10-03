@@ -8,7 +8,7 @@ import time
 from . import knowledge as K
 from .decide import Unhealthy, builtin_questions, confidence, normalize
 from .hooks import HOOK_API, HookError, Hooks
-from .level import Level, cheb, compass, door, nbrs, on_map, passable, travel
+from .level import Level, cheb, compass, door, nbrs, on_map, passable, pos1, travel
 from .settings import CFG, effort, val
 
 GAME_OVER = "game_over"
@@ -46,6 +46,9 @@ class Pilot:
         self.hp_trail = collections.deque(maxlen=40)     # (turn, hp, hpmax), for the postmortem
         self.last_crisis = None                          # the most recent crisis ladder, kept after it ends
         self.inv_complete = False                        # a whole inventory menu has been read at least once
+        self.spells = {}                                 # name -> (letter, level, failure %), from the + menu
+        self.hunger_noted = None
+        self.last_st = {}                                # the last status line read on a normal screen
         self.keys = self.decisions = self.calls = self.escs = 0
         self.mtime, self.t0, self.mark, self.progress, self.progress_turn = 0.0, time.time(), None, 0, 0
         self.directive, self.max_dl, self.prev_dl, self.mines_noted = "", 0, None, False
@@ -148,6 +151,8 @@ class Pilot:
 
     def view(self):
         v = self.term.view()
+        if v.st.get("dlvl") is not None and v.st.get("hp") is not None:
+            self.last_st = dict(v.st)
         if v.normal and not v.engulfed and self.resolved(v.st.get("dlvl", 0)):
             self.level(v.st.get("dlvl", 0)).observe(v)
         return v
@@ -186,19 +191,28 @@ class Pilot:
         self.note("escalate", reason, turn=self.turn, **kw)
         return None if CFG.get("auto") else reason   # auto: benchmarks log escalations and play on
 
-    def prayer_band(self, turn):
-        """Prayer as three bands: safe (the loop's rule), uncertain (the timeout is random after a prayer), fails."""
+    def prayer_band(self, turn, trouble=None):
+        """Prayer in bands. After a prayer the timeout is random (median about 350) and a prayer in major trouble
+        works once it is under 200, so: fails (<200 turns since), uncertain (200-499), likely in major trouble
+        (500-899), safe (the loop's own rule, 900+). Prayer only fixes major trouble: HP below 1/7 of max or 5
+        or less, Weak from hunger, and the like."""
         if self.prayer_broken:
             return "broken (a prayer failed; never pray again)"
         if self.prayer_safe(turn):
-            return "safe"
-        if self.last_prayer is None:
-            return "not yet (too early in the game; safe from about T110)"
-        ago = turn - self.last_prayer
-        if ago < 200:
-            return "fails (last T%d, %d ago)" % (self.last_prayer, ago)
-        return "uncertain (last T%d, %d ago; the timeout is random after a prayer, safe from about T%d)" % (
-            self.last_prayer, ago, self.last_prayer + 900)
+            band = "safe"
+        elif self.last_prayer is None:
+            band = "not yet (too early in the game; safe from about T110)"
+        else:
+            ago = turn - self.last_prayer
+            band = ("fails (last T%d, %d ago)" if ago < 200 else
+                    "uncertain (last T%d, %d ago; the timeout is random after a prayer)" if ago < 500 else
+                    "likely in major trouble (last T%d, %d ago; certain from about T%d)" % (
+                        self.last_prayer, ago, self.last_prayer + 900) if ago < 900 else "safe")
+            if "%d" in band:
+                band = band % (self.last_prayer, ago)
+        if trouble is False and not band.startswith(("fails", "broken")):
+            band += "; but it fixes HP only below 1/7 of max or at 5 or less"
+        return band
 
     def prayer_safe(self, turn):
         if self.prayer_broken:
@@ -417,6 +431,24 @@ class Pilot:
                 self.mines_entry = last_level
         self.overviewed.add(dl)
         return here
+
+    def learn_spells(self):
+        """The + menu: letter, level and failure rate of every known spell."""
+        self.spells = {}
+        for line in self.read_pages("+"):
+            m = K.SPELL_LINE.search(line)
+            if m:
+                self.spells[m.group(2).strip()] = (m.group(1), int(m.group(3)), int(m.group(4)))
+
+    def spell(self, use, v):
+        """(letter, name) of a known spell for this use that Pw allows and rarely fails, or None."""
+        if not CFG["spells"]:
+            return None
+        for name, (letter, _, fail) in self.spells.items():
+            cost, kind = K.SPELLS.get(name, (None, None))
+            if kind == use and fail <= 30 and v.st.get("pw", 0) >= cost:
+                return letter, name
+        return None
 
     def learn_character(self):
         for line in self.read_pages("\x18"):
@@ -697,6 +729,17 @@ class Pilot:
                     acts.append(Act("fire_" + k, "Fire %s at the %s %s (it must not be meleed)" % (
                         quiver[0][1], h["name"], K.DN[k]), "f" + k, "fire", 3.2, h["pos"]))
                     break
+        bolt = self.spell("attack", v)
+        if bolt:
+            for h in hs + c["obst"]:     # force bolt: a dangerous foe, or a blocker that must not be meleed
+                dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
+                straight = dr == 0 or dc == 0 or abs(dr) == abs(dc)
+                worth = h in c["obst"] or c["xl"] < h["threat"] or hurt or h["dist"] == 1
+                if straight and self.min_range(h) <= h["dist"] <= 6 and worth and not h.get("peaceful"):
+                    k = next(k for k, d in K.DIRS.items() if d == ((dr > 0) - (dr < 0), (dc > 0) - (dc < 0)))
+                    acts.append(Act("zap_" + k, "Cast %s at the %s %s" % (bolt[1], h["name"], K.DN[k]),
+                                    "Z%s%s" % (bolt[0], k), "zap", 4.6 if h not in c["obst"] else 3.3, h["pos"]))
+                    break
         spare = self.spare_missile() if not quiver else None
         if spare and not adjacent and not fr:
             for h in c["obst"]:          # a passive blocker on the way: throw something at it, never melee it
@@ -909,7 +952,8 @@ class Pilot:
                 (lv.search_turns >= CFG["search_budget"] // 2 or lv.dlvl <= 2 or lv.mines):
             acts.append(Act("read_mapping", "Read a scroll of magic mapping to reveal the level", "r", "read", 3.8))
         extra = lv.extra_budget          # granted each time the level is reported exhausted
-        budget_left = lv.search_turns < CFG["search_budget"] + extra and lv.search_actions < 25 + extra // 6
+        budget_left = lv.search_turns < CFG["search_budget"] + extra and \
+            lv.search_actions < (CFG["search_budget"] + extra) // 6     # searches are 15 turns; slack for cut-offs
         spots = lv.spots(v, dist) if budget_left else []
         if spots:
             here = next((s for s, p in spots if p == hero), None)
@@ -959,8 +1003,10 @@ class Pilot:
         heal = self.items(K.HEALING.pattern)
         if low and CFG["potions"] and heal and (th or c["hit"] or hpf < 0.2):
             acts.append(Act("quaff", "Quaff the %s" % heal[0][1], "q" + heal[0][0], "quaff", 8.5))
-        if CFG["spells"] and self.role == "Healer" and hpf < 0.5 and v.st.get("pw", 0) >= 5:
-            acts.append(Act("cast_heal", "Cast healing on yourself", "Za.", "cast", 7 if th else 4))
+        heal_spell = self.spell("heal", v)
+        if heal_spell and hpf < 0.5:
+            acts.append(Act("cast_heal", "Cast %s on yourself" % heal_spell[1], "Z%s." % heal_spell[0], "cast",
+                            7 if th else 4))
         adjacent_threat = [h for h in th if h["dist"] == 1 and (hpf < val("elbereth_hp") or c["xl"] < h["threat"])]
         if CFG["elbereth"] and adjacent_threat and self.elbereth_useful(v, c, adjacent_threat):
             acts.append(Act("elbereth", "Engrave Elbereth in the dust to scare monsters away", "", "elbereth", 6.5))
@@ -1019,8 +1065,10 @@ class Pilot:
         heal = self.items(K.HEALING.pattern)
         if CFG["potions"] and heal and c["hpf"] < 0.5:
             ladder.append(Act("quaff", "Quaff the %s" % heal[0][1], "q" + heal[0][0], "quaff", 9.4))
-        if CFG["spells"] and self.role == "Healer" and c["hpf"] < 0.5 and v.st.get("pw", 0) >= 5:
-            ladder.append(Act("cast_heal", "Cast healing on yourself", "Za.", "cast", 9.3))
+        heal_spell = self.spell("heal", v)
+        if heal_spell and c["hpf"] < 0.5:
+            ladder.append(Act("cast_heal", "Cast %s on yourself" % heal_spell[1], "Z%s." % heal_spell[0], "cast",
+                              9.3))
         if c["under"] == "<" and c["dl"] > 1:
             ladder.append(Act("flee_up", "Escape up the stairs you stand on", "<", "flee", 9.2))
         elif c["under"] == ">" and self.descend_ok(dict(c, hpf=1.0)) and \
@@ -1037,7 +1085,7 @@ class Pilot:
         retreat = self.retreat_act(v, c)
         if retreat:
             ladder.append(retreat)
-        fight = [a for a in acts if a.kind in ("attack", "fire", "throw")]
+        fight = [a for a in acts if a.kind in ("attack", "fire", "throw", "zap")]
         tried = self.crisis["tried"] if self.crisis else []
         for a in ladder:         # a step tried twice in this crisis without ending it goes behind the others
             if a.key != "rest_s" and tried.count(a.key) >= 2:
@@ -1444,7 +1492,7 @@ class Pilot:
                     lv.ban(pos, key, self.decisions + 30)
                 self.trail.clear()
                 return "oscillating: %s at %s, %d times without progress (those actions are paused for 30 decisions)" % (
-                    " / ".join(sorted(keys)), " / ".join(str(p) for _, p in spots), len(t))
+                    " / ".join(sorted(keys)), " / ".join(pos1(p) for _, p in spots), len(t))
         return None
 
     # ------------------------------------------------------------ the step
@@ -1486,6 +1534,7 @@ class Pilot:
         if not self.briefed:
             self.briefed = True
             self.learn_character()
+            self.learn_spells()
             self.read_inventory()
             if CFG["briefing"]:
                 raise Hard("briefing")
@@ -1567,7 +1616,7 @@ class Pilot:
             self.branch_seen.add(("two_downs", dl))
             branch_reason = branch_reason or "branch point: two down staircases on Dlvl %d" % dl
         if branch_reason and CFG["branch_points"]:
-            raise Hard(branch_reason)
+            raise Hard(branch_reason + " (--set branch_points=0 skips these pauses)")
         self.hp_hist.append((c["turn"], c["hp"]))
         if not self.hp_trail or self.hp_trail[-1][:2] != (c["turn"], c["hp"]):
             self.hp_trail.append((c["turn"], c["hp"], c["hpmax"]))
@@ -1627,10 +1676,12 @@ class Pilot:
                 self.low_noted = (dl, c["hp"] // 3)
                 reason = "low HP %d/%d with %s and no safe prayer, potion or Elbereth (prayer: %s)%s" % (
                     c["hp"], c["hpmax"], (near[0]["name"] + " near") if near else "an unseen attacker",
-                    self.prayer_band(c["turn"]),
+                    self.prayer_band(c["turn"], c["trouble"]),
                     " (crisis ladder tried: %s)" % (", ".join(self.crisis["tried"]) or "nothing applied")
                     if self.crisis else "")
-        elif c["hungry"] in ("Weak", "Fainting") and not any(a.kind in ("eat", "eat_corpse", "pray") for a in acts):
+        elif c["hungry"] in ("Weak", "Fainting") and not any(a.kind in ("eat", "eat_corpse", "pray") for a in acts) \
+                and self.hunger_noted != (c["hungry"], c["turn"] // 100):
+            self.hunger_noted = (c["hungry"], c["turn"] // 100)    # again at Fainting, or 100 turns later
             reason = "%s from hunger, no food, no safe prayer" % c["hungry"]
         elif c["hungry"] == "Hungry" and self.inv_complete and not self.food_letters() and not c["can_pray"] and \
                 self.low_noted != ("hungry", c["turn"] // 300):
@@ -1668,7 +1719,7 @@ class Pilot:
             known = [p for p in lv.downs if p not in c["dist"]]
             if known:
                 reason = "level exhausted: down stairs at %s unreachable (no known path: locked door, boulder or " \
-                    "blocker%s)" % (", ".join("(%d,%d)" % (p[0] + 1, p[1] + 1) for p in known[:2]),
+                    "blocker%s)" % (", ".join(pos1(p) for p in known[:2]),
                                    "; in the way: " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"]))
                                                                 for h in c["obst"][:3]) if c["obst"] else "")
             else:

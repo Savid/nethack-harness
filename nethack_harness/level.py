@@ -15,6 +15,11 @@ def passable(ch, fg, doors=False):
     return (door(ch, fg) and (ch != "+" or doors)) or ch in MON or ch == "I" or ch in WARNING
 
 
+def pos1(p):
+    """A screen position as the 1-based ROW,COL that goal:travel takes."""
+    return "%d,%d" % (p[0] + 1, p[1] + 1)
+
+
 def cheb(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 

@@ -258,3 +258,8 @@ def fireable(ammo, wielded):
     if THROWN.search(ammo):
         return True
     return any(a.search(ammo) and l.search(wielded or "") for a, l in LAUNCHERS)
+
+
+# Spells the loop casts by itself: name -> (Pw cost, use). Learned from the + menu at start.
+SPELLS = {"force bolt": (5, "attack"), "healing": (5, "heal"), "extra healing": (15, "heal")}
+SPELL_LINE = re.compile(r"\b([a-zA-Z]) - ([a-z][a-z ]+?)\s+(\d+)\s+\w+\s+(\d+)%")

@@ -78,7 +78,8 @@ class Term:
         while True:
             try:
                 status, raw = self.link.post(data, self.cursor)
-            except (FileNotFoundError, ConnectionRefusedError) as e:
+            except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError, BrokenPipeError,
+                    http.client.RemoteDisconnected) as e:
                 if self.cursor:                 # it answered before: the game's terminal is gone
                     raise Closed("terminal socket gone (%s)" % e.__class__.__name__)
                 raise
