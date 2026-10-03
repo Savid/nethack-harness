@@ -39,6 +39,9 @@ DEFAULTS = {
     "stall_secs": 45,       # escalate after this many seconds without new squares or depth
     "hp_drop": 0.25,        # escalate when HP falls by this fraction of max within 5 turns
     "hp_drop_min": 5,       # ...and by at least this many points (one bite at low max HP is not news)
+    "milestone": "off",     # off | depth | xl | both: pause once at each new deepest level / XL while healthy
+    "milestone_hp": 0.67,   # ...only at or above this HP fraction with no hostile in view (otherwise later)
+    "milestone_from": 1,    # ...and only for depths at least this deep
     "fight_handoff": "ladder",  # losing fast: "ladder" runs the crisis ladder first; "escalate" hands over at once
     "crisis_turns": 12,     # turns the crisis ladder has before a still-falling HP is handed over
     "pickup_food": 1,       # pick up known-safe food the hero steps on
@@ -135,6 +138,8 @@ def validate(sets):
             raise ValueError("effort must be off, low, medium or high")
         if k == "mines" and v not in ("auto", "allow", "avoid", "escalate"):
             raise ValueError("mines must be auto, allow, avoid or escalate")
+        if k == "milestone" and v not in ("off", "depth", "xl", "both"):
+            raise ValueError("milestone must be off, depth, xl or both")
         if k == "fight_handoff" and v not in ("ladder", "escalate"):
             raise ValueError("fight_handoff must be ladder or escalate")
         try:

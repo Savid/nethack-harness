@@ -99,6 +99,10 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("hp_drop", "", "escalate 'losing fast' when HP falls by this fraction of max within 5 turns"),
             ("hp_drop_min", "", "...and by at least this many points; the same fight re-escalates only after "
                                 "another step of loss"),
+            ("milestone", "", "off | depth | xl | both: pause once at each new deepest Dlvl and/or new XL while "
+                              "healthy (a natural moment to checkpoint or rethink)"),
+            ("milestone_hp", "", "milestones wait until HP is at least this fraction and no hostile is in view"),
+            ("milestone_from", "", "milestones ignore depths shallower than this"),
             ("fight_handoff", "", "losing fast: ladder (pray, quaff, stairs underfoot, verified Elbereth, retreat, "
                                   "then fight; escalate only if HP keeps falling) | escalate (hand over at once)"),
             ("crisis_turns", "", "turns the crisis ladder runs before a still-falling HP is handed over"),

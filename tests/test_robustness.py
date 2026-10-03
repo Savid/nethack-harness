@@ -391,3 +391,33 @@ class CrisisTest(unittest.TestCase):
 
 def cheb_(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+
+
+class MilestoneTest(unittest.TestCase):
+    def tearDown(self):
+        nh.CFG.update(nh.settings.DEFAULTS)
+
+    def c(self, p, dl, xl, hpf=1.0, hostiles=()):
+        return {"dl": dl, "xl": xl, "hp": int(20 * hpf), "hpmax": 20, "hpf": hpf, "turn": 100 * dl,
+                "hostiles": list(hostiles), "lv": p.level(dl)}
+
+    def test_pauses_once_per_new_depth_when_healthy(self):
+        p = nh.Pilot(FakeTerm(), None)
+        nh.apply_settings(None, {"milestone": "depth"})
+        p.milestone(self.c(p, 1, 1))                      # first step: no pause
+        p.milestone(self.c(p, 2, 1, hpf=0.5))             # hurt: deferred
+        with self.assertRaises(nh.policy.Hard) as e:
+            p.milestone(self.c(p, 2, 1))
+        self.assertTrue(str(e.exception).startswith("milestone: new deepest Dlvl 2 (XL 1"))
+        p.milestone(self.c(p, 2, 2))                      # XL milestones are off: silent
+        p.milestone(self.c(p, 1, 2))                      # going back up is not news
+        self.assertEqual([m["dlvl"] for m in p.milestones], [2])
+
+    def test_xl_milestones_and_validation(self):
+        p = nh.Pilot(FakeTerm(), None)
+        nh.apply_settings(None, {"milestone": "xl"})
+        p.milestone(self.c(p, 1, 1))
+        p.milestone(self.c(p, 2, 1))
+        with self.assertRaises(nh.policy.Hard):
+            p.milestone(self.c(p, 2, 2))
+        self.assertRaises(ValueError, nh.apply_settings, None, {"milestone": "sometimes"})

@@ -163,5 +163,6 @@ def status(p):
             "kit": p.kit() if p.inv else {}, "known_symbols": len(K.NEVER_MELEE),
             "depth_cap": p.depth_cap(p.term.view().st.get("xl", 1), p.term.view().st.get("hpmax", 1),
                                      p.term.view().st.get("ac", 10)) if p.term else None,
+            "milestones": list(p.milestones),
             "model_errors": p.breaker_trips, "last_model_error": getattr(p, "last_model_error", ""),
             "recent_ms": [int(x * 1000) for x in getattr(p, "latencies", [])]}

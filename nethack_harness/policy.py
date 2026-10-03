@@ -54,7 +54,9 @@ class Pilot:
         self.esc_counts, self.last_model_error, self.fight_noted = {}, "", None
         self.door_plan = None              # (dlvl, door, approach square, give up after this decision)
         self.crisis = None                 # the in-loop fight ladder: {"until", "dl", "hp", "tried", "why"}
-        self.fight_plan = None             # goal:fight bookkeeping: (dlvl, HP at start, adjacent hostiles)
+        self.fight_plan = None
+        self.ms_dl = self.ms_xl = None     # milestone counters (deepest Dlvl and XL already reported)
+        self.milestones = []             # goal:fight bookkeeping: (dlvl, HP at start, adjacent hostiles)
         self.ranged_until = -1             # a ranged attack hit or missed us recently: leave its line
         self.elbereth_failed = None        # (dlvl, pos, turn): Elbereth did not hold here
         self.gate_noted = None
@@ -87,6 +89,28 @@ class Pilot:
     def resolved(self, dl):
         """True once the branch of the level we are on is known (see track_branch)."""
         return getattr(self, "branch_dl", None) in (None, dl)
+
+    def milestone(self, c):
+        """milestone=depth|xl|both: pause once at each new deepest level and/or new XL, when healthy (HP at or
+        above milestone_hp, no hostile in view); otherwise wait for a healthy moment. Never on the first step."""
+        dl, xl = c["dl"], c["xl"]
+        if self.ms_dl is None:
+            self.ms_dl, self.ms_xl = dl, xl
+            return
+        want = CFG["milestone"]
+        depth = dl > self.ms_dl and dl >= CFG["milestone_from"] and want in ("depth", "both")
+        level = xl > self.ms_xl and want in ("xl", "both")
+        if not depth and dl > self.ms_dl:
+            self.ms_dl = dl              # not wanted: remember silently, so switching it on later is not stale
+        if not level and xl > self.ms_xl:
+            self.ms_xl = xl
+        if not (depth or level) or c["hpf"] < CFG["milestone_hp"] or c["hostiles"]:
+            return
+        what = "new deepest Dlvl %d" % dl if depth else "new XL %d" % xl
+        self.ms_dl, self.ms_xl = max(self.ms_dl, dl), max(self.ms_xl, xl)
+        self.milestones.append({"kind": "depth" if depth else "xl", "dlvl": dl, "xl": xl, "turn": c["turn"]})
+        raise Hard("milestone: %s (XL %d, HP %d/%d, T%d; down stairs known: %s)" % (
+            what, xl, c["hp"], c["hpmax"], c["turn"], "yes" if c["lv"].downs else "no"))
 
     def track_branch(self, dl, v):
         """On a level change, work out which branch we are in before anything reads the level's map."""
@@ -1435,6 +1459,7 @@ class Pilot:
             lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # the game starts on the up stairs
             c["under"] = "<"
         self.max_dl = max(self.max_dl, dl)
+        self.milestone(c)
         if c["blind"]:
             self.blind_since = self.blind_since if self.blind_since is not None else c["turn"]
             if c["turn"] - self.blind_since > 300:
