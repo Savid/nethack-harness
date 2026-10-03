@@ -276,6 +276,15 @@ class HookTest(unittest.TestCase):
             hooks.judge(dict(facts(), hp=0), {})
 
 
+class ShopTest(unittest.TestCase):
+    def test_no_kicking_near_shops(self):
+        p = nh.Pilot(None, None)
+        v = view(screen("You hear the chime of a cash register."), (0, 0))
+        p.message("You hear the chime of a cash register.", v)
+        self.assertTrue(p.lv[3].shop)
+        self.assertTrue(nh.ALARM.search('"How dare you break my door?"'))
+
+
 class CliTest(unittest.TestCase):
     def test_help_prints_protocol(self):
         import contextlib

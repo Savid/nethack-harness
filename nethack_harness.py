@@ -74,7 +74,8 @@ CORPSES = ("newt", "jackal", "coyote", "fox", " rat", "iguana", "lichen", "gnome
            "rothe", "goblin", "pony", "wolf")
 ALARM = re.compile(r"slowing down|limbs are stiffening|deathly sick|can't breathe|You turn into|feverish|slimed|"
                    r"swallows you|engulfs you|closed for inventory|Welcome to [A-Z][\w ]*'s|You stole|strangled|"
-                   r"You can't move")
+                   r"You can't move|How dare you|break my door|You owe")
+SHOP = re.compile(r"cash register|shoplifters|shopkeeper|written here in the dust|[Cc]losed for inventory")
 YES_NO = [(re.compile(r"Are you sure you want to pray|Unlock it"), "y"),
           (re.compile(r"Really |Still climb|eat it\?|add to the|Continue eating|Shall I pay|Do you want to keep|"
                       r"[Pp]ick (it )?up|no return"), "n")]
@@ -579,7 +580,7 @@ class Level:
         self.terr, self.tfg, self.near, self.downs = {}, {}, set(), {}
         self.searched, self.failed, self.kicks = collections.Counter(), collections.Counter(), collections.Counter()
         self.locked, self.blocked, self.statues = set(), set(), set()
-        self.up, self.up_branch, self.door_frontier = None, False, set()
+        self.up, self.up_branch, self.door_frontier, self.shop = None, False, set(), False
 
     def observe(self, v):
         for r in range(1, 22):
@@ -915,6 +916,8 @@ class Pilot:
             self.corpse = (v.st.get("dlvl"), self.last_act.target, m.group(1), v.st.get("turn", 0))
         if "This door is locked" in text and self.last_act and self.last_act.kind == "door":
             self.lv[v.st.get("dlvl", 0)].locked.add(self.last_act.target)
+        if SHOP.search(text):
+            self.lv[v.st.get("dlvl", 0)].shop = True   # never kick doors here: shopkeepers kill door breakers
         if ALARM.search(text):
             return self.esc("alarming message: " + text[:160])
 
@@ -1051,7 +1054,7 @@ class Pilot:
                     new = q in lv.door_frontier or v.ch(2 * q[0] - hero[0], 2 * q[1] - hero[1]) == " "
                     acts.append(Act("open_" + k, "Open the closed door to the " + DN[k], k, "door",
                                     6 if blocked else 3 if new else 1 if fr else 2.4, q))
-                elif lv.kicks[q] < 6:
+                elif lv.kicks[q] < 6 and not getattr(lv, "shop", False):
                     acts.append(Act("kick_" + k, "Kick open the locked door to the " + DN[k], "\x04" + k, "kick",
                                     0.8 if fr else 2.2, q))
             elif any(h["dist"] <= 3 for h in hs) and dist.get(q) == 1 and passable(ch, fg) and ch not in MON:
