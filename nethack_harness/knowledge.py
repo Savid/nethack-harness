@@ -73,6 +73,7 @@ PROMPTS = [
     (r"(?:Shall I|Do you want to) (?:remove|take off)", "n"),
     (r"Do you want to dig downward\?", "y"),
     (r"pick (?:it|them) up\?|Pick up ", "n"),
+    (r"\bwield (?:it|them|one|the [^?]*) (?:instead|now)?\??|You are not wielding[^?]*\?", "n"),   # keep the weapon
 ]
 PROMPTS = [(re.compile(rx), ans) for rx, ans in PROMPTS]
 
@@ -141,7 +142,7 @@ def threat_xl(sym, base, bright, name=""):
     return lookup(THREAT, sym, base, bright) or 0
 
 
-# Food and corpses.
+# Food and corpses. Names match whole words only (a pear is not inside a spear): see food_index().
 FOODS = ("food ration", "cram ration", "lembas wafer", "fortune cookie", "apple", "carrot", "orange", "pear",
          "melon", "banana", "cream pie", "candy bar", "pancake", "egg", "kelp", "slime mold", "meatball",
          "C-ration", "K-ration", "tortilla", "tin", "eucalyptus leaf", "sprig of wolfsbane", "clove of garlic")
@@ -235,3 +236,25 @@ def item_state(text):
 
 # Monsters that explode or burst when killed: attack them only from a distance of at least 2.
 EXPLODERS = re.compile(r"gas spore|flaming sphere|freezing sphere|shocking sphere|yellow light|black light")
+
+
+FOOD_RE = [re.compile(r"\b%ss?\b" % re.escape(f)) for f in FOODS]
+
+
+def food_index(text):
+    """Index of the first FOODS entry named in text (whole words), or None."""
+    return next((i for i, rx in enumerate(FOOD_RE) if rx.search(text)), None)
+
+
+# Missiles: thrown by hand, or needing their launcher in hand to be worth firing.
+THROWN = re.compile(r"\b(?:daggers?|knife|knives|darts?|shuriken|spears?|javelins?|boomerangs?)\b")
+LAUNCHERS = ((re.compile(r"\b(?:arrows?|ya)\b"), re.compile(r"\b(?:bow|yumi)\b")),
+             (re.compile(r"\bcrossbow bolts?\b"), re.compile(r"\bcrossbow\b")),
+             (re.compile(r"\b(?:rocks?|flint stones?|gems?|stones?)\b"), re.compile(r"\bsling\b")))
+
+
+def fireable(ammo, wielded):
+    """Fire (f) only what is thrown by hand, or ammunition whose launcher is already wielded."""
+    if THROWN.search(ammo):
+        return True
+    return any(a.search(ammo) and l.search(wielded or "") for a, l in LAUNCHERS)

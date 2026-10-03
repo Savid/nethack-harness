@@ -1,5 +1,6 @@
 """What the outer loop reads: escalation reports, the startup briefing and status."""
 import json
+import re
 import time
 
 from . import knowledge as K
@@ -27,24 +28,21 @@ def capabilities(p):
 
 def depth_line(p, st):
     xl, hpmax, ac = st.get("xl", 1), st.get("hpmax", 1), st.get("ac", 10)
-    cap = p.depth_cap(xl, hpmax, ac)
-    if p.fragile(hpmax, ac):
-        return ("fragile start (max HP %s < %s or AC %s > %s): the loop descends to Dlvl %d at most (XL+%d) until "
-                "max HP >= %s and AC <= %s, then XL+%d; cap_lift never lifts this before XL 3 "
-                "(--set fragile_lead=N, sturdy_hp, sturdy_ac)" % (
-                    hpmax, CFG["sturdy_hp"], ac, CFG["sturdy_ac"], cap, cap - xl, CFG["sturdy_hp"], CFG["sturdy_ac"],
-                    p.lead()))
-    return "sturdy start: the loop descends to Dlvl %d at most (XL+%d; --set lead=N or risk=...)" % (cap, cap - xl)
+    cap, _, how = p.depth_limits(xl, hpmax, ac)
+    return "%s start: the loop descends to Dlvl %d at most for now (%s); cap_lift never lifts the pace for a " \
+        "fragile hero before XL 3" % ("fragile" if p.fragile(hpmax, ac, xl) else "sturdy", cap, how)
 
 
 def suggestions(p):
     kit, out = p.kit(), []
     st = p.term.view().st
     out.append("--set mines=%s (race %s; auto picks %s)" % (p.mines_policy(), p.race, p.mines_policy()))
-    fragile = p.fragile(st.get("hpmax", 1), st.get("ac", 10)) or p.role in K.WEAK_ROLES
+    fragile = p.fragile(st.get("hpmax", 1), st.get("ac", 10), st.get("xl", 1))
+    weak = p.role in K.WEAK_ROLES
+    why = ", ".join(x for x in ("few HP or poor AC for the level" if fragile else "",
+                                "a weak melee role" if weak else "") if x) or "sturdy start"
     out.append("--set risk=%s (%s); effort=medium is the default, effort=low saves decision calls" % (
-        "low" if fragile else "normal" if p.role not in K.STRONG_ROLES else "high",
-        "fragile start: few HP, poor AC or a weak melee role" if fragile else "sturdy start"))
+        "low" if fragile or weak else "high" if p.role in K.STRONG_ROLES else "normal", why))
     for rx, advice in K.KIT_ADVICE:
         hit = p.items(rx)
         if hit:
@@ -117,9 +115,8 @@ def summary(p, reason):
         out.append("plan queue: " + " | ".join(p.plan))
     food = p.food_letters()
     out.append("food: %s | prayer: %s | model since start: %d disagreements, %d overrides by orders | stairs known: %s" % (
-        ", ".join(t for _, t in food[:3]) or "none in pack",
-        "broken (a prayer failed)" if p.prayer_broken else "safe now" if p.prayer_safe(st.get("turn") or 0)
-        else "not safe until about T%d" % ((p.last_prayer or 0) + 900 if p.last_prayer is not None else 150),
+        ", ".join(t for _, t in food[:3]) or ("none in pack" if p.inv_complete else "unknown (check with send i)"),
+        p.prayer_band(st.get("turn") or 0),
         p.disagreements, p.overrides,
         ", ".join("%s%s" % (pos, "" if kind == "main" else " " + kind) for pos, kind in (lv.downs.items() if lv else []))
         or "none"))
@@ -166,3 +163,45 @@ def status(p):
             "milestones": list(p.milestones),
             "model_errors": p.breaker_trips, "last_model_error": p.last_model_error,
             "recent_ms": [int(x * 1000) for x in p.latencies]}
+
+
+KILLER = re.compile(r"killed by (?:an? |the )?([^,.!\n]+?)(?:,| while|\.|!|$)|"
+                    r"(?:You (?:die|drown|starve|are turned to stone|choke)[^\n]*)")
+ATTACK = re.compile(r"^(?:The |the )?(.+?) (?:hits|bites|stings|kicks|butts|touches|claws|stabs|thrusts|swings|"
+                    r"zaps|shoots|throws|breathes)\b")
+
+
+def postmortem(p, reason=None):
+    """The death, or the last crisis, in one block: what a lesson needs."""
+    v = p.term.view() if p.term else None
+    st = v.st if v else {}
+    screen = v.text_screen() if v else ""
+    msgs = list(p.msg_log)
+    killer = None
+    for text in [screen] + [m for _, m in reversed(msgs)]:
+        m = KILLER.search(text)
+        if m and m.group(1):
+            killer = m.group(1).strip()
+            break
+    if not killer:
+        killer = next((m.group(1) for _, t in reversed(msgs) for m in [ATTACK.search(t)] if m), "unknown")
+    dead = bool(v and v.dead) or reason == "game_over"
+    out = ["POSTMORTEM: %s at T%s on Dlvl %s, XL %s; %s %s; killer (best guess): %s" % (
+        "died" if dead else "alive", st.get("turn", p.turn), st.get("dlvl"), st.get("xl"), p.race or "?",
+        p.role or "?", killer)]
+    out.append("HP trail (turn:hp/max): " + " ".join("%s:%s/%s" % x for x in list(p.hp_trail)[-20:]))
+    cr = p.crisis or p.last_crisis
+    if cr:
+        out.append("crisis ladder: %s; tried: %s%s" % (cr["why"], ", ".join(cr["tried"]) or "nothing applied",
+                                                      "" if p.crisis else " (ended T%s at HP %s)" % (
+                                                          cr.get("ended"), cr.get("hp_end"))))
+    esc = [h["text"] for h in p.hist if h["kind"] == "escalate"][-3:]
+    out.append("last escalations: " + (" | ".join(esc) or "none"))
+    out.append("prayer: %s" % p.prayer_band(st.get("turn") or p.turn or 0))
+    out.append("settings: " + describe())
+    out.append("last keys: " + " ".join(repr(k)[1:-1] for k in list(p.sent)[-30:]))
+    out.append("last messages:")
+    out += ["  T%s %s" % (t, m) for t, m in msgs[-20:]]
+    if screen:
+        out += ["--- screen ---", screen]
+    return "\n".join(out) + "\n"

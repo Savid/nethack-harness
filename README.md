@@ -107,6 +107,14 @@ While paused:
   the screen. Prefer it to unchecked key loops near danger.
 - `status` prints JSON with the settings, effort, hooks, plan, counters, kit
   and the current depth cap.
+- `postmortem` prints the death (or the last crisis) in one block: best-guess
+  killer, HP trail, crisis-ladder steps tried, last escalations, prayer band,
+  settings, last keys and messages. It is also written to `postmortem.txt` at
+  game over, and works after the loop has exited.
+
+Reports give prayer as a band: `safe`, `uncertain (last T…, N ago; the
+timeout is random after a prayer)`, `fails (last T…, N ago)` when the last
+prayer was under 200 turns ago, or `broken` after a failed prayer.
 
 Resume options can be combined:
 - `--directive TEXT`: orders shown to the model. While orders are set, the
@@ -134,7 +142,8 @@ decisions, model calls (and how many reused an earlier answer) and escalations.
 | `risk` | normal | `low`, `normal`, `high`: HP gates for descending, resting, Elbereth and escalating, plus the depth lead |
 | `effort` | medium | Decision effort: `off` (rules only), `low`, `medium`, `high` |
 | `lead` | by role | Max depth = XL + lead |
-| `sturdy_hp`, `sturdy_ac`, `fragile_lead` | 25, 6, 1 | A hero with max HP below `sturdy_hp` or AC above `sturdy_ac` is fragile and descends no deeper than XL + `fragile_lead` (+1 at `risk=high`); `cap_lift` never lifts this before XL 3. When the gate holds on an explored level, the loop escalates once and searches for experience |
+| `fragile_lead`, `pace_xl` | 1, 4 | Pace: the loop descends no deeper than XL + `fragile_lead` (+1 at `risk=high`) until XL `pace_xl`, then one level more unless the hero is fragile. The cap is the shallower of this pace and XL + `lead`, and the briefing and the "depth gate" escalation name which one binds and how to lift it. While it holds on an explored level, the loop wanders the level for experience |
+| `sturdy_hp`, `sturdy_hp_per_xl`, `sturdy_ac` | 10, 4, 7 | Fragile means max HP below `sturdy_hp` + `sturdy_hp_per_xl` × XL (14 at XL 1) or AC above `sturdy_ac`; `cap_lift` never lifts the pace for a fragile hero before XL 3 |
 | `milestone`, `milestone_hp`, `milestone_from` | off, 0.67, 1 | `depth`, `xl` or `both`: pause once at each new deepest level and/or XL, when HP is at least `milestone_hp` and no hostile is in view (deferred otherwise), e.g. "milestone: new deepest Dlvl 6 (XL 4, HP 33/35, T1450; down stairs known: no)". `status` lists them |
 | `fight_handoff`, `crisis_turns` | ladder, 12 | When losing fast, the loop first runs a crisis ladder (pray when safe, quaff, stairs underfoot, verified Elbereth, retreat, then fight) and escalates only if the ladder is exhausted or HP is still falling after `crisis_turns`; the report lists the steps tried. `escalate` hands over at once |
 | `hp_drop`, `hp_drop_min` | 0.25, 5 | "Losing fast" needs both this fraction of max HP and this many points lost within 5 turns; the same fight re-escalates only after another step of loss |

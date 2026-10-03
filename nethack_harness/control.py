@@ -15,7 +15,7 @@ from . import __version__
 from .decide import decider
 from .hooks import HookError, Hooks
 from .policy import GAME_OVER, Pilot
-from .report import status as status_of, summary
+from .report import postmortem, status as status_of, summary
 from .settings import CFG, DEFAULTS, EFFORT, MODE_KEYS, MODES, RISK, apply_settings, describe, validate
 from .knowledge import ALARM as K_ALARM, MON
 from .transport import Closed, Held, Term, serve_local
@@ -49,6 +49,8 @@ Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --
   log [N]                                 recent inner-loop events
   screen                                  the screen as the loop sees it        e.g. screen
   send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
+  postmortem                              the death (or last crisis) in one block, also saved at game over
+                                          as postmortem.txt: killer, HP trail, ladder steps, escalations
   repeat KEYS --times N [--stop-hp F] [--stop-on REGEX] [--allow-hp-loss]
                                           while paused: KEYS up to N times (1-50), stopping on HP loss, HP below
                                           F (0.5), a new monster in view, --More--/prompt, a level change, an
@@ -83,9 +85,12 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("breaker", "", "seconds of rules-only play after a failed or slow decision call"),
             ("slow_ms", "", "trip the breaker when the median of the last 5 calls is slower than this"),
             ("search_budget", "", "search turns per level before the ladder moves on"),
-            ("sturdy_hp", "", "max HP below this (or AC worse than sturdy_ac) makes the hero fragile"),
-            ("sturdy_ac", "", "AC above this makes the hero fragile"),
-            ("fragile_lead", "", "a fragile hero descends no deeper than XL + this (+1 at risk=high)"),
+            ("sturdy_hp", "", "fragile: max HP below sturdy_hp + sturdy_hp_per_xl * XL (14 at XL 1)..."),
+            ("sturdy_hp_per_xl", "", "...the per-level part of that HP bar"),
+            ("sturdy_ac", "", "...or AC above this"),
+            ("fragile_lead", "", "pace: descend no deeper than XL + this (+1 at risk=high); the cap is the "
+                                 "shallower of this pace and XL + lead"),
+            ("pace_xl", "", "from this XL a sturdy hero's pace is XL + fragile_lead + 1"),
             ("cap_lift", "", "seconds on a level after which the depth lead stops blocking descent "
                              "(never before XL 3 for a fragile hero)"),
             ("potions", "", "1 = quaff known healing potions in emergencies"),
@@ -329,7 +334,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m1" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m2" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -455,6 +460,10 @@ def daemon(args):
         status.update(state="ended" if ended else "paused", reason=reason, escalation=status["escalation"] + 1)
         if ended:
             ended_at = time.time()
+            try:
+                store.text("postmortem.txt", postmortem(p, reason))
+            except Exception as e:      # a report must never stop the game-over bookkeeping
+                p.note("command_error", "postmortem: %s" % e)
         p.note("pause", reason)
         save(p)
 
@@ -510,9 +519,13 @@ def daemon(args):
             paused, p.pending = None, None
             p.start_clock()
             p.progress, p.calm_until, p.progress_time = p.decisions, p.decisions + CFG["calm"], p.clock()
+            p.move_ban_until = 0                 # a resume is a fresh start for moves
+            p.visits.clear()
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None)
             term.sync()
+        elif cmd == "postmortem":
+            store.text("reply-%d.txt" % c["seq"], postmortem(p, status.get("reason")))
         elif cmd == "repeat":
             if not paused:
                 reply = "refused: the inner loop is running; pause it first\n"
@@ -785,6 +798,8 @@ def main(argv=None):
     sd = sub.add_parser("send", help="send keys while paused; prints the resulting screen")
     sd.add_argument("keys", nargs="?")
     sd.add_argument("--hex", help="bytes as hex, e.g. 1b for Escape, 0d for Enter")
+    sub.add_parser("postmortem", help="the death or last crisis in one block: killer, HP trail, ladder steps, "
+                                      "escalations, prayer, settings, last keys and messages")
     rp = sub.add_parser("repeat", help="while paused: send keys up to N times, stopping at the first sign of "
                                        "trouble (HP loss, new monster, --More--, prompt, matching message)")
     rp.add_argument("keys", nargs="?")
@@ -897,6 +912,10 @@ def main(argv=None):
                 continue
             print(d.get("step"), d.get("kind"), d.get("text", "")[:120], d.get("p", ""))
         return 0
+    if a.cmd == "postmortem" and not (st and alive(st) and ours(store, st)):
+        text = store.text("postmortem.txt")
+        print(text or "no postmortem in %s (the game has not ended, and no loop is running)\n" % store.dir, end="")
+        return 0 if text else 1
     if not st:
         print("no inner loop in %s; start it" % store.dir)
         return 1
@@ -933,6 +952,17 @@ def main(argv=None):
                 questions=[os.path.abspath(x) for x in a.questions], plugins=[os.path.abspath(x) for x in a.plugin],
                 enable=a.enable, disable=a.disable)
         return wait(store, a.timeout, st.get("escalation", 0))
+    if a.cmd == "postmortem":
+        seq = control(store, "postmortem")
+        for _ in range(150):
+            reply = store.text("reply-%d.txt" % seq)
+            if reply:
+                os.unlink(store.path("reply-%d.txt" % seq))
+                print(reply, end="")
+                return 0
+            time.sleep(0.1)
+        print("no reply from the inner loop")
+        return 1
     if a.cmd in ("send", "screen", "repeat"):
         keys, extra = b"", {}
         if a.cmd == "repeat":

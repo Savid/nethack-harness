@@ -76,7 +76,12 @@ class Term:
         end = time.monotonic() + hold_wait
         busy = 0
         while True:
-            status, raw = self.link.post(data, self.cursor)
+            try:
+                status, raw = self.link.post(data, self.cursor)
+            except (FileNotFoundError, ConnectionRefusedError) as e:
+                if self.cursor:                 # it answered before: the game's terminal is gone
+                    raise Closed("terminal socket gone (%s)" % e.__class__.__name__)
+                raise
             if status == 200:
                 d = json.loads(raw)
                 out = base64.b64decode(d.get("output") or "")

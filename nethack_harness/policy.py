@@ -41,6 +41,11 @@ class Pilot:
         self.last_prayer, self.prayer_broken, self.praying, self.eating_corpse = None, False, False, False
         self.food_off_until, self.eat_fail = -1, 0
         self.hist, self.msgs = collections.deque(maxlen=80), collections.deque(maxlen=12)
+        self.msg_log = collections.deque(maxlen=20)      # longer message memory, for the postmortem
+        self.sent = collections.deque(maxlen=30)         # the last keys sent, for the postmortem
+        self.hp_trail = collections.deque(maxlen=40)     # (turn, hp, hpmax), for the postmortem
+        self.last_crisis = None                          # the most recent crisis ladder, kept after it ends
+        self.inv_complete = False                        # a whole inventory menu has been read at least once
         self.keys = self.decisions = self.calls = self.escs = 0
         self.mtime, self.t0, self.mark, self.progress, self.progress_turn = 0.0, time.time(), None, 0, 0
         self.directive, self.max_dl, self.prev_dl, self.mines_noted = "", 0, None, False
@@ -173,12 +178,27 @@ class Pilot:
             self.paused_at = None
 
     def send(self, keys):
+        self.sent.append(keys if isinstance(keys, str) else keys.decode("latin-1"))
         self.term.send(keys)
         self.keys += 1
 
     def esc(self, reason, **kw):
         self.note("escalate", reason, turn=self.turn, **kw)
         return None if CFG.get("auto") else reason   # auto: benchmarks log escalations and play on
+
+    def prayer_band(self, turn):
+        """Prayer as three bands: safe (the loop's rule), uncertain (the timeout is random after a prayer), fails."""
+        if self.prayer_broken:
+            return "broken (a prayer failed; never pray again)"
+        if self.prayer_safe(turn):
+            return "safe"
+        if self.last_prayer is None:
+            return "not yet (too early in the game; safe from about T110)"
+        ago = turn - self.last_prayer
+        if ago < 200:
+            return "fails (last T%d, %d ago)" % (self.last_prayer, ago)
+        return "uncertain (last T%d, %d ago; the timeout is random after a prayer, safe from about T%d)" % (
+            self.last_prayer, ago, self.last_prayer + 900)
 
     def prayer_safe(self, turn):
         if self.prayer_broken:
@@ -203,6 +223,7 @@ class Pilot:
                      r"You (?:destroy|kill) ", text):
             self.engulfed = False
         self.msgs.append(text)
+        self.msg_log.append((v.st.get("turn"), text))
         self.note("msg", text[:200])
         if "You begin praying" in text and v.st.get("turn") is not None:
             self.last_prayer = v.st["turn"]
@@ -247,7 +268,7 @@ class Pilot:
                        text):
             lv.no_dig = True
         m = re.search(r"You see here (?:an? |\d+ )?([^.]+)\.", text)
-        if m and CFG["pickup_food"] and any(f in m.group(1) for f in K.FOODS) and "corpse" not in m.group(1) \
+        if m and CFG["pickup_food"] and K.food_index(m.group(1)) is not None and "corpse" not in m.group(1) \
                 and not lv.shop and "keys:," not in self.plan:
             self.plan.appendleft("keys:,")
             self.inv_turn = -2
@@ -334,7 +355,8 @@ class Pilot:
     # ------------------------------------------------------------ one-time setup and knowledge
     def setup(self):
         """hilite_pet (pets in reverse video), time (turn counter), autoopen; no sparkle or timed_delay."""
-        want = {"hilite_pet": True, "time": True, "sparkle": False, "timed_delay": False, "autoopen": True}
+        want = {"hilite_pet": True, "time": True, "sparkle": False, "timed_delay": False, "autoopen": True,
+                "fireassist": False}     # fireassist would swap the melee weapon for a launcher on f
 
         def toggle(rows):
             for line in rows:
@@ -358,7 +380,7 @@ class Pilot:
                 break
             self.send("\x1b")
         self.options = True
-        self.note("setup", "options: hilite_pet, time, autoopen on; sparkle, timed_delay off")
+        self.note("setup", "options: hilite_pet, time, autoopen on; sparkle, timed_delay, fireassist off")
 
     def read_pages(self, keys):
         """Send keys that open a text window or menu; return all its lines over every page."""
@@ -414,7 +436,12 @@ class Pilot:
         """Re-read the pack. A read that did not show the whole inventory menu (every page, or an (end)
         marker) only adds to what is known, so a swallowed key or a missed page never empties the pack."""
         inv, sec, pages, total, ended = {}, "", set(), None, False
-        lines = self.read_pages("i")
+        raw = self.read_pages("i")
+        lines = []
+        for n in range(0, len(raw), 24):          # one screen per page; a small menu is drawn over the map
+            page = raw[n:n + 24]
+            col = next((m.start() for r in page for m in [re.search(r"\((?:end|\d+ of \d+)\)\s*$", r)] if m), 0)
+            lines += [r[col:] for r in page]
         for line in lines:
             m = re.search(r"\((\d+) of (\d+)\)\s*$", line)
             if m:
@@ -429,6 +456,8 @@ class Pilot:
                                   "Wands", "Tools", "Amulets", "Gems/Stones", "Coins", "Boulders/Statues"):
                 sec = line.strip()
         complete = inv and (ended or (total is not None and pages >= set(range(1, total + 1))))
+        if complete:
+            self.inv_complete = True
         if complete or not self.inv:
             self.inv = inv
         else:
@@ -574,22 +603,40 @@ class Pilot:
         c["ranged"] = turn <= self.ranged_until
         return c
 
-    def fragile(self, hpmax, ac):
-        return hpmax < CFG["sturdy_hp"] or ac > CFG["sturdy_ac"]
+    @staticmethod
+    def fragile(hpmax, ac, xl=1):
+        """Fragile for this level: max HP below sturdy_hp + sturdy_hp_per_xl * XL, or AC worse than sturdy_ac."""
+        return hpmax < CFG["sturdy_hp"] + CFG["sturdy_hp_per_xl"] * xl or ac > CFG["sturdy_ac"]
+
+    def depth_limits(self, xl, hpmax, ac):
+        """(cap, which limit binds, how to lift it). Two limits apply and the shallower wins:
+        the role lead, XL + lead; and the pace, XL + fragile_lead until pace_xl, then one more for a sturdy hero
+        (+1 at risk=high)."""
+        lead = self.lead()
+        fragile = self.fragile(hpmax, ac, xl)
+        pace = int(CFG["fragile_lead"]) + (1 if xl >= CFG["pace_xl"] and not fragile else 0) + \
+            (1 if CFG["risk"] == "high" else 0)
+        if xl + lead <= xl + pace:
+            how = "role lead: XL %d + lead %d (%s%s); lift with --set lead=N or risk=high" % (
+                xl, lead, "set" if CFG["lead"] is not None else "%s %d" % (self.role or "role", K.ROLE_LEAD.get(
+                    self.role, 3)), "" if CFG["lead"] is not None else ", risk %s %+d" % (CFG["risk"], val("lead")))
+            return xl + lead, "lead", how
+        bar = CFG["sturdy_hp"] + CFG["sturdy_hp_per_xl"] * xl
+        why = " and ".join(x for x in ("max HP %d < %d" % (hpmax, bar) if hpmax < bar else "",
+                                       "AC %d > %d" % (ac, CFG["sturdy_ac"]) if ac > CFG["sturdy_ac"] else "") if x)
+        how = "pace: XL %d + %d (%s); lift with --set fragile_lead=N" % (
+            xl, pace, "fragile: " + why if fragile else
+            "XL+%d until XL %d, then XL+%d" % (CFG["fragile_lead"], CFG["pace_xl"], CFG["fragile_lead"] + 1))
+        return xl + pace, "pace", how
 
     def depth_cap(self, xl, hpmax, ac):
-        """The deepest Dlvl the loop may descend to on its own: XL + lead, or XL + fragile_lead for a fragile
-        hero (max HP below sturdy_hp or AC worse than sturdy_ac), whichever is shallower."""
-        cap = xl + self.lead()
-        if self.fragile(hpmax, ac):
-            cap = min(cap, xl + int(CFG["fragile_lead"]) + (1 if CFG["risk"] == "high" else 0))
-        return cap
+        return self.depth_limits(xl, hpmax, ac)[0]
 
     def descend_ok(self, c):
         lv = c["lv"]
         cap = self.depth_cap(c["xl"], c["hpmax"], c.get("ac", 10))
         lift = self.clock() - (lv.arrived or self.clock()) > CFG["cap_lift"] and \
-            (c["xl"] >= 3 or not self.fragile(c["hpmax"], c.get("ac", 10)))
+            (c["xl"] >= 3 or not self.fragile(c["hpmax"], c.get("ac", 10), c["xl"]))
         return (c["dl"] < cap or lift) and c["hpf"] >= val("descend_hp")
 
     # ------------------------------------------------------------ legal actions
@@ -632,7 +679,8 @@ class Pilot:
                 what = {"#": "corridor", "<": "the up stairs", ">": "the down stairs", "^": "a TRAP"}.get(ch, "floor")
                 acts.append(Act("move_" + k, "Step %s onto %s (%s the %s)" % (K.DN[k], what, rel, t["name"]), k,
                                 "move", 0.5 if rel == "away from" and hurt and t["dist"] == 1 else -1, q))
-        quiver = [(k, t) for k, t in self.items() if "quivered" in K.item_state(t)]
+        wielded = next((t for _, t in self.items() if "wielded" in K.item_state(t)), "")
+        quiver = [(k, t) for k, t in self.items() if "quivered" in K.item_state(t) and K.fireable(t, wielded)]
         if quiver and CFG["ranged"] and not adjacent:
             for h in hs:
                 dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
@@ -742,6 +790,17 @@ class Pilot:
         if self.directive and self.decisions < self.calm_until:
             pass
         return sorted(acts, key=lambda a: -a.prior) or [Act("search", "Search here 15 turns", "15s", "search", -3)]
+
+    def linger_act(self, v, c, cap):
+        """While the depth gate holds: walk to a random known square some way off (monsters come to a moving
+        hero, and walking costs less food than searching in place); search only when nowhere is reachable."""
+        far = [p for p, d in c["dist"].items() if 6 <= d <= 40]
+        if far:
+            p = self.rng.choice(far)
+            return Act("linger", "Wander %s while the depth gate holds (Dlvl %d at most for now)" % (
+                compass(c["hero"], p), cap), travel(c["hero"], p), "travel", 0, p)
+        return Act("linger", "Search 20 turns while the depth gate holds (Dlvl %d at most for now)" % cap, "20s",
+                   "search", 0)
 
     def crisis_active(self, c):
         cr = self.crisis
@@ -887,8 +946,9 @@ class Pilot:
         for k, (t, sec) in self.inv.items():
             if "corpse" in t and not re.search(r"lichen|lizard", t):
                 continue
-            if sec == "Comestibles" or any(f in t for f in K.FOODS):
-                out.append((next((i for i, f in enumerate(K.FOODS) if f in t), 50), t, k))
+            i = K.food_index(t)
+            if sec == "Comestibles" or i is not None:
+                out.append((50 if i is None else i, t, k))
         return [(k, t) for _, t, k in sorted(out)]
 
     def emergency_actions(self, v, c, acts):
@@ -1355,6 +1415,8 @@ class Pilot:
                 lv.excluded[t["target"]] = self.decisions + 40   # try other targets for a while
                 lv.failed[t["target"]] = 0
         self.outcomes.append(out)
+        if t["kind"] in ("wait", "search", "rest"):
+            return               # standing still on purpose is not an oscillation between squares
         self.visits.append(hero)
         top = collections.Counter(self.visits).most_common(1)
         if top and top[0][1] >= 3 and not ({"new", "level"} & set(self.outcomes)) and len(self.outcomes) >= 6:
@@ -1507,6 +1569,8 @@ class Pilot:
         if branch_reason and CFG["branch_points"]:
             raise Hard(branch_reason)
         self.hp_hist.append((c["turn"], c["hp"]))
+        if not self.hp_trail or self.hp_trail[-1][:2] != (c["turn"], c["hp"]):
+            self.hp_trail.append((c["turn"], c["hp"], c["hpmax"]))
         if self.plan and self.run_plan(v, c):
             self.last_try = None
             return None
@@ -1528,12 +1592,12 @@ class Pilot:
         cr = self.crisis
         if cr and not self.crisis_active(c):
             # the ladder's window is over: done if the bleeding stopped, hand over if HP is still falling
-            self.crisis = None
+            self.crisis, self.last_crisis = None, dict(cr, ended=c["turn"], hp_end=c["hp"])
             if cr["dl"] == dl and c["hp"] < cr["hp"] - step and (c["hit"] or near):
                 reason = "losing fast: HP still falling after the crisis ladder, %d -> %d/%d (%s; tried: %s)" % (
                     cr["hp"], c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
         elif cr and cr.get("empty"):
-            self.crisis = None
+            self.crisis, self.last_crisis = None, dict(cr, ended=c["turn"], hp_end=c["hp"])
             reason = "losing fast: the crisis ladder is exhausted at HP %d/%d (%s; tried: %s)" % (
                 c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
         if reason:
@@ -1561,13 +1625,14 @@ class Pilot:
         elif (near or c["hit"]) and hpf < val("hp_escalate") and not any(a.prior >= 6.5 for a in acts):
             if self.low_noted != (dl, c["hp"] // 3):
                 self.low_noted = (dl, c["hp"] // 3)
-                reason = "low HP %d/%d with %s and no safe prayer, potion or Elbereth%s" % (
+                reason = "low HP %d/%d with %s and no safe prayer, potion or Elbereth (prayer: %s)%s" % (
                     c["hp"], c["hpmax"], (near[0]["name"] + " near") if near else "an unseen attacker",
+                    self.prayer_band(c["turn"]),
                     " (crisis ladder tried: %s)" % (", ".join(self.crisis["tried"]) or "nothing applied")
                     if self.crisis else "")
         elif c["hungry"] in ("Weak", "Fainting") and not any(a.kind in ("eat", "eat_corpse", "pray") for a in acts):
             reason = "%s from hunger, no food, no safe prayer" % c["hungry"]
-        elif c["hungry"] == "Hungry" and not self.food_letters() and not c["can_pray"] and \
+        elif c["hungry"] == "Hungry" and self.inv_complete and not self.food_letters() and not c["can_pray"] and \
                 self.low_noted != ("hungry", c["turn"] // 300):
             self.low_noted = ("hungry", c["turn"] // 300)
             reason = "Hungry with no food in the pack and prayer not safe yet: plan food (corpses, shops, prayer at T%s)" % (
@@ -1581,19 +1646,24 @@ class Pilot:
                 if c["obst"] else "")
         elif acts[0].prior <= -2 and not near and not c["hit"] and not c["frontier"] and \
                 self.lv_downs_usable(c) and not self.descend_ok(c) and c["hpf"] >= val("descend_hp"):
-            cap = self.depth_cap(c["xl"], c["hpmax"], c["ac"])
-            acts.insert(0, Act("linger", "Search 20 turns while the depth gate holds (Dlvl %d at most for now)" % cap,
-                               "20s", "search", 0))
+            cap, _, how = self.depth_limits(c["xl"], c["hpmax"], c["ac"])
+            acts.insert(0, self.linger_act(v, c, cap))
             if self.gate_noted != (dl, c["xl"]):
                 self.gate_noted = (dl, c["xl"])
-                reason = ("depth gate: Dlvl %d is explored but the loop may not go below Dlvl %d at XL %d (max HP %d, "
-                          "AC %d%s); it will search and wait for experience. Lift it with --set fragile_lead=N, lead=N "
-                          "or risk=high, or play on by hand" % (
-                              dl, cap, c["xl"], c["hpmax"], c["ac"],
-                              ", fragile" if self.fragile(c["hpmax"], c["ac"]) else ""))
+                where = "already %d below the cap; it holds here" % (dl - cap) if dl > cap else \
+                    "may not go below Dlvl %d" % cap
+                reason = ("depth gate: Dlvl %d is explored and the loop %s at XL %d (%s). It wanders the level for "
+                          "experience meanwhile; or play on by hand" % (dl, where, c["xl"], how))
         elif acts[0].prior <= -2 and not near and (c["frontier"] or self.lv_downs_usable(c)):
-            self.note("stall", "blocked; best options: " + ", ".join("%s %.1f" % (a.key, a.prior) for a in acts[:5]))
-            acts.insert(0, Act("wait_blocked", "Wait two turns: the way is blocked for now", "2s", "wait", 0))
+            if self.decisions < self.move_ban_until:
+                # the only thing left is waiting because moves are banned: lift the ban instead of deadlocking
+                self.move_ban_until = 0
+                self.note("stall", "move ban lifted: waiting was the only option left")
+                acts = self.actions(v, c)
+            if acts and acts[0].prior <= -2:
+                self.note("stall", "blocked; best options: " + ", ".join("%s %.1f" % (a.key, a.prior)
+                                                                       for a in acts[:5]))
+                acts.insert(0, Act("wait_blocked", "Wait two turns: the way is blocked for now", "2s", "wait", 0))
         elif acts[0].prior <= -2 and not near:
             known = [p for p in lv.downs if p not in c["dist"]]
             if known:

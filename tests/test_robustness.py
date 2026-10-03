@@ -213,14 +213,23 @@ if __name__ == "__main__":
 
 
 class LiveFindingsTest(Case):
-    def test_fragile_heroes_get_a_shallow_depth_cap(self):
+    def test_pace_and_fragility(self):
         p = nh.Pilot(FakeTerm(), None)
-        p.role = "Valkyrie"
-        self.assertEqual(p.depth_cap(1, 16, 6), 2)          # few HP: XL + fragile_lead
-        self.assertEqual(p.depth_cap(1, 30, 9), 2)          # poor AC
-        self.assertEqual(p.depth_cap(1, 30, 4), 1 + p.lead())
-        nh.apply_settings(None, {"risk": "high"})
-        self.assertEqual(p.depth_cap(1, 16, 6), 3)
+        p.role = "Valkyrie"                                   # role lead 4
+        self.assertFalse(p.fragile(16, 6, 1))                 # a Valkyrie start is sturdy
+        self.assertTrue(p.fragile(12, 9, 1))                  # a Tourist-like start is fragile
+        self.assertEqual(p.depth_cap(1, 16, 6), 2)            # XL+1 until XL 4...
+        self.assertEqual(p.depth_cap(4, 40, 4), 6)            # ...then XL+2 when sturdy
+        self.assertEqual(p.depth_cap(4, 20, 9), 5)            # a fragile hero keeps XL+1
+        cap, binds, how = p.depth_limits(1, 16, 6)
+        self.assertEqual(binds, "pace")
+        self.assertIn("fragile_lead", how)
+        nh.apply_settings(None, {"risk": "low"})
+        p.role = "Healer"                                     # lead 2 - 1 = 1 binds with fragile_lead 2
+        nh.apply_settings(None, {"fragile_lead": "2"})
+        cap, binds, how = p.depth_limits(1, 12, 9)
+        self.assertEqual((cap, binds), (2, "lead"))
+        self.assertIn("--set lead=N", how)
 
     def test_female_roles_and_race_words(self):
         m = K.ATTRIBUTES.search("You are a Troglodytess, a level 1 female dwarven Cavewoman.")
@@ -443,3 +452,47 @@ class CodeReviewTest(Case):
                  "c": ("2 apples", "Comestibles")}
         self.assertEqual(p.spare_missile()[0], "c")
         self.assertEqual(nh.Pilot.min_range({"name": "gas spore"}), 2)
+
+
+class PostmortemTest(Case):
+    def test_prayer_bands(self):
+        p = nh.Pilot(FakeTerm(), None)
+        self.assertEqual(p.prayer_band(400), "safe")
+        p.last_prayer = 300
+        self.assertTrue(p.prayer_band(400).startswith("fails (last T300, 100 ago)"))
+        self.assertTrue(p.prayer_band(700).startswith("uncertain (last T300, 400 ago"))
+        self.assertEqual(p.prayer_band(1300), "safe")
+        p.prayer_broken = True
+        self.assertTrue(p.prayer_band(5000).startswith("broken"))
+
+    def test_postmortem_names_the_killer_and_the_ladder(self):
+        p = nh.Pilot(FakeTerm(), None)
+        v = p.term.view()
+        for text in ("The jackal bites!", "The gnome lord zaps a wand!", "You die..."):
+            p.message(text, v)
+        p.hp_trail.extend([(398, 6, 16), (399, 2, 16)])
+        p.last_crisis = {"why": "HP 6/16", "tried": ["elbereth", "retreat"], "ended": 399, "hp_end": 2}
+        text = nh.report.postmortem(p, "game_over")
+        self.assertIn("killer (best guess): gnome lord", text)
+        self.assertIn("tried: elbereth, retreat", text)
+        self.assertIn("399:2/16", text)
+        self.assertIn("T400 You die...", text)
+
+
+class PersonaTest(Case):
+    def test_inventory_menu_drawn_over_the_map(self):
+        rows = [" ------           Comestibles",
+                " |....|           d - 9 food rations",
+                " |.@..|           e - an apple",
+                " |....|           Potions",
+                " ------           f - a potion of extra healing",
+                "                  (end)"]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 3)), None)
+        p.read_inventory()
+        self.assertEqual(sorted(p.inv), ["d", "e", "f"])
+        self.assertEqual([t for _, t in p.items(K.HEALING.pattern)], ["a potion of extra healing"])
+
+    def test_food_is_matched_on_whole_words(self):
+        self.assertIsNone(K.food_index("a +1 spear (weapon in right hand)"))
+        self.assertIsNotNone(K.food_index("2 pears"))
+        self.assertIsNotNone(K.food_index("an uncursed food ration"))

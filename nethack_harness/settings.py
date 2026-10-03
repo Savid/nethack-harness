@@ -23,9 +23,11 @@ DEFAULTS = {
     "breaker": 20,          # seconds of rules-only play after a failed or slow decision call
     "slow_ms": 1500,        # trip the breaker when the median of the last 5 calls is slower than this
     "search_budget": 150,   # search turns per level before moving down the escape ladder
-    "sturdy_hp": 25,        # a hero with less max HP than this, or AC worse than sturdy_ac, is fragile
-    "sturdy_ac": 6,
-    "fragile_lead": 1,      # a fragile hero descends no deeper than XL + this (+1 at risk=high)
+    "sturdy_hp": 10,        # fragile: max HP below sturdy_hp + sturdy_hp_per_xl * XL, or AC worse than sturdy_ac
+    "sturdy_hp_per_xl": 4,
+    "sturdy_ac": 7,
+    "fragile_lead": 1,      # pace: no deeper than XL + this until pace_xl (always, while fragile); +1 at risk=high
+    "pace_xl": 4,           # ...from this XL a sturdy hero may go one level deeper (XL + fragile_lead + 1)
     "cap_lift": 120,        # seconds on a level after which the depth lead no longer blocks descending
     "potions": 1,           # quaff known healing potions in emergencies
     "spells": 1,            # cast healing in emergencies when the hero knows it
