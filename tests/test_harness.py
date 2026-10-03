@@ -276,5 +276,16 @@ class HookTest(unittest.TestCase):
             hooks.judge(dict(facts(), hp=0), {})
 
 
+class CliTest(unittest.TestCase):
+    def test_help_prints_protocol(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(nh.main(["--dir", tempfile.mkdtemp(), "help"]), 0)
+        self.assertIn("OUTER/INNER LOOP PROTOCOL", out.getvalue())
+        self.assertIn("resume", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

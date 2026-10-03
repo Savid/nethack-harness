@@ -8,6 +8,8 @@ clef-flash) judges danger and checks the rules' choice on contested steps.
 When judgment is needed it pauses and hands a compact situation report to the
 outer loop (an agent such as an LLM with a shell), which acts and resumes it.
 
+Run `nethack_harness.py help` for the outer/inner loop protocol and playbook.
+
 Commands (run `nethack_harness.py COMMAND --help` for options):
   start   launch the background inner loop, block until it needs you
   wait    block until the next escalation      (exit 0 paused, 2 still running, 3 over)
@@ -79,6 +81,54 @@ YES_NO = [(re.compile(r"Are you sure you want to pray|Unlock it"), "y"),
 CONDITIONS = ("Hungry", "Weak", "Fainting", "Fainted", "Satiated", "Burdened", "Stressed", "Strained", "Blind",
               "Conf", "Stun", "Hallu", "Ill", "FoodPois", "Slime", "Stone", "Strngl", "Lev", "Held", "Trapped")
 HIT = re.compile(r"\b(hits|bites|stings|kicks|butts|touches|claws|misses)\b")
+
+
+PROTOCOL = """OUTER/INNER LOOP PROTOCOL (read me once)
+
+You are the outer loop. This program is the inner loop: it plays routine NetHack at several keys per second
+and stops only when judgment is needed. Let it play; your typed moves are far slower.
+
+Every blocking command (start, wait, resume) returns at an escalation, at game over or at its --timeout:
+  exit 0  paused: an ESCALATION report follows (reason, model view, options, hostiles, recent log, screen).
+          The keyboard is yours until you resume.
+  exit 2  timeout and all is fine: call wait again at once.
+  exit 3  game over (or the terminal socket closed).
+  exit 1  not running: start again (memory is kept unless --fresh), or read daemon.log in --dir.
+Use long blocks (--timeout 500 with a matching tool timeout) to save turns.
+
+While paused: send 'keys' (or send --hex 1b) and screen. A --More-- swallows keys: dismiss it first.
+Never send keys while it runs; pause first.
+
+Each turn: read the report, fix the situation in a few keys if needed, then
+  resume [--directive TEXT] [--mode descend|explore|careful] [--set k=v]... [--timeout S]
+Orders (--directive) reach the decision model every step; while set, the model decides contested steps.
+--directive '' clears them.
+
+ESCALATION PLAYBOOK
+  low HP, no safe prayer: quaff potions, cast healing (Z), engrave Elbereth (E - Elbereth Enter; @ humans and
+      minotaurs ignore it), go upstairs, or finish a weak foe; consider --mode careful.
+  danger / uncertain: act yourself, or resume with --directive.
+  stalled: a floating eye or mold blocking a corridor must never be meleed (fire or throw at it, or wait);
+      search dead ends (15s); kick locked doors (send --hex '04 6c' kicks east); push boulders.
+  Gnomish Mines: gnome or dwarf heroes and strong fighters: --set mines=allow; others: --set mines=avoid
+      (it climbs back out and uses the main stairs).
+  hunger: eat, or pray if the last prayer was 800+ turns ago.
+  unknown prompt / alarming message: answer or react (stoning: pray).
+  after praying by hand: resume --set last_prayer=T (T = the turn).
+  hook:KEY: a hook you loaded fired; its answer is in the report. Disable it with --disable KEY.
+
+TUNING (--set k=v)
+  --mode careful: rest to 85%, Elbereth below 50% HP, depth at most XL+2, earlier escalations.
+  --mode descend (default) dives; --mode explore sees more of each level.
+  danger_max p_min hp_escalate elbereth_hp rest_hp descend_hp xl_lead stall mines avoid calm last_prayer
+  avoid='soldier ant|dwarf' never melees matching monsters.
+
+HOOKS (outside strategies): --questions FILE.json and --plugin FILE.py on start or resume; --enable/--disable KEY.
+  {"questions": [{"key": K, "question": {"type": "noul", "instructions": "..."},
+                  "escalate_when": {"noul_gte": 0.8}, "when": {"new_level": true}, "cooldown": 300}]}
+  rules: noul_gte noul_lte score_gte score_lte choice_in min_confidence; when: every N | new_level.
+  A firing hook pauses with reason hook:K. See README.md for the plugin API.
+"""
 
 
 # ------------------------------------------------------------- terminal ---
@@ -1479,7 +1529,7 @@ def daemon(args):
     p.rng = random.Random(cfg.get("seed") or os.getpid())
     problems = load_hooks(p.hooks, cfg.get("questions"), cfg.get("plugins"), cfg.get("enable"), cfg.get("disable"))
     status = {"state": "running", "pid": os.getpid(), "escalation": store.read("status.json").get("escalation", 0),
-              "version": VERSION}
+              "version": VERSION, "commit": commit()}
     seq = store.read("control.json").get("seq", 0)
     paused = None
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -1715,6 +1765,15 @@ def serve_local(args):
 
 # ------------------------------------------------------------------ cli ---
 
+def commit():
+    """The source commit, when a COMMIT file sits next to this script (written by whoever fetched it)."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "COMMIT")) as f:
+            return f.read().strip()[:40] or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def parse_sets(items):
     out = {}
     for item in items or []:
@@ -1774,10 +1833,15 @@ def main(argv=None):
     lo.add_argument("--playground", help="passed to nethack as -d DIR")
     lo.add_argument("--options", help="NETHACKOPTIONS value, e.g. 'seed:42,color,!autopickup'")
     lo.add_argument("args", nargs="*", help="extra nethack arguments (after --)")
+    sub.add_parser("help", help="print the outer/inner loop protocol and playbook")
     sub.add_parser("_daemon")
     a = ap.parse_args(argv)
     store = Store(a.dir)
 
+    if a.cmd == "help":
+        print(PROTOCOL + "\nversion %s, commit %s\n" % (VERSION, commit()))
+        ap.print_help()
+        return 0
     if a.cmd == "_daemon":
         with open(store.path("daemon.log"), "a") as log:
             os.dup2(log.fileno(), 2)

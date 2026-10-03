@@ -24,6 +24,20 @@ giving new orders) and resumes it.
 The socket and endpoint path uses only the Python 3 standard library
 (Python 3.9 or later). It includes its own terminal emulator.
 
+## Install
+
+It is one file. Fetch a commit's source tarball and record which commit you run:
+
+```sh
+SHA=$(git ls-remote https://github.com/Savid/nethack-harness refs/heads/master | cut -f1)
+mkdir -p nh && curl -fsSL https://codeload.github.com/Savid/nethack-harness/tar.gz/$SHA | tar -xz --strip-components=1 -C nh
+echo "$SHA" > nh/COMMIT     # shown by `status` and `help`
+python3 nh/nethack_harness.py help
+```
+
+`master` is kept deployable: tests pass and the command line stays backward
+compatible between commits.
+
 ## Quick start (local game)
 
 ```sh
@@ -41,6 +55,7 @@ Use `--decide none` to play on rules alone. For hosted endpoints, pass
 
 ## The outer/inner protocol
 
+`help` prints the protocol and the escalation playbook for the outer loop.
 Every blocking command returns at an escalation, at game over, or at its
 `--timeout`:
 
