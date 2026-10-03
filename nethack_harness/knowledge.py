@@ -28,7 +28,8 @@ CONDITIONS = tuple(CONDITION_FORMS)
 CONDITION_RE = {name: re.compile(r"\b(?:%s)\b" % "|".join(forms)) for name, forms in CONDITION_FORMS.items()}
 MAJOR = ("Weak", "Fainting", "Fainted", "FoodPois", "TermIll", "Stone", "Slime", "Strngl", "InLava")
 
-HIT = re.compile(r"\b(hits|bites|stings|kicks|butts|touches|claws|misses|stabs|thrusts|swings|grabs|engulfs)!")
+HIT = re.compile(r"\b(hits|bites|stings|kicks|butts|touches|claws|misses|stabs|thrusts|swings|grabs|engulfs)!|"
+                 r"You are hit by|You are (?:almost )?hit by")
 ALARM = re.compile(r"You are slowing down|limbs are stiffening|deathly sick|can't breathe|You turn into|feverish|"
                    r"You are slimed|turning into green slime|closed for inventory|You stole|strangled|"
                    r"You can't move(?! diagonally)|How dare you|break my door|You owe|You feel like a hypocrite")
@@ -196,3 +197,24 @@ KIT_ADVICE = (
     (r"\bwand\b", "engrave-test unknown wands (E, letter) to identify; zap attack wands at dangerous foes"),
     (r"tin opener|tinning kit", "tins of safe corpses are emergency food"),
 )
+
+# Monsters that ignore Elbereth: by symbol (ELBERETH_IGNORERS) and by name.
+ELBERETH_IGNORER_NAMES = re.compile(r"minotaur|shopkeeper|guard|priest|Riders?|Death|Famine|Pestilence")
+# Keep away: never melee, and treat as a threat, unless the hero resists what makes them dangerous.
+# (name regex, races or roles that may ignore the rule). More can be added at runtime with --set avoid=...
+KEEP_AWAY = (
+    (r"\bnymph\b", ()),                                  # steals the pack, teleports away
+    (r"\bhomunculus\b", ("elven", "Monk")),              # sleep bite; elves and monks resist sleep
+    (r"\b(?:rust monster|disenchanter|mind flayer)\b", ()),
+)
+# A ranged attack on the hero: step out of the line before anything else.
+RANGED_HIT = re.compile(r"\b(?:zaps|shoots|throws|spits|breathes)\b|You hear a nearby zap|bolt of|You are hit by an? "
+                        r"(?:rock|arrow|dart|dagger|knife|spear|bolt|crossbow bolt|shuriken|ya|elven arrow|orcish arrow)|"
+                        r"\barrows?\b.*\b(?:hits|misses)\b|\b(?:hits|misses) you\b.*\b(?:dart|dagger|arrow|knife)\b")
+
+
+def keep_away(name, race=None, role=None):
+    for rx, immune in KEEP_AWAY:
+        if re.search(rx, name or "") and race not in immune and role not in immune:
+            return True
+    return False

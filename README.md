@@ -117,6 +117,10 @@ Resume options can be combined:
 - `--set k=v`: any setting.
 - `--plan ITEM`: queue a step, such as `keys:Za.`, `goal:stairs`, `goal:dig`,
   `goal:rest:0.9`, `goal:search:30`, `goal:travel:R,C` or `goal:pray`.
+  Crisis items do one fight action in one call: `goal:elbereth` (engraves,
+  reads it back, re-engraves once), `goal:quaff[:L]`, `goal:retreat` (stairs
+  within 8 safe steps, else a less exposed square) and `goal:fight:DIR[:N]`
+  (stops on a 15% HP loss or a new adjacent hostile).
 - `--questions FILE`, `--plugin FILE`, `--enable KEY`, `--disable KEY`:
   hot-load or switch hooks.
 
@@ -131,6 +135,7 @@ decisions, model calls (and how many reused an earlier answer) and escalations.
 | `effort` | medium | Decision effort: `off` (rules only), `low`, `medium`, `high` |
 | `lead` | by role | Max depth = XL + lead |
 | `sturdy_hp`, `sturdy_ac`, `fragile_lead` | 25, 6, 1 | A hero with max HP below `sturdy_hp` or AC above `sturdy_ac` is fragile and descends no deeper than XL + `fragile_lead` (+1 at `risk=high`); `cap_lift` never lifts this before XL 3. When the gate holds on an explored level, the loop escalates once and searches for experience |
+| `fight_handoff`, `crisis_turns` | ladder, 12 | When losing fast, the loop first runs a crisis ladder (pray when safe, quaff, stairs underfoot, verified Elbereth, retreat, then fight) and escalates only if the ladder is exhausted or HP is still falling after `crisis_turns`; the report lists the steps tried. `escalate` hands over at once |
 | `hp_drop`, `hp_drop_min` | 0.25, 5 | "Losing fast" needs both this fraction of max HP and this many points lost within 5 turns; the same fight re-escalates only after another step of loss |
 | `mapping` | 1 | 1 reads magic mapping when a level runs out of options; 2 reads one on each new level |
 | `mines` | auto | `allow` for gnome or dwarf heroes, otherwise `avoid`; or `escalate`. An unused Mines staircase looks like any other, so the harness reads the dungeon overview (`^O`) on each new level, leaves at once under `avoid`, and never takes that staircase again |

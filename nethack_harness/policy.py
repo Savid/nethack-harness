@@ -53,6 +53,10 @@ class Pilot:
         self.latencies, self.engulfed, self.esc_seen = collections.deque(maxlen=5), False, {}
         self.esc_counts, self.last_model_error, self.fight_noted = {}, "", None
         self.door_plan = None              # (dlvl, door, approach square, give up after this decision)
+        self.crisis = None                 # the in-loop fight ladder: {"until", "dl", "hp", "tried", "why"}
+        self.fight_plan = None             # goal:fight bookkeeping: (dlvl, HP at start, adjacent hostiles)
+        self.ranged_until = -1             # a ranged attack hit or missed us recently: leave its line
+        self.elbereth_failed = None        # (dlvl, pos, turn): Elbereth did not hold here
         self.gate_noted = None
         self.overviewed, self.mines_entry, self.branch, self.branch_dl = set(), None, "main", None
         self.breaker_until, self.breaker_trips, self.new_level_pending = 0.0, 0, set()
@@ -149,6 +153,8 @@ class Pilot:
         if K.HIT.search(text) or re.search(r"engulfs you|swallows you|can barely breathe|You are pummeled|"
                                            r"You are laden|You are blasted", text):
             self.hit_turn = v.st.get("turn", 0)
+        if K.RANGED_HIT.search(text):
+            self.ranged_until = v.st.get("turn", 0) + 10
         if re.search(r"engulfs you|swallows you|You are engulfed", text):
             self.engulfed = v.st.get("turn", 0) or 1      # remembered even when blindness hides the box
         if re.search(r"You get (?:expelled|regurgitated)|You are released|regurgitates you|expels you|"
@@ -486,7 +492,8 @@ class Pilot:
                 if name.startswith("unidentified ") and d <= 5:
                     never = "unconfirmed"
                 m["never"] = never
-                m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name))
+                m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name)) or \
+                    (not c["hallu"] and K.keep_away(name, self.race, self.role))
                 m["threat"] = 99 if m["avoid"] else 0 if c["hallu"] else K.threat_xl(ch, base, bright, name)
                 (obst if never else peace if "peaceful" in name else hostile).append(m)
         for p, desc in list(lv.traps.items()):   # identify nearby traps once: trap doors are free descents
@@ -511,8 +518,14 @@ class Pilot:
         c["can_pray"] = self.prayer_safe(turn)
         c["hungry"] = next((x for x in v.cond if x in ("Hungry", "Weak", "Fainting", "Fainted")), None)
         c["hit"] = turn - self.hit_turn <= 2
-        c["on_elbereth"] = self.elbereth_at is not None and self.elbereth_at[:2] == (dl, hero) and \
-            turn - self.elbereth_at[2] <= 50
+        e = self.elbereth_at
+        if e is not None and e[:2] == (dl, hero) and self.hit_turn > e[2]:
+            # hit while standing on it: it is not holding (misspelt, scuffed, or the attacker ignores it)
+            self.elbereth_failed, self.elbereth_at = (dl, hero, turn), None
+            self.note("elbereth", "hit while standing on Elbereth at T%d: no longer trusted here" % self.hit_turn)
+            e = None
+        c["on_elbereth"] = e is not None and e[:2] == (dl, hero) and turn - e[2] <= 50
+        c["ranged"] = turn <= self.ranged_until
         return c
 
     def fragile(self, hpmax, ac):
@@ -650,8 +663,8 @@ class Pilot:
                 c["hp"], c["hpmax"]), "20s", "rest", 3 + 2 * (hpf < 0.35) - (c["hungry"] is not None)))
         if (c["blind"] or c["hallu"]) and not c["hit"]:
             acts.append(Act("rest", "Wait out blindness or hallucination (20 turns)", "20s", "rest", 4))
-        if c["on_elbereth"] and any(h["dist"] <= 3 for h in hs) and hpf < 0.7:
-            acts.append(Act("rest_s", "Rest two turns on Elbereth", "2s", "rest", 5))
+        if c["on_elbereth"] and any(h["dist"] <= 3 for h in hs) and hpf < 0.7 and not c["ranged"]:
+            acts.append(Act("rest_s", "Rest one turn on the verified Elbereth", "ms", "rest", 5))
         if hs and not adjacent and self.waits < 5:
             acts.append(Act("wait", "Wait two turns and let monsters come to you", "2s", "wait",
                             0.8 if hurt and th else -1.5))
@@ -663,6 +676,13 @@ class Pilot:
             if tool:
                 acts.append(Act("dig", "Dig down through the floor with the " + tool[0][1], "a" + tool[0][0], "dig",
                                 4.8 if usable else 5.6))
+        if c["ranged"]:
+            acts = [a for a in acts if a.kind not in ("search", "rest", "wait", "elbereth")] + self.leave_line(v, c)
+        if self.crisis_active(c):
+            ladder = self.crisis_ladder(v, c, acts)
+            self.crisis["empty"] = not ladder
+            if ladder:
+                return ladder
         acts = self.through_doors(v, c, acts)
         if not acts:
             acts.append(Act("search", "Search here 15 turns", "15s", "search", -3))
@@ -674,6 +694,27 @@ class Pilot:
         if self.directive and self.decisions < self.calm_until:
             pass
         return sorted(acts, key=lambda a: -a.prior) or [Act("search", "Search here 15 turns", "15s", "search", -3)]
+
+    def crisis_active(self, c):
+        cr = self.crisis
+        return bool(cr) and cr["dl"] == c["dl"] and c["turn"] <= cr["until"]
+
+    def leave_line(self, v, c):
+        """Steps out of every hostile's row, column and diagonal (a ranged attacker needs a straight line)."""
+        hero, dist = c["hero"], c["dist"]
+        shooters = [h["pos"] for h in c["hostiles"] if 2 <= h["dist"] <= 8]
+
+        def in_line(p):
+            return any(p[0] == s[0] or p[1] == s[1] or abs(p[0] - s[0]) == abs(p[1] - s[1]) for s in shooters)
+
+        if not shooters or not in_line(hero):
+            return []
+        out = []
+        for k, q in nbrs(hero):
+            if dist.get(q) == 1 and v.ch(*q) not in K.MON and not in_line(q):
+                out.append(Act("leave_line_" + k, "Step %s out of the ranged attacker's line" % K.DN[k], k, "move",
+                               7.5, q))
+        return out[:1]
 
     def lv_downs_usable(self, c):
         return any(p in c["dist"] for p in c["lv"].downs)
@@ -813,10 +854,87 @@ class Pilot:
         if CFG["spells"] and self.role == "Healer" and hpf < 0.5 and v.st.get("pw", 0) >= 5:
             acts.append(Act("cast_heal", "Cast healing on yourself", "Za.", "cast", 7 if th else 4))
         adjacent_threat = [h for h in th if h["dist"] == 1 and (hpf < val("elbereth_hp") or c["xl"] < h["threat"])]
-        if CFG["elbereth"] and adjacent_threat and not c["on_elbereth"] and "Lev" not in v.cond and \
-                not any(h["ch"] in K.ELBERETH_IGNORERS or re.search(r"minotaur|shopkeeper|guard|priest", h["name"])
-                        for h in adjacent_threat):
+        if CFG["elbereth"] and adjacent_threat and self.elbereth_useful(v, c, adjacent_threat):
             acts.append(Act("elbereth", "Engrave Elbereth in the dust to scare monsters away", "", "elbereth", 6.5))
+
+    def elbereth_useful(self, v, c, attackers):
+        """Engrave only where it has not just failed, against attackers that respect it, with no ranged attack."""
+        failed = self.elbereth_failed
+        return not c["on_elbereth"] and "Lev" not in v.cond and not c["ranged"] and \
+            not (failed and failed[:2] == (c["dl"], c["hero"]) and c["turn"] - failed[2] < 100) and \
+            not any(h["ch"] in K.ELBERETH_IGNORERS or K.ELBERETH_IGNORER_NAMES.search(h["name"]) for h in attackers)
+
+    def read_engraving(self):
+        """What is engraved under the hero, read with ':' (takes no game time); '' when nothing is."""
+        text = " ".join(line.strip() for line in self.read_pages(":"))
+        m = re.search(r'You read: "(.*?)"', text)
+        return m.group(1) if m else ""
+
+    def retreat_act(self, v, c):
+        """BotHack-style retreat: stairs within 8 steps along a path no threat is next to (then take them), else
+        a step to a neighbouring square next to fewer threats, preferring corridors and doorways."""
+        hero, lv, dist = c["hero"], c["lv"], c["dist"]
+        threats = [h["pos"] for h in c["hostiles"] if h["dist"] <= 3]
+        exits = [(lv.up, "<")] if lv.up and c["dl"] > 1 else []
+        exits += [(p, ">") for p, kind in lv.downs.items() if kind == "main" and self.descend_ok(dict(c, hpf=1.0))]
+        for p, key in sorted(exits, key=lambda e: dist.get(e[0], 999)):
+            if p == hero or dist.get(p, 999) > 8:
+                continue
+            route = lv.route(v, hero, p) or []
+            if route and all(cheb(q, t) > 1 for q in route[1:] for t in threats) and \
+                    not any(lv.cell(v, q)[0] == "+" for q in route):
+                return Act("retreat", "Retreat to the %s stairs %d steps %s and take them" % (
+                    "up" if key == "<" else "down", len(route), compass(hero, p)), travel(hero, p) + key, "retreat",
+                    8.8, p)
+        here = sum(cheb(hero, t) == 1 for t in threats)
+        best = None
+        for k, q in nbrs(hero):
+            if dist.get(q) != 1 or v.ch(*q) in K.MON or q in lv.blocked:
+                continue
+            near = sum(cheb(q, t) == 1 for t in threats)
+            exposed = sum(1 for _, n in nbrs(q) if dist.get(n) is not None)
+            if near < here and (best is None or (near, exposed) < best[0]):
+                best = ((near, exposed), k, q)
+        if best:
+            (near, exposed), k, q = best
+            return Act("retreat", "Step %s away from the attackers (next to %d instead of %d%s)" % (
+                K.DN[k], near, here, ", a narrow spot" if exposed <= 2 else ""), k, "retreat", 8.6, q)
+        return None
+
+    def crisis_ladder(self, v, c, acts):
+        """A fight going badly: the standard bot ladder, in order. Pray, quaff, stairs underfoot, Elbereth,
+        retreat, then fight. Returns the ladder steps plus the fighting moves; empty means the ladder is done."""
+        hero, th = c["hero"], c["threats"]
+        ladder = []
+        if c["can_pray"] and c["trouble"]:
+            ladder.append(Act("pray", "Pray (in serious trouble and the prayer timeout looks safe)", "", "pray", 9.6))
+        heal = self.items(K.HEALING.pattern)
+        if CFG["potions"] and heal and c["hpf"] < 0.5:
+            ladder.append(Act("quaff", "Quaff the %s" % heal[0][1], "q" + heal[0][0], "quaff", 9.4))
+        if CFG["spells"] and self.role == "Healer" and c["hpf"] < 0.5 and v.st.get("pw", 0) >= 5:
+            ladder.append(Act("cast_heal", "Cast healing on yourself", "Za.", "cast", 9.3))
+        if c["under"] == "<" and c["dl"] > 1:
+            ladder.append(Act("flee_up", "Escape up the stairs you stand on", "<", "flee", 9.2))
+        elif c["under"] == ">" and self.descend_ok(dict(c, hpf=1.0)) and \
+                not (c["lv"].downs.get(hero) == "branch" and self.mines_policy() == "avoid"):
+            ladder.append(Act("descend", "Escape down the stairs you stand on", ">", "descend", 9.2))
+        adjacent = [h for h in th if h["dist"] == 1]
+        if CFG["elbereth"] and adjacent and self.elbereth_useful(v, c, adjacent):
+            ladder.append(Act("elbereth", "Engrave Elbereth in the dust (verified after engraving)", "", "elbereth",
+                              9.0))
+        if c["on_elbereth"] and not c["ranged"]:       # (a hit since engraving already voids on_elbereth)
+            ladder.append(Act("rest_s", "Rest one turn on the verified Elbereth", "ms", "rest", 8.9))
+        if c["ranged"]:
+            ladder += [Act(a.key, a.desc, a.keys, a.kind, 9.1, a.target) for a in self.leave_line(v, c)]
+        retreat = self.retreat_act(v, c)
+        if retreat:
+            ladder.append(retreat)
+        fight = [a for a in acts if a.kind in ("attack", "fire", "throw")]
+        tried = self.crisis["tried"] if self.crisis else []
+        for a in ladder:         # a step tried twice in this crisis without ending it goes behind the others
+            if a.key != "rest_s" and tried.count(a.key) >= 2:
+                a.prior -= 6
+        return sorted(ladder + fight, key=lambda a: -a.prior)
 
     # ------------------------------------------------------------ the model's view
     def state(self, v, c):
@@ -868,6 +986,19 @@ class Pilot:
         return normalize(res.get("answers")), took
 
     # ------------------------------------------------------------ doing things
+    def engrave_elbereth(self, c):
+        """Engrave, read it back, and engrave once more if this build's dust errors misspelt it."""
+        for attempt in (1, 2):
+            self.flow("E-", until=8)
+            text = self.read_engraving()
+            if text.lower() == "elbereth":
+                self.elbereth_at = (c["dl"], c["hero"], c["turn"])
+                self.note("elbereth", "engraved and verified" + (" on the second try" if attempt == 2 else ""))
+                return True
+            self.note("elbereth", "engraving reads %r, not Elbereth" % text[:30])
+        self.elbereth_at, self.elbereth_failed = None, (c["dl"], c["hero"], c["turn"])
+        return False
+
     def do(self, v, c, a):
         lv = c["lv"]
         self.last_act = a
@@ -886,9 +1017,17 @@ class Pilot:
             finally:
                 self.praying = False
             return
+        if self.crisis_active(c):
+            self.crisis["tried"].append(a.key)
         if a.kind == "elbereth":
-            self.flow("E-", until=8)
-            self.elbereth_at = (c["dl"], c["hero"], c["turn"])
+            self.engrave_elbereth(c)
+            return
+        if a.key == "rest_s":
+            if self.read_engraving().lower() != "elbereth":      # scuffed since: do not rest on it
+                self.elbereth_failed, self.elbereth_at = (c["dl"], c["hero"], c["turn"]), None
+                self.note("elbereth", "the engraving no longer reads Elbereth: not resting on it")
+                return
+            self.send("ms")
             return
         if a.kind == "eat_corpse":
             self.eating_corpse = True
@@ -992,8 +1131,15 @@ class Pilot:
             bytes.fromhex(arg)
             return
         goal, _, param = arg.partition(":")
-        if kind != "goal" or goal not in ("pray", "rest", "search", "dig", "stairs", "up", "travel", "explore"):
+        if kind != "goal" or goal not in ("pray", "rest", "search", "dig", "stairs", "up", "travel", "explore",
+                                          "elbereth", "quaff", "retreat", "fight"):
             raise ValueError("unknown plan item %r (help plan)" % item)
+        if goal == "quaff" and param and not re.fullmatch(r"[a-zA-Z]", param):
+            raise ValueError("goal:quaff takes an inventory letter, e.g. goal:quaff:f")
+        if goal == "fight":
+            d, _, n = param.partition(":")
+            if d not in K.DIRS or (n and not 1 <= int(n) <= 20):
+                raise ValueError("goal:fight wants a direction and an optional count 1-20, e.g. goal:fight:h:4")
         if goal == "rest" and param:
             if not 0 < float(param) <= 1:
                 raise ValueError("goal:rest wants an HP fraction in (0, 1]")
@@ -1004,6 +1150,36 @@ class Pilot:
             r, col = (int(x) for x in param.split(","))
             if not (2 <= r <= 22 and 1 <= col <= 80):
                 raise ValueError("goal:travel wants ROW,COL on the map (rows 2-22, columns 1-80)")
+
+    def plan_fight(self, v, c, param):
+        """goal:fight:DIR[:N]: one attack per step, at most N, stopping when HP falls 15% of max since the
+        fight began, a new hostile comes adjacent, or nothing is left to hit in that direction."""
+        d, _, n = param.partition(":")
+        left = int(n or 4)
+        q = (c["hero"][0] + K.DIRS[d][0], c["hero"][1] + K.DIRS[d][1])
+        adjacent = {h["pos"] for h in c["hostiles"] if h["dist"] == 1}
+        start = self.fight_plan if self.fight_plan and self.fight_plan[0] == c["dl"] else None
+        if start is None:
+            start = self.fight_plan = (c["dl"], c["hp"], adjacent)
+        why = None
+        if c["hp"] <= start[1] - 0.15 * c["hpmax"]:
+            why = "HP fell %d -> %d" % (start[1], c["hp"])
+        elif adjacent - start[2] - {q}:
+            why = "a new hostile came adjacent"
+        elif v.ch(*q) not in K.MON and v.ch(*q) != "I":
+            why = "nothing left to attack %s" % K.DN[d]
+        if why or left <= 0:
+            self.plan.popleft()
+            self.fight_plan = None
+            if why and why.startswith(("HP", "a new")):
+                raise Hard("goal:fight stopped: " + why)
+            return False
+        self.plan[0] = "goal:fight:%s:%d" % (d, left - 1)
+        if left - 1 <= 0:
+            self.plan.popleft()
+            self.fight_plan = None
+        self.send("F" + d)
+        return True
 
     def run_plan(self, v, c):
         """Execute the next queued plan item. Returns True when it acted."""
@@ -1023,7 +1199,7 @@ class Pilot:
             return True
         if goal == "rest":
             target = float(param or 0.95)
-            if c["hpf"] >= target or c["hostiles"]:
+            if c["hpf"] >= target or c["hostiles"] or c["hit"] or c["threats"]:
                 self.plan.popleft()
                 return False
             self.send("20s")
@@ -1037,6 +1213,29 @@ class Pilot:
             lv.credit_search(hero, min(15, left))
             self.send("%ds" % min(15, left))
             return True
+        if goal == "elbereth":
+            self.plan.popleft()
+            if not self.engrave_elbereth(c):
+                raise Hard("goal:elbereth: the engraving did not read Elbereth after two tries")
+            return True
+        if goal == "quaff":
+            self.plan.popleft()
+            letter = param or next((k for k, _ in self.items(K.HEALING.pattern)), None)
+            if not letter:
+                raise Hard("goal:quaff: no known healing potion; name one with goal:quaff:LETTER")
+            self.flow("q" + letter, until=6)
+            self.inv_turn = -2
+            return True
+        if goal == "retreat":
+            self.plan.popleft()
+            act = self.retreat_act(v, c)
+            if not act:
+                raise Hard("goal:retreat: no stairs within 8 steps clear of the attackers and no square next to "
+                           "fewer of them")
+            self.do(v, c, act)
+            return True
+        if goal == "fight":
+            return self.plan_fight(v, c, param)
         if goal == "dig":
             tool = self.items("|".join(K.DIG_TOOLS))
             self.plan.popleft()
@@ -1125,7 +1324,7 @@ class Pilot:
                 self.level(d).stair_ban_until = self.decisions + 60
             return "oscillating: Dlvl %s <-> %s %d times; the involved stairs are now avoided" % (
                 levels[-1], levels[-2], len(levels))
-        t = [x for x in self.trail if x[2] not in ("search_more", "linger")][-12:]   # deliberate waits are not loops
+        t = [x for x in self.trail if x[2] not in ("search_more", "linger", "rest_s")][-12:]   # deliberate waits
         if len(t) >= 10:
             spots = collections.Counter((x[0], x[1]) for x in t)
             keys = collections.Counter(x[2] for x in t)
@@ -1277,12 +1476,33 @@ class Pilot:
         step = max(3, 0.15 * c["hpmax"])
         same_fight = last_fight and last_fight[0] == who and c["turn"] - last_fight[2] < 100 and \
             c["hp"] > last_fight[1] - step       # the same attackers, and HP has not fallen another step
-        if drop >= max(CFG["hp_drop"] * c["hpmax"], CFG["hp_drop_min"]) and not same_fight and \
+        cr = self.crisis
+        if cr and not self.crisis_active(c):
+            # the ladder's window is over: done if the bleeding stopped, hand over if HP is still falling
+            self.crisis = None
+            if cr["dl"] == dl and c["hp"] < cr["hp"] - step and (c["hit"] or near):
+                reason = "losing fast: HP still falling after the crisis ladder, %d -> %d/%d (%s; tried: %s)" % (
+                    cr["hp"], c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
+        elif cr and cr.get("empty"):
+            self.crisis = None
+            reason = "losing fast: the crisis ladder is exhausted at HP %d/%d (%s; tried: %s)" % (
+                c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
+        if reason:
+            pass
+        elif drop >= max(CFG["hp_drop"] * c["hpmax"], CFG["hp_drop_min"]) and not same_fight and \
                 self.low_noted != ("drop", c["turn"] // 10):
             self.low_noted = ("drop", c["turn"] // 10)
             self.fight_noted = (who, c["hp"], c["turn"])
-            reason = "losing fast: HP %d/%d, down %d in 5 turns (%s)" % (
+            why = "HP %d/%d, down %d in 5 turns (%s)" % (
                 c["hp"], c["hpmax"], drop, ", ".join(h["name"] for h in adjacent[:3]) or "unseen attacker")
+            if CFG["fight_handoff"] == "ladder" and not self.crisis:
+                # keep the fight in the loop: the outer loop is too slow for it; escalate only if the ladder fails
+                self.crisis = {"until": c["turn"] + CFG["crisis_turns"], "dl": dl, "hp": c["hp"], "tried": [],
+                               "why": why}
+                self.note("crisis", "losing fast (%s): running the crisis ladder" % why)
+                acts = self.actions(v, c)
+            elif not self.crisis:
+                reason = "losing fast: " + why
         elif len(adjacent) >= 3 and self.low_noted != ("swarm", len(adjacent), c["hp"] // 5):
             self.low_noted = ("swarm", len(adjacent), c["hp"] // 5)
             reason = "surrounded: %d adjacent hostiles (%s), HP %d/%d" % (
@@ -1292,8 +1512,10 @@ class Pilot:
         elif (near or c["hit"]) and hpf < val("hp_escalate") and not any(a.prior >= 6.5 for a in acts):
             if self.low_noted != (dl, c["hp"] // 3):
                 self.low_noted = (dl, c["hp"] // 3)
-                reason = "low HP %d/%d with %s and no safe prayer, potion or Elbereth" % (
-                    c["hp"], c["hpmax"], (near[0]["name"] + " near") if near else "an unseen attacker")
+                reason = "low HP %d/%d with %s and no safe prayer, potion or Elbereth%s" % (
+                    c["hp"], c["hpmax"], (near[0]["name"] + " near") if near else "an unseen attacker",
+                    " (crisis ladder tried: %s)" % (", ".join(self.crisis["tried"]) or "nothing applied")
+                    if self.crisis else "")
         elif c["hungry"] in ("Weak", "Fainting") and not any(a.kind in ("eat", "eat_corpse", "pray") for a in acts):
             reason = "%s from hunger, no food, no safe prayer" % c["hungry"]
         elif c["hungry"] == "Hungry" and not self.food_letters() and not c["can_pray"] and \
@@ -1308,8 +1530,8 @@ class Pilot:
                 ", ".join(sorted(lv.probed)) or "-",
                 "; blocked by " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"])) for h in c["obst"][:3])
                 if c["obst"] else "")
-        elif acts[0].prior <= -2 and not near and not c["frontier"] and self.lv_downs_usable(c) and \
-                not self.descend_ok(c) and c["hpf"] >= val("descend_hp"):
+        elif acts[0].prior <= -2 and not near and not c["hit"] and not c["frontier"] and \
+                self.lv_downs_usable(c) and not self.descend_ok(c) and c["hpf"] >= val("descend_hp"):
             cap = self.depth_cap(c["xl"], c["hpmax"], c["ac"])
             acts.insert(0, Act("linger", "Search 20 turns while the depth gate holds (Dlvl %d at most for now)" % cap,
                                "20s", "search", 0))

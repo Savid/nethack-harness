@@ -39,6 +39,8 @@ DEFAULTS = {
     "stall_secs": 45,       # escalate after this many seconds without new squares or depth
     "hp_drop": 0.25,        # escalate when HP falls by this fraction of max within 5 turns
     "hp_drop_min": 5,       # ...and by at least this many points (one bite at low max HP is not news)
+    "fight_handoff": "ladder",  # losing fast: "ladder" runs the crisis ladder first; "escalate" hands over at once
+    "crisis_turns": 12,     # turns the crisis ladder has before a still-falling HP is handed over
     "pickup_food": 1,       # pick up known-safe food the hero steps on
     "ranged": 1,            # fire the quivered missiles (f) at hostiles approaching in a line
     "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
@@ -133,6 +135,8 @@ def validate(sets):
             raise ValueError("effort must be off, low, medium or high")
         if k == "mines" and v not in ("auto", "allow", "avoid", "escalate"):
             raise ValueError("mines must be auto, allow, avoid or escalate")
+        if k == "fight_handoff" and v not in ("ladder", "escalate"):
+            raise ValueError("fight_handoff must be ladder or escalate")
         try:
             value = coerce(k, v)
         except (TypeError, ValueError):

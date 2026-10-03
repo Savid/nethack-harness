@@ -312,3 +312,82 @@ class SettleTest(unittest.TestCase):
             self.assertTrue(nh.transport.MULTI_TURN.match(keys), keys)
         for keys in (b"s", b"l", b"Fh", b"\x04l", b"Za.", b"#pray\\r"):
             self.assertFalse(nh.transport.MULTI_TURN.match(keys), keys)
+
+
+class CrisisTest(unittest.TestCase):
+    """The loop keeps a losing fight: ladder first, hand-over only when it fails."""
+
+    def tearDown(self):
+        nh.CFG.update(nh.settings.DEFAULTS)
+
+    def pilot(self, rows, cursor):
+        p = nh.Pilot(FakeTerm(screen("", rows), cursor), None)
+        p.species[(3, "d", "gray", False)] = p.species[(3, (3, 5), "d", "gray")] = "jackal"
+        p.options = p.briefed = True
+        p.inv_turn = 400
+        return p
+
+    def test_retreat_steps_away_and_prefers_stairs(self):
+        rows = [" ------- ", " |.....| ", " |..@d.| ", " |.....| ", " ------- "]
+        p = self.pilot(rows, (3, 4))
+        c = p.context(p.term.view())
+        a = p.retreat_act(p.term.view(), c)
+        self.assertEqual(a.kind, "retreat")
+        self.assertGreater(cheb_(a.target, (3, 5)), 1)
+        p.level(3).up = (2, 2)
+        c = p.context(p.term.view())
+        a = p.retreat_act(p.term.view(), c)
+        self.assertTrue(a.keys.endswith("<"), a.desc)
+
+    def test_ladder_order_and_elbereth_rules(self):
+        rows = [" ------- ", " |.....| ", " |..@d.| ", " |.....| ", " ------- "]
+        p = self.pilot(rows, (3, 4))
+        c = p.context(p.term.view())
+        c["can_pray"], c["trouble"] = True, True
+        p.crisis = {"until": 999, "dl": 3, "hp": 12, "tried": [], "why": "test"}
+        keys = [a.key for a in p.crisis_ladder(p.term.view(), c, [])]
+        self.assertEqual(keys[:3], ["pray", "elbereth", "retreat"])
+        c["ranged"] = True                        # no Elbereth against a ranged attacker
+        self.assertNotIn("elbereth", [a.key for a in p.crisis_ladder(p.term.view(), c, [])])
+
+    def test_elbereth_is_read_back_and_retried_once(self):
+        p = self.pilot([" |..@..| "], (1, 4))
+        c = {"dl": 3, "hero": (1, 4), "turn": 50}
+        for reads, ok in ((["Elbcreth", "Elbereth"], True), (["Elbere?h", "Elb?reth"], False)):
+            flows, texts = [], list(reads)
+            p.flow = lambda keys, until=8: flows.append(keys)
+            p.read_engraving = lambda: texts.pop(0)
+            self.assertEqual(p.engrave_elbereth(c), ok)
+            self.assertEqual(len(flows), 2)
+            self.assertEqual(p.elbereth_at is not None, ok)
+
+    def test_hit_on_elbereth_means_it_failed(self):
+        p = self.pilot([" |..@..| "], (1, 4))
+        p.elbereth_at = (3, (1, 4), 390)
+        p.hit_turn = 399
+        c = p.context(p.term.view())
+        self.assertFalse(c["on_elbereth"])
+        self.assertEqual(p.elbereth_failed[:2], (3, (1, 4)))
+
+    def test_handoff_setting(self):
+        self.assertRaises(ValueError, nh.apply_settings, None, {"fight_handoff": "maybe"})
+        nh.apply_settings(None, {"fight_handoff": "escalate"})
+        self.assertEqual(nh.CFG["fight_handoff"], "escalate")
+
+    def test_crisis_plan_items_are_checked(self):
+        for good in ("goal:elbereth", "goal:quaff", "goal:quaff:f", "goal:retreat", "goal:fight:h", "goal:fight:y:6"):
+            nh.Pilot.check_plan(good)
+        for bad in ("goal:quaff:12", "goal:fight", "goal:fight:x", "goal:fight:h:99"):
+            with self.assertRaises(ValueError):
+                nh.Pilot.check_plan(bad)
+
+    def test_rest_plan_stops_on_a_hit(self):
+        p = self.pilot([" |..@..| "], (1, 4))
+        p.plan.append("goal:rest:0.9")
+        c = {"lv": p.level(3), "hero": (1, 4), "hpf": 0.5, "hostiles": [], "hit": True, "threats": []}
+        self.assertFalse(p.run_plan(p.term.view(), c))
+        self.assertEqual(list(p.plan), [])
+
+
+def cheb_(a, b):
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))

@@ -99,6 +99,9 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("hp_drop", "", "escalate 'losing fast' when HP falls by this fraction of max within 5 turns"),
             ("hp_drop_min", "", "...and by at least this many points; the same fight re-escalates only after "
                                 "another step of loss"),
+            ("fight_handoff", "", "losing fast: ladder (pray, quaff, stairs underfoot, verified Elbereth, retreat, "
+                                  "then fight; escalate only if HP keeps falling) | escalate (hand over at once)"),
+            ("crisis_turns", "", "turns the crisis ladder runs before a still-falling HP is handed over"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
             ("last_prayer", "", "turn of a prayer you made by hand")]),
@@ -118,11 +121,17 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
   goal:stairs          go to known down stairs and descend (probes if none known)
   goal:up              go to the up stairs and climb
   goal:dig             dig down here with the pick-axe or mattock
-  goal:rest[:F]        rest until HP fraction F (default 0.95) or a monster appears
+  goal:rest[:F]        rest until HP fraction F (default 0.95); stops on a hit or a monster in view
   goal:search[:N]      search N turns here (default 15)
   goal:explore[:N]     prefer exploring for N decisions
   goal:travel:R,C      travel to screen row R, column C (1-based)
-  goal:pray            pray now""",
+  goal:pray            pray now
+CRISIS ITEMS (one call each instead of hand-typed keys mid-fight)
+  goal:elbereth        engrave Elbereth in the dust, read it back, re-engrave once if misspelt
+  goal:quaff[:L]       quaff letter L, or the first known healing potion
+  goal:retreat         stairs within 8 steps clear of attackers (and take them), else a step next to fewer
+  goal:fight:DIR[:N]   attack DIR (hjklyubn) up to N times (default 4, max 20); stops and escalates when HP
+                       falls 15% of max or a new hostile comes adjacent; ends when the target is gone""",
     "hooks": """HOOKS: declarative questions (--questions FILE.json at start or resume; --disable/--enable KEY)
   {"questions": [{"key": "shopkeeper",
                   "question": {"type": "noul", "instructions": "Is a shopkeeper visible on the screen?"},
@@ -307,7 +316,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m3" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m4" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
