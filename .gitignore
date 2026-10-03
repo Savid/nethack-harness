@@ -1,0 +1,4 @@
+.nethack-harness/
+.test/
+__pycache__/
+*.pyc
