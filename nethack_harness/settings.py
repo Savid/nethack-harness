@@ -75,6 +75,9 @@ def coerce(key, value):
     return type(default)(value)
 
 
+ALIASES = {"xl_lead": "lead"}     # older names keep working
+
+
 def apply_settings(mode=None, sets=None):
     """A mode resets every tunable to its default, then applies the mode; explicit sets come last."""
     if mode:
@@ -86,6 +89,7 @@ def apply_settings(mode=None, sets=None):
         CFG.update(MODES[mode])
         CFG["last_prayer"] = keep
     for k, v in (sets or {}).items():
+        k = ALIASES.get(k, k)
         if k not in DEFAULTS:
             raise ValueError("unknown setting %s (known: %s)" % (k, ", ".join(sorted(DEFAULTS))))
         if k == "risk" and v not in RISK:

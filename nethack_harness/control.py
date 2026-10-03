@@ -16,7 +16,7 @@ from .decide import decider
 from .hooks import HookError, Hooks
 from .policy import GAME_OVER, Pilot
 from .report import status as status_of, summary
-from .settings import CFG, DEFAULTS, EFFORT, MODES, RISK, apply_settings, describe
+from .settings import ALIASES, CFG, DEFAULTS, EFFORT, MODES, RISK, apply_settings, describe
 from .transport import Closed, Held, Term, serve_local
 
 HELP = {
@@ -525,6 +525,7 @@ def parse_sets(items):
             print("--set wants k=v, got %r" % item, file=sys.stderr)
             raise SystemExit(64)
         k, v = item.split("=", 1)
+        k = ALIASES.get(k, k)
         if k not in DEFAULTS:
             print("unknown setting %s (known: %s)" % (k, ", ".join(sorted(DEFAULTS))), file=sys.stderr)
             raise SystemExit(64)

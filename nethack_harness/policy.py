@@ -187,6 +187,8 @@ class Pilot:
         if v.text and "write in the" in v.msg:
             self.send("Elbereth\r")
             return None
+        if v.text and re.search(r"who are you\?|wish|genocide", v.msg):
+            raise Hard("text prompt needs you: " + v.msg[:160])
         if v.menu or v.getpos or v.text or v.direction or v.obj is not None:
             self.note("cancel", v.msg[:100])
             self.send("\x1b")

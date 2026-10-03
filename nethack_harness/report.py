@@ -29,6 +29,10 @@ def suggestions(p):
     kit, out = p.kit(), []
     out.append("--set mines=%s (race %s; auto picks %s)" % (p.mines_policy(), p.race, p.mines_policy()))
     out.append("depth lead XL+%d for %s (--set lead=N, or --set risk=low|normal|high)" % (p.lead(), p.role))
+    wielded = next((t for k, t in p.items(r"weapon in hand|wielded")), "")
+    if kit["dig"] and ("bullwhip" in wielded or not wielded):
+        letter = p.items("|".join(K.DIG_TOOLS))[0][0]
+        out.append("fight with the digging tool rather than %s: --plan 'keys:w%s'" % (wielded or "bare hands", letter))
     if kit["dig"] and not CFG["dig"]:
         out.append("you carry a digging tool: --set dig=1 descends by digging (fast, skips levels' contents)")
     if kit["mapping"]:

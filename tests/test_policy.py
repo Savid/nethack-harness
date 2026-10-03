@@ -125,5 +125,24 @@ class CharacterTest(unittest.TestCase):
         self.assertEqual(p.lead(), 4)
 
 
+class StallTest(unittest.TestCase):
+    def test_two_square_oscillation_is_detected_and_banned(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.decisions, p.progress = 40, 20
+        for i in range(12):
+            p.trail.append((3, (5, 5 + i % 2), "explore" if i % 2 else "wait"))
+        reason = p.oscillation(3)
+        self.assertTrue(reason and reason.startswith("oscillating"))
+        self.assertTrue(p.lv[3].banned((5, 5), "wait", 41))
+        self.assertFalse(p.lv[3].banned((5, 5), "wait", 100))
+
+    def test_level_toggle_is_detected(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.max_dl = 4
+        p.level_trail.extend([3, 4, 3, 4, 3, 4])
+        self.assertIn("Dlvl", p.oscillation(3))
+        self.assertGreater(p.lv[3].stair_ban_until, p.decisions)
+
+
 if __name__ == "__main__":
     unittest.main()

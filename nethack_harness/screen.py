@@ -24,8 +24,8 @@ class View:
         if self.obj is not None:
             self.yn = None
         self.text = self.obj is None and asking and bool(re.search(
-            r"What do you want to (write|name|call|add)|Call a |Name it|What monster|write in the|"
-            r"What do you want to engrave", msg))
+            r"What do you want to (write|name|call|add)|Call an? |Name it|What monster|write in the|"
+            r"What do you want to engrave|who are you\?|What do you want to (?:wish|genocide)", msg))
         self.direction = asking and bool(re.search(r"(In what|Which) direction\?", msg))
         self.getpos = bool(re.search(r"Where do you want to travel|type a \?|Pick an|Pick a ", msg))
         joined = "\n".join(rows)
