@@ -51,7 +51,9 @@ class Pilot:
         self.plan = collections.deque()
         self.cache, self.reused = None, 0
         self.latencies, self.engulfed, self.esc_seen = collections.deque(maxlen=5), False, {}
-        self.esc_counts, self.last_model_error = {}, ""
+        self.esc_counts, self.last_model_error, self.fight_noted = {}, "", None
+        self.door_plan = None              # (dlvl, door, approach square, give up after this decision)
+        self.gate_noted = None
         self.overviewed, self.mines_entry, self.branch, self.branch_dl = set(), None, "main", None
         self.breaker_until, self.breaker_trips, self.new_level_pending = 0.0, 0, set()
         self.hp_hist = collections.deque(maxlen=12)        # (turn, hp)
@@ -164,6 +166,15 @@ class Pilot:
             self.corpse = (dl, self.last_act.target, m.group(1), v.st.get("turn", 0))
         if "This door is locked" in text and self.last_act and self.last_act.kind == "door":
             lv.locked.add(self.last_act.target)
+        if re.search(r"The door opens|crashes open|shatters to pieces|You break open the lock|"
+                     r"The door unlocks|You succeed in (?:unlocking|forcing)", text):
+            # a way opened: forget exclusions and bans earned while it was shut
+            if self.last_act and self.last_act.target:
+                lv.locked.discard(self.last_act.target)
+            lv.excluded.clear()
+            lv.bans = {k: u for k, u in lv.bans.items() if u == -1}     # keep level-long bans
+            lv.failed.clear()
+            self.move_ban_until = 0
         if re.search(r"WHAMM|leg is in no shape", text) and self.last_act and self.last_act.kind == "kick":
             if "no shape" in text:
                 lv.no_kick = True
@@ -338,8 +349,8 @@ class Pilot:
             m = K.ATTRIBUTES.search(line)
             if m:
                 race = m.group(2)
-                self.race = {"elf": "elven", "dwarf": "dwarvish", "gnome": "gnomish", "orc": "orcish"}.get(race, race)
-                self.role = m.group(3)
+                self.race = K.RACE_WORDS.get(race, race)
+                self.role = K.ROLE_NAMES.get(m.group(3), m.group(3))
             m = K.ALIGNMENT.search(line)
             if m and not self.align:
                 self.align = m.group(1)
@@ -348,16 +359,31 @@ class Pilot:
             self.role = K.ROLE_TITLES.get(title[0] if title else "", None)
 
     def read_inventory(self):
-        inv, sec = {}, ""
-        for line in self.read_pages("i"):
+        """Re-read the pack. A read that did not show the whole inventory menu (every page, or an (end)
+        marker) only adds to what is known, so a swallowed key or a missed page never empties the pack."""
+        inv, sec, pages, total, ended = {}, "", set(), None, False
+        lines = self.read_pages("i")
+        for line in lines:
+            m = re.search(r"\((\d+) of (\d+)\)\s*$", line)
+            if m:
+                pages.add(int(m.group(1)))
+                total = int(m.group(2))
+            if re.search(r"\(end\)\s*$", line):
+                ended = True
             m = re.match(r"\s*([a-zA-Z$]) - (.+?)\s*$", line)
             if m and len(m.group(2)) > 2:
                 inv.setdefault(m.group(1), (m.group(2), sec))
             elif line.strip() in ("Weapons", "Armor", "Comestibles", "Scrolls", "Spellbooks", "Potions", "Rings",
                                   "Wands", "Tools", "Amulets", "Gems/Stones", "Coins", "Boulders/Statues"):
                 sec = line.strip()
-        self.inv, self.inv_turn = inv, self.turn or 0
-        self.note("inventory", "; ".join("%s - %s" % (k, t) for k, (t, _) in sorted(inv.items()))[:700])
+        complete = inv and (ended or (total is not None and pages >= set(range(1, total + 1))))
+        if complete or not self.inv:
+            self.inv = inv
+        else:
+            self.inv = dict(self.inv, **inv)        # partial read: keep what we knew
+        self.inv_turn = self.turn or 0
+        self.note("inventory", "%s%s" % ("" if complete else "(partial read) ", "; ".join(
+            "%s - %s" % (k, t) for k, (t, _) in sorted(self.inv.items()))[:700]))
 
     def items(self, rx=None, section=None):
         return [(k, t) for k, (t, s) in sorted(self.inv.items())
@@ -371,6 +397,15 @@ class Pilot:
                 "wands": [t for _, t in self.items(section="Wands")],
                 "ranged": [t for _, t in self.items(r"dagger|dart|arrow|\bya\b|yumi|bow|shuriken|spear|knife|boomerang|sling")],
                 "spellbooks": [t for _, t in self.items(section="Spellbooks")]}
+
+    def spare_missile(self):
+        """(letter, name) of something safe to throw: missiles and rocks first, then plain fruit."""
+        for rx in (K.SPARE_MISSILES, K.SPARE_FOOD):
+            for k, t in self.items(rx):
+                if not re.search(r"weapon in hand|being worn|alternate weapon|at the ready|in quiver|quivered|"
+                                 r"\bcursed|loadstone", t):
+                    return k, t
+        return None
 
     def mines_policy(self):
         m = CFG["mines"]
@@ -411,6 +446,7 @@ class Pilot:
         lv.now = self.decisions
         hp, hpmax, xl, turn = st.get("hp", 1), max(1, st.get("hpmax", 1)), st.get("xl", 1), st.get("turn", 0)
         c = {"dl": dl, "lv": lv, "hero": hero, "hp": hp, "hpmax": hpmax, "hpf": hp / hpmax, "turn": turn, "xl": xl,
+             "ac": st.get("ac", 10),
              "hallu": "Hallu" in v.cond, "blind": "Blind" in v.cond}
         hostile, peace, obst = [], [], []
         watch = False
@@ -428,6 +464,11 @@ class Pilot:
                     name = "hallucinated monster"
                 elif d <= 5 and ch != "~":
                     name = self.farlook(v, p)
+                    if K.NOT_A_MONSTER.search(name):
+                        # farlook named terrain or nothing on a monster glyph: never melee it on that word;
+                        # forget the answer so the next look can confirm what it is
+                        self.species = {k: x for k, x in self.species.items() if x != name}
+                        name = "unidentified %s (farlook said %r)" % (ch, name[:30])
                     if "tame" in name:
                         continue
                     if "statue" in name:
@@ -438,6 +479,8 @@ class Pilot:
                     watch = True
                 m = {"pos": p, "ch": ch, "base": base, "bright": bright, "dist": d, "name": name}
                 never = None if c["hallu"] else K.never_melee(ch, base, bright, name)
+                if name.startswith("unidentified ") and d <= 5:
+                    never = "unconfirmed"
                 m["never"] = never
                 m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name))
                 m["threat"] = 99 if m["avoid"] else 0 if c["hallu"] else K.threat_xl(ch, base, bright, name)
@@ -468,10 +511,23 @@ class Pilot:
             turn - self.elbereth_at[2] <= 50
         return c
 
+    def fragile(self, hpmax, ac):
+        return hpmax < CFG["sturdy_hp"] or ac > CFG["sturdy_ac"]
+
+    def depth_cap(self, xl, hpmax, ac):
+        """The deepest Dlvl the loop may descend to on its own: XL + lead, or XL + fragile_lead for a fragile
+        hero (max HP below sturdy_hp or AC worse than sturdy_ac), whichever is shallower."""
+        cap = xl + self.lead()
+        if self.fragile(hpmax, ac):
+            cap = min(cap, xl + int(CFG["fragile_lead"]) + (1 if CFG["risk"] == "high" else 0))
+        return cap
+
     def descend_ok(self, c):
         lv = c["lv"]
-        depth_ok = c["dl"] < c["xl"] + self.lead() or time.time() - (lv.arrived or time.time()) > CFG["cap_lift"]
-        return depth_ok and c["hpf"] >= val("descend_hp")
+        cap = self.depth_cap(c["xl"], c["hpmax"], c.get("ac", 10))
+        lift = time.time() - (lv.arrived or time.time()) > CFG["cap_lift"] and \
+            (c["xl"] >= 3 or not self.fragile(c["hpmax"], c.get("ac", 10)))
+        return (c["dl"] < cap or lift) and c["hpf"] >= val("descend_hp")
 
     # ------------------------------------------------------------ legal actions
     def actions(self, v, c):
@@ -530,6 +586,16 @@ class Pilot:
                     acts.append(Act("fire_" + k, "Fire %s at the %s %s (it must not be meleed)" % (
                         quiver[0][1], h["name"], K.DN[k]), "f" + k, "fire", 3.2, h["pos"]))
                     break
+        spare = self.spare_missile() if not quiver else None
+        if spare and not adjacent and not fr:
+            for h in c["obst"]:          # a passive blocker on the way: throw something at it, never melee it
+                dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
+                if h["dist"] <= 4 and (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
+                    k = next(k for k, d in K.DIRS.items() if d == ((dr > 0) - (dr < 0), (dc > 0) - (dc < 0)))
+                    acts.append(Act("throw_" + k, "Throw %s at the %s %s (it must not be meleed)" % (
+                        spare[1], h["name"], K.DN[k]), "t" + spare[0] + k, "throw", 3.0, h["pos"]))
+                    break
+        self.door_commitment(v, c, acts)
         ok = self.descend_ok(c)
         policy = self.mines_policy()
         trapdoor_here = lv.traps.get(hero) in ("trap door", "hole")
@@ -593,6 +659,7 @@ class Pilot:
             if tool:
                 acts.append(Act("dig", "Dig down through the floor with the " + tool[0][1], "a" + tool[0][0], "dig",
                                 4.8 if usable else 5.6))
+        acts = self.through_doors(v, c, acts)
         if not acts:
             acts.append(Act("search", "Search here 15 turns", "15s", "search", -3))
         if adjacent or c["hit"]:   # never start a counted search, rest or wait with a hostile next to you
@@ -606,6 +673,57 @@ class Pilot:
 
     def lv_downs_usable(self, c):
         return any(p in c["dist"] for p in c["lv"].downs)
+
+    def door_commitment(self, v, c, acts):
+        """Once the loop sets off for a locked door, it finishes the job (travel, then kick until it opens or
+        the kicks run out) before exploring or searching elsewhere; fights still come first."""
+        dp, lv, hero = self.door_plan, c["lv"], c["hero"]
+        if dp and (dp[0] != c["dl"] or dp[1] not in lv.locked or lv.kicks[dp[1]] >= K.KICK_TRIES or
+                   self.decisions > dp[3] or not self.kickable(dp[1], c)):
+            self.door_plan = dp = None
+        if not dp or c["threats"]:
+            return
+        kick = [a for a in acts if a.kind == "kick" and a.target == dp[1]]
+        for a in kick:
+            a.prior = 6
+        if not kick and hero != dp[2] and dp[2] in c["dist"]:
+            act = Act("goto_door", "Continue to the locked door %s to kick it open" % compass(hero, dp[1]),
+                      travel(hero, dp[2]), "travel", 6, dp[2])
+            act.door = dp[1]
+            acts.append(act)
+
+    def through_doors(self, v, c, acts):
+        """The game's travel command stops at closed doors. Rewrite each travel whose known route crosses one:
+        travel to the square before the first door, then open it (or kick it when locked)."""
+        hero, lv = c["hero"], c["lv"]
+        for i, a in enumerate(acts):
+            if not (a.keys.startswith("_") and a.target and a.kind in ("travel", "explore")):
+                continue
+            target = a.target if a.target in c["dist"] else None
+            route = lv.route(v, hero, target) if target else None
+            if not route:
+                continue
+            j = next((n for n, q in enumerate(route) if lv.cell(v, q)[0] == "+"), None)
+            if j is None:
+                continue
+            q, before = route[j], (route[j - 1] if j else hero)
+            where = compass(hero, q)
+            if before != hero:
+                acts[i] = Act(a.key, "%s (first to the closed door %s)" % (a.desc, where), travel(hero, before),
+                              a.kind, a.prior, before)
+                continue
+            k = next(k for k, n in nbrs(hero) if n == q)
+            if q in lv.locked:
+                if lv.kicks[q] < K.KICK_TRIES and self.kickable(q, c):
+                    acts[i] = Act("kick_" + k, "%s: kick the locked door %s on the way" % (a.desc, K.DN[k]),
+                                  "\x04" + k, "kick", a.prior, q)
+                else:
+                    acts[i] = Act(a.key, a.desc + " (unreachable: locked door %s)" % K.DN[k], a.keys, a.kind, -3,
+                                  a.target)
+            else:
+                acts[i] = Act("open_" + k, "%s: open the closed door %s on the way" % (a.desc, K.DN[k]), k, "door",
+                              a.prior, q)
+        return acts
 
     def kickable(self, q, c):
         """Kick a locked door, but never a shop's (an angry shopkeeper kills) or in front of the watch."""
@@ -625,8 +743,10 @@ class Pilot:
         for q in sorted(doors, key=lambda q: min([dist.get(n, 999) for _, n in nbrs(q)] or [999])):
             spot = min((n for k, n in nbrs(q) if k in "hjkl" and n in dist), key=dist.get, default=None)
             if spot is not None and spot != hero:
-                acts.append(Act("goto_door", "Go to the locked door %s to kick it open" % compass(hero, q),
-                                travel(hero, spot), "travel", 3.5, spot))
+                act = Act("goto_door", "Go to the locked door %s to kick it open" % compass(hero, q),
+                          travel(hero, spot), "travel", 3.5, spot)
+                act.door = q
+                acts.append(act)
                 break
         if CFG["probe"] and "stairs" not in lv.probed:
             acts.append(Act("probe_stairs", "Ask the game where known down stairs are (travel prompt)", "", "probe",
@@ -749,6 +869,11 @@ class Pilot:
         self.last_act = a
         if a.kind == "read":
             lv.probed.add("mapping")
+        if a.kind == "throw":
+            self.inv_turn = -2           # the pack changed: re-read it
+        if a.key == "goto_door" and getattr(a, "door", None):
+            if not self.door_plan or self.door_plan[1] != a.door:
+                self.door_plan = (c["dl"], a.door, a.target, self.decisions + 30)
         if a.kind == "pray":
             self.praying = True
             try:
@@ -853,6 +978,29 @@ class Pilot:
             self.note("probe", "frontier probe: travel to %s" % (p,))
             self.send(".")
 
+    @staticmethod
+    def check_plan(item):
+        """Raise ValueError unless ITEM is a plan item run_plan understands."""
+        kind, _, arg = item.partition(":")
+        if kind == "keys" and arg:
+            return
+        if kind == "hex":
+            bytes.fromhex(arg)
+            return
+        goal, _, param = arg.partition(":")
+        if kind != "goal" or goal not in ("pray", "rest", "search", "dig", "stairs", "up", "travel", "explore"):
+            raise ValueError("unknown plan item %r (help plan)" % item)
+        if goal == "rest" and param:
+            if not 0 < float(param) <= 1:
+                raise ValueError("goal:rest wants an HP fraction in (0, 1]")
+        elif goal in ("search", "explore") and param:
+            if int(param) <= 0:
+                raise ValueError("goal:%s wants a positive whole number" % goal)
+        elif goal == "travel":
+            r, col = (int(x) for x in param.split(","))
+            if not (2 <= r <= 22 and 1 <= col <= 80):
+                raise ValueError("goal:travel wants ROW,COL on the map (rows 2-22, columns 1-80)")
+
     def run_plan(self, v, c):
         """Execute the next queued plan item. Returns True when it acted."""
         item = self.plan[0]
@@ -878,8 +1026,9 @@ class Pilot:
             return True
         if goal == "search":
             left = int(param or 15)
-            self.plan[0] = "goal:search:%d" % (left - 15) if left > 15 else self.plan.popleft() and None
-            if self.plan and self.plan[0] is None:
+            if left > 15:
+                self.plan[0] = "goal:search:%d" % (left - 15)
+            else:
                 self.plan.popleft()
             lv.credit_search(hero, min(15, left))
             self.send("%ds" % min(15, left))
@@ -972,7 +1121,7 @@ class Pilot:
                 self.level(d).stair_ban_until = self.decisions + 60
             return "oscillating: Dlvl %s <-> %s %d times; the involved stairs are now avoided" % (
                 levels[-1], levels[-2], len(levels))
-        t = [x for x in self.trail if x[2] != "search_more"][-12:]   # deliberate searching is not a loop
+        t = [x for x in self.trail if x[2] not in ("search_more", "linger")][-12:]   # deliberate waits are not loops
         if len(t) >= 10:
             spots = collections.Counter((x[0], x[1]) for x in t)
             keys = collections.Counter(x[2] for x in t)
@@ -1119,8 +1268,15 @@ class Pilot:
         drop = max([hp for t, hp in self.hp_hist if c["turn"] - t <= 5] or [c["hp"]]) - c["hp"]
         adjacent = [h for h in c["hostiles"] if h["dist"] == 1]
         osc = self.oscillation(dl)
-        if drop >= CFG["hp_drop"] * c["hpmax"] and self.low_noted != ("drop", c["turn"] // 10):
+        who = tuple(sorted({h["name"] for h in adjacent})) or ("unseen",)
+        last_fight = self.fight_noted
+        step = max(3, 0.15 * c["hpmax"])
+        same_fight = last_fight and last_fight[0] == who and c["turn"] - last_fight[2] < 100 and \
+            c["hp"] > last_fight[1] - step       # the same attackers, and HP has not fallen another step
+        if drop >= max(CFG["hp_drop"] * c["hpmax"], CFG["hp_drop_min"]) and not same_fight and \
+                self.low_noted != ("drop", c["turn"] // 10):
             self.low_noted = ("drop", c["turn"] // 10)
+            self.fight_noted = (who, c["hp"], c["turn"])
             reason = "losing fast: HP %d/%d, down %d in 5 turns (%s)" % (
                 c["hp"], c["hpmax"], drop, ", ".join(h["name"] for h in adjacent[:3]) or "unseen attacker")
         elif len(adjacent) >= 3 and self.low_noted != ("swarm", len(adjacent), c["hp"] // 5):
@@ -1148,12 +1304,34 @@ class Pilot:
                 ", ".join(sorted(lv.probed)) or "-",
                 "; blocked by " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"])) for h in c["obst"][:3])
                 if c["obst"] else "")
+        elif acts[0].prior <= -2 and not near and not c["frontier"] and self.lv_downs_usable(c) and \
+                not self.descend_ok(c) and c["hpf"] >= val("descend_hp"):
+            cap = self.depth_cap(c["xl"], c["hpmax"], c["ac"])
+            acts.insert(0, Act("linger", "Search 20 turns while the depth gate holds (Dlvl %d at most for now)" % cap,
+                               "20s", "search", 0))
+            if self.gate_noted != (dl, c["xl"]):
+                self.gate_noted = (dl, c["xl"])
+                reason = ("depth gate: Dlvl %d is explored but the loop may not go below Dlvl %d at XL %d (max HP %d, "
+                          "AC %d%s); it will search and wait for experience. Lift it with --set fragile_lead=N, lead=N "
+                          "or risk=high, or play on by hand" % (
+                              dl, cap, c["xl"], c["hpmax"], c["ac"],
+                              ", fragile" if self.fragile(c["hpmax"], c["ac"]) else ""))
         elif acts[0].prior <= -2 and not near and (c["frontier"] or self.lv_downs_usable(c)):
+            self.note("stall", "blocked; best options: " + ", ".join("%s %.1f" % (a.key, a.prior) for a in acts[:5]))
             acts.insert(0, Act("wait_blocked", "Wait two turns: the way is blocked for now", "2s", "wait", 0))
         elif acts[0].prior <= -2 and not near:
-            reason = "level exhausted: no frontier, stairs, search budget or tools left (%d search turns%s)" % (
-                lv.search_turns, "; in the way: " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"]))
+            known = [p for p in lv.downs if p not in c["dist"]]
+            if known:
+                reason = "level exhausted: down stairs at %s unreachable (no known path: locked door, boulder or " \
+                    "blocker%s)" % (", ".join("(%d,%d)" % (p[0] + 1, p[1] + 1) for p in known[:2]),
+                                   "; in the way: " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"]))
                                                                 for h in c["obst"][:3]) if c["obst"] else "")
+            else:
+                reason = "level exhausted: no frontier, stairs, search budget or tools left (%d search turns%s)" % (
+                    lv.search_turns, "; in the way: " + ", ".join("%s %s" % (h["name"], compass(c["hero"], h["pos"]))
+                                                                    for h in c["obst"][:3]) if c["obst"] else "")
+            if c["obst"]:
+                reason += "; options: throw an item at it (t), wait for it to move, another route, dig"
         if reason:
             # An unchanged situation is not news. After a resume, the same kind of escalation waits until the
             # turn counter moves (150 turns for exhausted/stalled verdicts), the hero moves, or the level changes.

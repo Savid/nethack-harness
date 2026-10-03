@@ -17,6 +17,7 @@ from .hooks import HookError, Hooks
 from .policy import GAME_OVER, Pilot
 from .report import status as status_of, summary
 from .settings import ALIASES, CFG, DEFAULTS, EFFORT, MODES, RISK, apply_settings, describe, validate, MODE_KEYS
+from .knowledge import ALARM as K_ALARM, MON
 from .transport import Closed, Held, Term, serve_local
 
 HELP = {
@@ -33,6 +34,7 @@ The first stop is a BRIEFING: role, race, kit, capabilities, settings and sugges
 WHILE PAUSED (the keyboard is yours until you resume):
   screen                     look; status shows settings, effort, plan, hooks, counters and kit
   send 'keys' | send --hex 1b  play a few keys; a pending --More-- is dismissed first and reported
+  repeat 'Fh' --times 6      a guarded batch: stops at HP loss, a new monster, --More-- or a prompt
   log 40                     what the loop did and why (oscillation, bans, failed targets)
   resume [options]           hand it back, with new settings, orders, plan items or hooks
 Never send keys while it runs (pause first). Prayers made through the terminal are noticed on resume;
@@ -47,6 +49,10 @@ Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --
   log [N]                                 recent inner-loop events
   screen                                  the screen as the loop sees it        e.g. screen
   send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
+  repeat KEYS --times N [--stop-hp F] [--stop-on REGEX] [--allow-hp-loss]
+                                          while paused: KEYS up to N times (1-50), stopping on HP loss, HP below
+                                          F (0.5), a new monster in view, --More--/prompt, a level change, an
+                                          alarming or matching message      e.g. repeat Fh --times 6
   probe --socket S --decide URL           one decision on the current screen (look-ups only)
   serve-local --socket S --nethack BIN    run nethack in a pty behind a terminal socket (testing)
   help [TOPIC]                            this map; topics: protocol commands settings modes effort plan hooks
@@ -75,15 +81,24 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("stall_turns", "", "...or after this many game turns without new squares or depth"),
             ("decide_timeout", "", "seconds per decision call; slower answers trip the breaker"),
             ("breaker", "", "seconds of rules-only play after a failed or slow decision call"),
+            ("slow_ms", "", "trip the breaker when the median of the last 5 calls is slower than this"),
             ("search_budget", "", "search turns per level before the ladder moves on"),
-            ("cap_lift", "", "seconds on a level after which the depth lead stops blocking descent"),
+            ("sturdy_hp", "", "max HP below this (or AC worse than sturdy_ac) makes the hero fragile"),
+            ("sturdy_ac", "", "AC above this makes the hero fragile"),
+            ("fragile_lead", "", "a fragile hero descends no deeper than XL + this (+1 at risk=high)"),
+            ("cap_lift", "", "seconds on a level after which the depth lead stops blocking descent "
+                             "(never before XL 3 for a fragile hero)"),
             ("potions", "", "1 = quaff known healing potions in emergencies"),
             ("spells", "", "1 = cast healing in emergencies (Healer)"),
             ("elbereth", "", "1 = engrave Elbereth in emergencies"),
             ("trapdoors", "", "1 = use known trap doors and holes as free descents"),
             ("probe", "", "1 = ask the game where the stairs are when none are visible"),
-            ("mapping", "", "1 = read a known magic mapping scroll when a level runs out of options"),
+            ("mapping", "", "1 = read a known magic mapping scroll when a level runs out of options; "
+                            "2 = read one on arrival at each new level while they last"),
             ("briefing", "", "1 = pause once at start with role, kit and capabilities"),
+            ("hp_drop", "", "escalate 'losing fast' when HP falls by this fraction of max within 5 turns"),
+            ("hp_drop_min", "", "...and by at least this many points; the same fight re-escalates only after "
+                                "another step of loss"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("last_prayer", "", "turn of a prayer you made by hand")]),
     "modes": "MODES (--mode M resets the mode-owned keys (%s) to defaults, then applies the mode; other settings "
@@ -188,6 +203,55 @@ class Store:
         return value
 
 
+def monsters_near(v, reach=7):
+    """Non-pet monster glyphs within reach of the hero."""
+    hero = v.hero
+    if not hero:
+        return 0
+    return sum(1 for r in range(max(1, hero[0] - reach), min(22, hero[0] + reach + 1))
+               for col in range(max(0, hero[1] - reach), min(80, hero[1] + reach + 1))
+               if (r, col) != hero and v.rows[r][col] in MON and not v.pet(r, col))
+
+
+def guarded_repeat(term, p, keys, c):
+    """Send KEYS up to c["times"] times while paused; stop at the first sign of trouble. Returns the reply."""
+    stop_on = re.compile(c["stop_on"]) if c.get("stop_on") else None
+    term.poll()
+    v = term.view()
+    if v.more or v.prompt:
+        return "repeat: nothing sent: a --More-- or prompt is open (%s); answer it first\n%s\n" % (
+            v.msg[:120], v.text_screen())
+    done, why = 0, "done"
+    for _ in range(c["times"]):
+        before = term.view()
+        hp0, mon0, dl0 = before.st.get("hp"), monsters_near(before), before.st.get("dlvl")
+        term.send(keys)
+        p.note("manual", "repeat %r" % keys[:40])
+        done += 1
+        v = term.view()
+        hp, hpmax = v.st.get("hp"), max(1, v.st.get("hpmax") or 1)
+        if v.dead:
+            why = "the hero died"
+        elif v.more or v.prompt:
+            why = "--More-- or a prompt: %s" % v.msg[:120]
+        elif hp is not None and hp0 is not None and hp < hp0 and not c.get("allow_loss"):
+            why = "HP fell %d -> %d" % (hp0, hp)
+        elif hp is not None and hp / hpmax < c["stop_hp"]:
+            why = "HP %d/%d is below %.2f" % (hp, hpmax, c["stop_hp"])
+        elif monsters_near(v) > mon0:
+            why = "a new monster came into view"
+        elif v.st.get("dlvl") != dl0:
+            why = "the level changed"
+        elif stop_on and stop_on.search(v.msg):
+            why = "message matched: %s" % v.msg[:120]
+        elif K_ALARM.search(v.msg):
+            why = "alarming message: %s" % v.msg[:120]
+        else:
+            continue
+        break
+    return "repeat: sent %d of %d (%s)\n%s\n" % (done, c["times"], why, term.view().text_screen())
+
+
 def save_pilot(store, p):
     """Returns None, or the error when the state directory cannot be written. A memory that could not be
     updated is removed, so a restart never resumes from stale knowledge."""
@@ -242,7 +306,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m2" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m3" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -422,6 +486,12 @@ def daemon(args):
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None)
             term.sync()
+        elif cmd == "repeat":
+            if not paused:
+                reply = "refused: the inner loop is running; pause it first\n"
+            else:
+                reply = guarded_repeat(term, p, base64.b64decode(c.get("keys", "")), c)
+            store.text("reply-%d.txt" % c["seq"], reply)
         elif cmd in ("send", "screen"):
             if cmd == "send" and not paused:
                 reply = "refused: the inner loop is running; pause it first\n"
@@ -689,6 +759,14 @@ def main(argv=None):
     sd = sub.add_parser("send", help="send keys while paused; prints the resulting screen")
     sd.add_argument("keys", nargs="?")
     sd.add_argument("--hex", help="bytes as hex, e.g. 1b for Escape, 0d for Enter")
+    rp = sub.add_parser("repeat", help="while paused: send keys up to N times, stopping at the first sign of "
+                                       "trouble (HP loss, new monster, --More--, prompt, matching message)")
+    rp.add_argument("keys", nargs="?")
+    rp.add_argument("--hex", help="bytes as hex instead of KEYS")
+    rp.add_argument("--times", type=int, default=5, help="repetitions, 1-50 (default 5)")
+    rp.add_argument("--stop-hp", type=float, default=0.5, help="stop below this HP fraction (default 0.5)")
+    rp.add_argument("--stop-on", default="", metavar="REGEX", help="also stop when a message matches")
+    rp.add_argument("--allow-hp-loss", action="store_true", help="do not stop just because HP fell")
     pr = sub.add_parser("probe", help="one decision on the current screen (look-ups only)")
     pr.add_argument("--socket", required=True)
     pr.add_argument("--decide", required=True)
@@ -727,6 +805,12 @@ def main(argv=None):
                           "ms": int(took * 1000)}, indent=1))
         return 0
     sets = parse_sets(getattr(a, "set", None))       # bad settings are usage errors (64) before anything runs
+    for item in getattr(a, "plan", None) or []:
+        try:
+            Pilot.check_plan(item)
+        except ValueError as e:
+            print("--plan: %s" % e, file=sys.stderr)
+            return 64
     try:
         store = Store(a.dir)
     except OSError as e:
@@ -823,27 +907,37 @@ def main(argv=None):
                 questions=[os.path.abspath(x) for x in a.questions], plugins=[os.path.abspath(x) for x in a.plugin],
                 enable=a.enable, disable=a.disable)
         return wait(store, a.timeout, st.get("escalation", 0))
-    if a.cmd in ("send", "screen"):
-        keys = b""
-        if a.cmd == "send":
+    if a.cmd in ("send", "screen", "repeat"):
+        keys, extra = b"", {}
+        if a.cmd == "repeat":
+            if not 1 <= a.times <= 50 or not 0 <= a.stop_hp <= 1:
+                print("repeat wants --times 1-50 and --stop-hp 0-1")
+                return 64
+            try:
+                re.compile(a.stop_on)
+            except re.error as e:
+                print("repeat --stop-on is not a valid regex: %s" % e)
+                return 64
+            extra = {"times": a.times, "stop_hp": a.stop_hp, "stop_on": a.stop_on, "allow_loss": a.allow_hp_loss}
+        if a.cmd in ("send", "repeat"):
             if (a.keys is None) == (a.hex is None):
-                print("send wants keys or --hex")
+                print("%s wants keys or --hex" % a.cmd)
                 return 64
             try:
                 keys = a.keys.encode() if a.keys is not None else bytes.fromhex(a.hex)
             except ValueError:
-                print("send --hex wants hex bytes, e.g. '04 6c'")
+                print("%s --hex wants hex bytes, e.g. '04 6c'" % a.cmd)
                 return 64
             if not 0 < len(keys) <= 4096:
-                print("send takes 1 to 4096 bytes")
+                print("%s takes 1 to 4096 bytes" % a.cmd)
                 return 64
-        seq = control(store, a.cmd, keys=base64.b64encode(keys).decode())
-        for _ in range(150):
+        seq = control(store, a.cmd, keys=base64.b64encode(keys).decode(), **extra)
+        for _ in range(600 if a.cmd == "repeat" else 150):
             reply = store.text("reply-%d.txt" % seq)
             if reply:
                 os.unlink(store.path("reply-%d.txt" % seq))
                 print(reply, end="")
-                return 0 if not reply.startswith("error") else 1
+                return 0 if not reply.startswith(("error", "refused")) else 1
             time.sleep(0.1)
         print("no reply from the inner loop")
         return 1

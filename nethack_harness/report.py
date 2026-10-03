@@ -25,22 +25,38 @@ def capabilities(p):
     return caps
 
 
+def depth_line(p, st):
+    xl, hpmax, ac = st.get("xl", 1), st.get("hpmax", 1), st.get("ac", 10)
+    cap = p.depth_cap(xl, hpmax, ac)
+    if p.fragile(hpmax, ac):
+        return ("fragile start (max HP %s < %s or AC %s > %s): the loop descends to Dlvl %d at most (XL+%d) until "
+                "max HP >= %s and AC <= %s, then XL+%d; cap_lift never lifts this before XL 3 "
+                "(--set fragile_lead=N, sturdy_hp, sturdy_ac)" % (
+                    hpmax, CFG["sturdy_hp"], ac, CFG["sturdy_ac"], cap, cap - xl, CFG["sturdy_hp"], CFG["sturdy_ac"],
+                    p.lead()))
+    return "sturdy start: the loop descends to Dlvl %d at most (XL+%d; --set lead=N or risk=...)" % (cap, cap - xl)
+
+
 def suggestions(p):
     kit, out = p.kit(), []
+    st = p.term.view().st
     out.append("--set mines=%s (race %s; auto picks %s)" % (p.mines_policy(), p.race, p.mines_policy()))
-    out.append("depth lead XL+%d for %s (--set lead=N, or --set risk=low|normal|high)" % (p.lead(), p.role))
+    fragile = p.fragile(st.get("hpmax", 1), st.get("ac", 10)) or p.role in K.WEAK_ROLES
+    out.append("--set risk=%s (%s); effort=medium is the default, effort=low saves decision calls" % (
+        "low" if fragile else "normal" if p.role not in K.STRONG_ROLES else "high",
+        "fragile start: few HP, poor AC or a weak melee role" if fragile else "sturdy start"))
+    for rx, advice in K.KIT_ADVICE:
+        hit = p.items(rx)
+        if hit:
+            out.append("%s (%s): %s" % (hit[0][1][:40], hit[0][0], advice))
     wielded = next((t for k, t in p.items(r"weapon in hand|wielded")), "")
     if kit["dig"] and ("bullwhip" in wielded or not wielded):
         letter = p.items("|".join(K.DIG_TOOLS))[0][0]
         out.append("fight with the digging tool rather than %s: --plan 'keys:w%s'" % (wielded or "bare hands", letter))
     if kit["dig"] and not CFG["dig"]:
         out.append("you carry a digging tool: --set dig=1 descends by digging (fast, skips levels' contents)")
-    if kit["mapping"]:
-        out.append("magic mapping scrolls: read one on a level that stalls (send r + letter while paused)")
     if not kit["food"]:
         out.append("no food in the pack: prayer fixes Weak once every ~900 turns; fresh corpses are eaten")
-    if p.role in ("Healer", "Tourist", "Wizard", "Archeologist", "Rogue"):
-        out.append("a weak melee role: consider --mode careful or --set risk=low early")
     return out
 
 
@@ -56,6 +72,7 @@ def briefing(p):
     lines.append("capabilities: " + " | ".join(capabilities(p)))
     lines.append("settings: " + describe() + " | effective: descend_hp=%.2f rest_hp=%.2f hp_escalate=%.2f lead=%d" % (
         val("descend_hp"), val("rest_hp"), val("hp_escalate"), p.lead()))
+    lines.append("depth: " + depth_line(p, v.st))
     lines.append("hooks: " + hooks_line(p))
     lines.append("suggested: " + " ; ".join(suggestions(p)))
     lines.append("Set a plan now with resume (or just resume to play with these defaults).")
@@ -120,7 +137,8 @@ def summary(p, reason):
             recent.append([text, 1])
     out.append("recent: " + " / ".join(t + (" x%d" % n if n > 1 else "") for t, n in recent[-10:]))
     out.append(footer(p))
-    return "\n".join(out + ["--- screen ---", v.text_screen()])
+    # Repeat the gist last, so a reader that keeps only the tail still has it.
+    return "\n".join(out + ["--- screen ---", v.text_screen(), "ESCALATION (again): %s | %s" % (reason, out[1])])
 
 
 def clip(text, n=300):
@@ -143,5 +161,7 @@ def status(p):
             "decisions": p.decisions, "model_calls": p.calls, "reused_answers": p.reused,
             "plan": list(p.plan), "orders": clip(p.directive, 2000), "prayer": {"last": p.last_prayer, "broken": p.prayer_broken},
             "kit": p.kit() if p.inv else {}, "known_symbols": len(K.NEVER_MELEE),
+            "depth_cap": p.depth_cap(p.term.view().st.get("xl", 1), p.term.view().st.get("hpmax", 1),
+                                     p.term.view().st.get("ac", 10)) if p.term else None,
             "model_errors": p.breaker_trips, "last_model_error": getattr(p, "last_model_error", ""),
             "recent_ms": [int(x * 1000) for x in getattr(p, "latencies", [])]}

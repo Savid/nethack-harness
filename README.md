@@ -100,7 +100,13 @@ level, plan item, hook type and plugin function, with examples.
 While paused:
 - `send 'keys'` or `send --hex 1b` sends keys and prints the new screen;
   `screen` shows the screen.
-- `status` prints JSON with the settings, effort, hooks, plan, counters and kit.
+- `repeat 'Fh' --times 6 [--stop-hp 0.5] [--stop-on REGEX] [--allow-hp-loss]`
+  is a guarded batch: it sends the keys up to N times (1–50) and stops at the
+  first HP loss, HP below the fraction, new monster in view, `--More--` or
+  prompt, level change, or alarming or matching message, then prints why and
+  the screen. Prefer it to unchecked key loops near danger.
+- `status` prints JSON with the settings, effort, hooks, plan, counters, kit
+  and the current depth cap.
 
 Resume options can be combined:
 - `--directive TEXT`: orders shown to the model. While orders are set, the
@@ -124,6 +130,9 @@ decisions, model calls (and how many reused an earlier answer) and escalations.
 | `risk` | normal | `low`, `normal`, `high`: HP gates for descending, resting, Elbereth and escalating, plus the depth lead |
 | `effort` | medium | Decision effort: `off` (rules only), `low`, `medium`, `high` |
 | `lead` | by role | Max depth = XL + lead |
+| `sturdy_hp`, `sturdy_ac`, `fragile_lead` | 25, 6, 1 | A hero with max HP below `sturdy_hp` or AC above `sturdy_ac` is fragile and descends no deeper than XL + `fragile_lead` (+1 at `risk=high`); `cap_lift` never lifts this before XL 3. When the gate holds on an explored level, the loop escalates once and searches for experience |
+| `hp_drop`, `hp_drop_min` | 0.25, 5 | "Losing fast" needs both this fraction of max HP and this many points lost within 5 turns; the same fight re-escalates only after another step of loss |
+| `mapping` | 1 | 1 reads magic mapping when a level runs out of options; 2 reads one on each new level |
 | `mines` | auto | `allow` for gnome or dwarf heroes, otherwise `avoid`; or `escalate`. An unused Mines staircase looks like any other, so the harness reads the dungeon overview (`^O`) on each new level, leaves at once under `avoid`, and never takes that staircase again |
 | `dig` | 0 | 1 = dig down with a pick-axe or mattock |
 | `avoid` | | Regex of monster names never to melee |

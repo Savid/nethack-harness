@@ -213,3 +213,51 @@ class ControlRobustnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveFindingsTest(unittest.TestCase):
+    def tearDown(self):
+        nh.CFG.update(nh.settings.DEFAULTS)
+
+    def test_fragile_heroes_get_a_shallow_depth_cap(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.role = "Valkyrie"
+        self.assertEqual(p.depth_cap(1, 16, 6), 2)          # few HP: XL + fragile_lead
+        self.assertEqual(p.depth_cap(1, 30, 9), 2)          # poor AC
+        self.assertEqual(p.depth_cap(1, 30, 4), 1 + p.lead())
+        nh.apply_settings(None, {"risk": "high"})
+        self.assertEqual(p.depth_cap(1, 16, 6), 3)
+
+    def test_female_roles_and_race_words(self):
+        m = K.ATTRIBUTES.search("You are a Troglodytess, a level 1 female dwarven Cavewoman.")
+        self.assertEqual((K.RACE_WORDS.get(m.group(2)), K.ROLE_NAMES.get(m.group(3))), ("dwarvish", "Caveman"))
+
+    def test_plan_items_are_checked_and_search_finishes(self):
+        for bad in ("goal:fly", "goal:rest:2", "goal:search:x", "goal:travel:1,1", "hex:zz", "keys:"):
+            with self.assertRaises(ValueError):
+                nh.Pilot.check_plan(bad)
+        nh.Pilot.check_plan("goal:search:30")
+        p = nh.Pilot(FakeTerm(), None)
+        p.plan.append("goal:search:10")
+        c = {"lv": p.level(3), "hero": (2, 3)}
+        self.assertTrue(p.run_plan(p.term.view(), c))
+        self.assertEqual(list(p.plan), [])
+        self.assertEqual(p.term.sent, ["10s"])
+
+    def test_partial_inventory_read_keeps_the_pack(self):
+        class InvTerm(FakeTerm):
+            def __init__(self, lines):
+                super().__init__(lines)
+
+        p = nh.Pilot(InvTerm(screen("", [" Comestibles", " d - 3 food rations", " e - 2 apples", " (end)"])), None)
+        p.read_inventory()
+        self.assertEqual(sorted(p.inv), ["d", "e"])
+        p.term = InvTerm(screen("f - 3 fortune cookies.", [" ---- ", " |.@.| "]))
+        p.read_inventory()                   # the menu never opened: only a pickup message was on screen
+        self.assertEqual(sorted(p.inv), ["d", "e", "f"])
+
+    def test_terrain_names_are_not_monsters(self):
+        for name in ("wall", "dark part of a room", "doorway", "unknown"):
+            self.assertTrue(K.NOT_A_MONSTER.search(name), name)
+        for name in ("floating eye", "water moccasin", "stone giant", "peaceful watchman"):
+            self.assertFalse(K.NOT_A_MONSTER.search(name), name)

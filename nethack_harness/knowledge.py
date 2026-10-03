@@ -155,14 +155,18 @@ UNSAFE_CORPSE = re.compile(r"kobold|were|cockatrice|chickatrice|Medusa|chameleon
 ROLE_TITLES = {"Digger": "Archeologist", "Plunderer": "Barbarian", "Plunderess": "Barbarian",
                "Troglodyte": "Caveman", "Troglodytess": "Caveman", "Rhizotomist": "Healer", "Gallant": "Knight",
                "Candidate": "Monk", "Aspirant": "Priest", "Footpad": "Rogue", "Tenderfoot": "Ranger",
-               "Hatamoto": "Samurai", "Rambler": "Tourist", "Stripling": "Valkyrie", "Evoker": "Wizard"}
+               "Hatamoto": "Samurai", "Rambler": "Tourist", "Stripling": "Valkyrie", "Evoker": "Wizard",
+               "Troglodytes": "Caveman"}
 ROLE_LEAD = {"Valkyrie": 4, "Samurai": 4, "Barbarian": 4, "Priest": 3, "Monk": 3, "Knight": 3, "Caveman": 3,
              "Ranger": 3, "Healer": 2, "Tourist": 2, "Wizard": 2, "Rogue": 2, "Archeologist": 2}
 RACES = ("human", "elven", "dwarvish", "gnomish", "orcish")
 WELCOME = re.compile(r"You are an? (?:(lawful|neutral|chaotic) )?(?:(male|female) )?"
                      r"(human|elven|dwarvish|gnomish|orcish) (\w+)\.")
-ATTRIBUTES = re.compile(r"a level \d+ (?:(male|female) )?(human|elven|dwarvish|gnomish|orcish|elf|dwarf|gnome|orc) "
-                        r"(\w+)\.")
+ATTRIBUTES = re.compile(r"a level \d+ (?:(male|female|neuter) )?(human|elven|elvish|dwarvish|dwarven|gnomish|"
+                        r"orcish|elf|dwarf|gnome|orc) (\w+)\.?")
+RACE_WORDS = {"elf": "elven", "elvish": "elven", "dwarf": "dwarvish", "dwarven": "dwarvish", "gnome": "gnomish",
+              "orc": "orcish"}
+ROLE_NAMES = {"Cavewoman": "Caveman", "Cavemen": "Caveman", "Priestess": "Priest"}   # female forms
 ALIGNMENT = re.compile(r"You are (lawful|neutral|chaotic)")
 
 DIG_TOOLS = ("pick-axe", "dwarvish mattock")
@@ -170,3 +174,25 @@ HEALING = re.compile(r"potions? of (?:full |extra )?healing")
 MAPPING = re.compile(r"scrolls? of magic mapping")
 
 KICK_TRIES = 12      # kicks at one locked door before giving up on it (weak heroes need many)
+
+# What farlook says about a square that holds no monster after all. A monster glyph whose farlook reads
+# like this is never attacked on that word.
+NOT_A_MONSTER = re.compile(r"^(?:an? |the )?(?:wall|dark part of a room|floor of a room|room|corridor|doorway|"
+                           r"open door|closed door|broken door|stone|solid rock|boulder|fountain|altar|grave|"
+                           r"tree|sink|throne|staircase|ladder|web|iron bars|water|lava|air|cloud|unknown|"
+                           r"nothing|unexplored)\s*(?:[(,.;:].*)?$|^$", re.I)
+SPARE_MISSILES = r"\b(?:daggers?|darts?|knives|knife|rocks?|flint stones?|shuriken|arrows?|crossbow bolts?|spears?)\b"
+SPARE_FOOD = r"\b(?:apples?|carrots?|oranges?|pears?|bananas?|melons?|kelp fronds?)\b"
+
+WEAK_ROLES = ("Healer", "Tourist", "Wizard", "Archeologist", "Rogue")
+STRONG_ROLES = ("Valkyrie", "Samurai", "Barbarian", "Monk")
+# Notable kit and what the outer loop can do with it (shown in the briefing).
+KIT_ADVICE = (
+    (r"scrolls? of magic mapping", "--set mapping=2 reads one on arrival at each new level while they last"),
+    (r"pick-axe|dwarvish mattock", "--set dig=1 digs down; wield it to fight if the weapon is weak"),
+    (r"magic marker", "write scrolls you have identified, or engrave a lasting Elbereth (E, then the marker)"),
+    (r"expensive camera", "blinds a dangerous attacker: apply it toward the monster (a, letter, direction)"),
+    (r"potions? of (?:full |extra )?healing", "quaffed automatically in emergencies (potions=1)"),
+    (r"\bwand\b", "engrave-test unknown wands (E, letter) to identify; zap attack wands at dangerous foes"),
+    (r"tin opener|tinning kit", "tins of safe corpses are emergency food"),
+)

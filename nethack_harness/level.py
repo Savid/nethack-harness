@@ -109,8 +109,21 @@ class Level:
                 return ".", "default"
         return ch, v.fg(*p)
 
-    def paths(self, v, start):
-        """Shortest known-square distances; doors block diagonal steps; traps, boulders, doors cost extra."""
+    def route(self, v, start, goal):
+        """The squares of a shortest known path from start to goal (excluding start), or None."""
+        prev = {}
+        self.paths(v, start, prev)
+        if goal != start and goal not in prev:
+            return None
+        out, p = [], goal
+        while p != start:
+            out.append(p)
+            p = prev[p]
+        return out[::-1]
+
+    def paths(self, v, start, prev=None):
+        """Shortest known-square distances; doors block diagonal steps; traps, boulders, doors cost extra.
+        Closed doors are passable at a cost (the hero opens them); locked ones only once broken."""
         dist, heap = {start: 0}, [(0, start)]
         while heap:
             d, p = heapq.heappop(heap)
@@ -129,6 +142,8 @@ class Level:
                 nd = d + 1 + 8 * trap + 3 * (ch == "+") + self.cost[q]
                 if nd < dist.get(q, 1e9):
                     dist[q] = nd
+                    if prev is not None:
+                        prev[q] = p
                     heapq.heappush(heap, (nd, q))
         return dist
 

@@ -23,6 +23,9 @@ DEFAULTS = {
     "breaker": 20,          # seconds of rules-only play after a failed or slow decision call
     "slow_ms": 1500,        # trip the breaker when the median of the last 5 calls is slower than this
     "search_budget": 150,   # search turns per level before moving down the escape ladder
+    "sturdy_hp": 25,        # a hero with less max HP than this, or AC worse than sturdy_ac, is fragile
+    "sturdy_ac": 6,
+    "fragile_lead": 1,      # a fragile hero descends no deeper than XL + this (+1 at risk=high)
     "cap_lift": 120,        # seconds on a level after which the depth lead no longer blocks descending
     "potions": 1,           # quaff known healing potions in emergencies
     "spells": 1,            # cast healing in emergencies when the hero knows it
@@ -35,6 +38,7 @@ DEFAULTS = {
                             # a level with two down staircases
     "stall_secs": 45,       # escalate after this many seconds without new squares or depth
     "hp_drop": 0.25,        # escalate when HP falls by this fraction of max within 5 turns
+    "hp_drop_min": 5,       # ...and by at least this many points (one bite at low max HP is not news)
     "pickup_food": 1,       # pick up known-safe food the hero steps on
     "ranged": 1,            # fire the quivered missiles (f) at hostiles approaching in a line
     "quiet": 0.06,          # seconds of terminal silence that end a key send
