@@ -129,8 +129,11 @@ class Pilot:
         m = K.SWAP_REFUSED.search(text)
         if m and self.last_try and self.last_try.get("target"):
             lv.cost[self.last_try["target"]] += 10
-        if re.search(r"too hard to dig|cannot (?:dig|stay)|can't dig|Your .* too heavy to apply|while wearing a shield",
-                     text):
+        if re.search(r"(?:stairs|ladder|throne|altar|fountain) (?:is|are) too hard to dig", text) and \
+                v.hero is not None:
+            lv.ban(v.hero, "dig")                       # this square only
+        elif re.search(r"too hard to dig|cannot (?:dig|stay)|can't dig|too heavy to apply|while wearing a shield",
+                       text):
             lv.no_dig = True
         m = re.search(r"You see here (?:an? |\d+ )?([^.]+)\.", text)
         if m and CFG["pickup_food"] and any(f in m.group(1) for f in K.FOODS) and "corpse" not in m.group(1) \
@@ -969,6 +972,9 @@ class Pilot:
                         lv.mines = True
                     if self.last_down and self.last_down[0] == self.prev_dl:
                         self.edges[self.last_down] = dl
+                        if c["under"] == "?" and not any(K.FELL.search(m) for m in list(self.msgs)[-3:]):
+                            lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # came down the stairs
+                            c["under"] = "<"
                     if dl - self.prev_dl >= 2 or dl > c["xl"] + 3:
                         branch_reason = "depth jump: Dlvl %d -> %d at XL %d" % (self.prev_dl, dl, c["xl"])
                 elif prev and prev.mines and not lv.mines:
@@ -981,6 +987,9 @@ class Pilot:
         if lv.mines and self.last_down and self.last_down[0] == dl - 1 and \
                 self.lv.get(dl - 1) and not self.lv[dl - 1].mines:
             self.lv[dl - 1].downs[self.last_down[1]] = "branch"   # the staircase that brought us here
+        if c["under"] == "?" and c["turn"] <= 1:
+            lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # the game starts on the up stairs
+            c["under"] = "<"
         self.max_dl = max(self.max_dl, dl)
         if c["blind"]:
             self.blind_since = self.blind_since if self.blind_since is not None else c["turn"]
