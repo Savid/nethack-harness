@@ -15,6 +15,7 @@ from . import __version__
 from .decide import decider
 from .escalation import classify, help_text as escalation_help
 from .hooks import HookError, Hooks
+from . import notes as notes_mod
 from .base import unescape
 from .policy import GAME_OVER, Pilot
 from .report import postmortem, status as status_of, summary
@@ -52,6 +53,10 @@ Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --
   screen                                  the screen as the loop sees it        e.g. screen
   send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
                                           KEYS take escapes: \\r Enter, \\e Escape, \\xHH   e.g. send '#pray\\r'
+  notes                                   one line per level: stairs seen or imported, holes, hazards
+  --notes-out FILE / --notes-in FILE      (start or resume) keep FILE up to date with this game's level notes /
+                                          use another copy's notes: travel toward stairs it saw, avoid its
+                                          Mines staircase (only for the same game: the first screen must match)
   mark NAME | keys [--since NAME|T] [--raw]  name a moment | print every key sent since (source-tagged);
                                           --raw lines replay with --plan replay:FILE
   postmortem                              the death (or last crisis) in one block, also saved at game over
@@ -116,6 +121,8 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("fight_handoff", "", "losing fast: ladder (pray, quaff, stairs underfoot, verified Elbereth, retreat, "
                                   "then fight; escalate only if HP keeps falling) | escalate (hand over at once)"),
             ("crisis_turns", "", "turns the crisis ladder runs before a still-falling HP is handed over"),
+            ("fight_question", "", "1 = in a crisis, a close call between ladder steps (retreat, Elbereth, fight) "
+                                   "is one decision-model question; it may pick only a legal step"),
             ("branch_points", "", "1 = pause once at each branch point (Mines, trap door or hole, depth jump, "
                                   "two down staircases)"),
             ("stall_secs", "", "...or after this many seconds of play without new squares or depth"),
@@ -354,6 +361,33 @@ def print_keys(store, since=None, raw=False):
     return 0
 
 
+def sync_notes(store, p, notes, ended=False):
+    """--notes-out: rewrite the file on a level change, every 200 turns and at game over. --notes-in: merge the
+    other copy's file whenever it changes."""
+    if notes.get("notes_out"):
+        mark = (p.prev_dl, (p.turn or 0) // 200, ended)
+        if mark != notes.get("written"):
+            try:
+                notes_mod.write(notes["notes_out"], p)
+                notes["written"] = mark
+            except OSError as e:
+                p.note("notes", "cannot write %s: %s" % (notes["notes_out"], e.strerror))
+                notes["notes_out"] = None
+    if notes.get("notes_in") and p.anchor:       # this game's own fingerprint comes from its first screen
+        try:
+            mtime = os.stat(notes["notes_in"]).st_mtime
+        except OSError:
+            return
+        if mtime != notes.get("mtime"):
+            notes["mtime"] = mtime
+            try:
+                with open(notes["notes_in"]) as f:
+                    got = notes_mod.merge(p, json.load(f))
+            except (OSError, ValueError) as e:
+                got = "unreadable notes: %s" % e
+            p.note("notes", "imported %s" % (", ".join(got) if isinstance(got, list) else got))
+
+
 def save_pilot(store, p):
     """Returns None, or the error when the state directory cannot be written. A memory that could not be
     updated is removed, so a restart never resumes from stale knowledge."""
@@ -414,7 +448,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m2" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m3" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -514,6 +548,8 @@ def daemon(args):
     beat = {"at": 0.0}
 
     inbox = {"path": cfg.get("inbox"), "offset": 0}
+    level_notes = {"notes_out": cfg.get("notes_out"), "notes_in": cfg.get("notes_in"), "mtime": None,
+                   "written": None}
 
     def read_inbox():
         if not inbox["path"]:
@@ -546,6 +582,7 @@ def daemon(args):
                       escalation=status["escalation"] + 1)
         if ended:
             ended_at = time.time()
+            sync_notes(store, p, level_notes, ended=True)
             try:
                 store.text("postmortem.txt", postmortem(p, reason))
             except Exception as e:      # a report must never stop the game-over bookkeeping
@@ -587,6 +624,9 @@ def daemon(args):
                 p.reseed(CFG["tiebreak_seed"])
                 CFG["tiebreak_seed"] = -1
             p.plan.extend(c.get("plan") or [])
+            for k in ("notes_out", "notes_in"):
+                if c.get(k):
+                    level_notes[k], level_notes["mtime"] = c[k], None
             problems += load_hooks(p.hooks, c.get("questions"), c.get("plugins"), c.get("enable"),
                                    c.get("disable"))
             remember_hooks(store, c)
@@ -615,6 +655,8 @@ def daemon(args):
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None, code=None)
             term.sync()
+        elif cmd == "notes":
+            store.text("reply-%d.txt" % c["seq"], notes_mod.lines(p))
         elif cmd == "mark":
             st = p.last_st
             p.marks[c["name"]] = {"i": p.key_index, "turn": st.get("turn"), "dlvl": st.get("dlvl")}
@@ -708,6 +750,7 @@ def daemon(args):
                 publish()
             if p.decisions and p.decisions % 50 == 0:
                 save(p)
+            sync_notes(store, p, level_notes, status["state"] == "ended")
             if disk["warned"] and disk["told"] != disk["warned"] and not paused:
                 disk["told"] = disk["warned"]
                 pause("state dir not writable (%s): free space in %s, then resume" % (disk["warned"], store.dir))
@@ -882,6 +925,8 @@ def add_resume_options(p):
     p.add_argument("--plan", action="append", default=[], metavar="ITEM", help="queue a plan item (help plan)")
     p.add_argument("--questions", action="append", default=[], metavar="FILE", help="hook questions (help hooks)")
     p.add_argument("--plugin", action="append", default=[], metavar="FILE", help="hook plugin (help plugins)")
+    p.add_argument("--notes-out", metavar="FILE", help="keep FILE up to date with this game's level notes")
+    p.add_argument("--notes-in", metavar="FILE", help="use another copy's level notes (re-read when FILE changes)")
     p.add_argument("--enable", action="append", default=[], metavar="KEY")
     p.add_argument("--disable", action="append", default=[], metavar="KEY")
     p.add_argument("--timeout", type=float, default=100, help="seconds to block (default 100)")
@@ -922,6 +967,7 @@ def main(argv=None):
     sd = sub.add_parser("send", help="send keys while paused; prints the resulting screen")
     sd.add_argument("keys", nargs="?")
     sd.add_argument("--hex", help="bytes as hex, e.g. 1b for Escape, 0d for Enter")
+    sub.add_parser("notes", help="one line per level: stairs seen or imported, up stairs, holes, hazards")
     mk = sub.add_parser("mark", help="name this moment in the key journal (for keys --since NAME)")
     mk.add_argument("name")
     ks = sub.add_parser("keys", help="the key journal: every key sent (loop, plan, plugin, hand, replay)")
@@ -1002,6 +1048,8 @@ def main(argv=None):
             return 1
         cfg = {"socket": a.socket, "decide": a.decide, "model": a.model, "key_env": a.key_env, "fresh": a.fresh,
                "seed": a.seed, "inbox": os.path.abspath(a.inbox) if a.inbox else None, "directive": a.directive, "mode": a.mode, "set": sets, "plan": a.plan,
+               "notes_out": os.path.abspath(a.notes_out) if a.notes_out else None,
+               "notes_in": os.path.abspath(a.notes_in) if a.notes_in else None,
                "questions": [os.path.abspath(x) for x in a.questions],
                "plugins": [os.path.abspath(x) for x in a.plugin], "enable": a.enable, "disable": a.disable}
         store.write("config.json", cfg)
@@ -1092,9 +1140,11 @@ def main(argv=None):
         control(store, "resume", answering=st.get("escalation"), directive=a.directive, mode=a.mode,
                 set=sets, plan=a.plan,
                 questions=[os.path.abspath(x) for x in a.questions], plugins=[os.path.abspath(x) for x in a.plugin],
-                enable=a.enable, disable=a.disable)
+                enable=a.enable, disable=a.disable,
+                notes_out=os.path.abspath(a.notes_out) if a.notes_out else None,
+                notes_in=os.path.abspath(a.notes_in) if a.notes_in else None)
         return wait(store, a.timeout, st.get("escalation", 0))
-    if a.cmd in ("postmortem", "mark"):
+    if a.cmd in ("postmortem", "mark", "notes"):
         seq = control(store, a.cmd, **({"name": a.name} if a.cmd == "mark" else {}))
         for _ in range(150):
             reply = store.text("reply-%d.txt" % seq)

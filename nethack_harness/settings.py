@@ -46,6 +46,7 @@ DEFAULTS = {
     "milestone_from": 1,    # ...and only for depths at least this deep
     "fight_handoff": "ladder",  # losing fast: "ladder" runs the crisis ladder first; "escalate" hands over at once
     "crisis_turns": 12,     # turns the crisis ladder has before a still-falling HP is handed over
+    "fight_question": 1,    # 1: in a crisis, a close call between ladder steps goes to the decision model
     "pickup_food": 1,       # pick up known-safe food the hero steps on
     "ranged": 1,            # fire the quivered missiles (f) at hostiles approaching in a line
     "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
@@ -115,7 +116,7 @@ def finite(x):
 # must be zero or more.
 CHOICES = {"mines": ("auto", "allow", "avoid", "escalate"), "milestone": ("off", "depth", "xl", "both"),
            "fight_handoff": ("ladder", "escalate"), "mapping": (0, 1, 2)}
-FLAGS = ("dig", "potions", "spells", "elbereth", "trapdoors", "probe", "briefing", "branch_points", "pickup_food",
+FLAGS = ("fight_question", "dig", "potions", "spells", "elbereth", "trapdoors", "probe", "briefing", "branch_points", "pickup_food",
          "ranged", "auto")
 FRACTIONS = ("descend_hp", "rest_hp", "hp_escalate", "elbereth_hp", "danger_max", "p_min", "hp_drop", "milestone_hp")
 SIGNED = ("lead", "fragile_lead", "last_prayer", "tiebreak_seed")

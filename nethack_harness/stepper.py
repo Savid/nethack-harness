@@ -8,6 +8,7 @@ from .hooks import HookError
 from .level import cheb, compass, pos1
 from .settings import CFG, val
 from .base import Act, Hard
+from .notes import anchor_of
 
 
 class Stepper:
@@ -208,6 +209,12 @@ class Stepper:
     def bookkeep(self, v, c):
         """After each look: outcome of the last action, frozen turns, level arrivals, milestones, blindness and
         branch points (the last raise Hard: they always reach the outer loop)."""
+        if self.anchor is None and c["dl"] == 1 and c["turn"] <= 1:
+            self.anchor = anchor_of(v)                 # the game's identity for level notes
+        if self.last_seen and self.last_seen[0] == c["dl"]:
+            c["lv"].turns += max(0, c["turn"] - self.last_seen[1])
+        self.last_seen = (c["dl"], c["turn"])
+        c["lv"].hazards.update(h["name"] for h in c["obst"] if not h["name"].startswith("unidentified"))
         dl, lv = c["dl"], c["lv"]
         self.judge_outcome(v, c)
         if self.frozen >= 16:
@@ -404,6 +411,9 @@ class Stepper:
         info = {"src": "rule"}
         chosen = top
         contested = not (top.prior >= 6.5 or len(acts) == 1 or (calm and top.prior - acts[1].prior >= 1))
+        if CFG["fight_question"] and self.crisis_active(c) and len(acts) > 1 and top.prior - acts[1].prior < 1 and \
+                top.kind not in ("pray", "quaff", "cast"):
+            contested = True          # a close call inside the crisis ladder: one fight-or-retreat question
         ans, took, reason, fresh = self.fetch_answers(v, c, acts, near, contested, facts)
         if fresh and "act" in ans:         # a reused answer only stands in for the call, as before
             chosen, info, reason = self.weigh(c, acts, ans, took, reason)

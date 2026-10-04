@@ -601,3 +601,25 @@ class JournalTest(Case):
     def test_tiebreak_seed_is_a_setting(self):
         nh.apply_settings(None, {"tiebreak_seed": "7"})
         self.assertEqual(nh.CFG["tiebreak_seed"], 7)
+
+
+class NotesTest(Case):
+    def test_export_merge_round_trip_and_anchor(self):
+        a = nh.Pilot(FakeTerm(), None)
+        a.anchor = "abc"
+        lv = a.level(5)
+        lv.downs[(11, 44)] = "main"
+        lv.downs[(3, 3)] = "branch"
+        lv.up = (4, 9)
+        lv.traps[(7, 29)] = "trap door"
+        data = json.loads(json.dumps(nh.notes.export(a)))
+        self.assertEqual(data["levels"]["main:5"]["down"], [[12, 45]])
+        b = nh.Pilot(FakeTerm(), None)
+        b.anchor = "other"
+        self.assertIn("another game", nh.notes.merge(b, data))
+        b.anchor = "abc"
+        self.assertEqual(nh.notes.merge(b, data), ["main Dlvl 5"])
+        lb = b.level(5)
+        self.assertEqual((lb.imported["down"], lb.up, lb.downs.get((3, 3)), lb.traps.get((7, 29))),
+                         ([(11, 44)], (4, 9), "branch", "trap door"))
+        self.assertIn("down 12,45 [imported]", nh.notes.lines(b))

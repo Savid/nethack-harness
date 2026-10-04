@@ -81,6 +81,8 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.journal, self.key_index, self.key_source = None, 0, "loop"   # the key journal (record)
         self.marks = {}                    # name -> {"i", "turn", "dlvl"} (H mark)
         self.replay_hp = None              # HP when a plan replay began
+        self.anchor = None                 # fingerprint of this game's first screen (level notes)
+        self.last_seen = None              # (dlvl, turn) at the last look, for turns spent per level
         self.log = None
         self.hooks = Hooks()
 

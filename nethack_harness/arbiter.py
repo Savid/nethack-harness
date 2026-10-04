@@ -89,7 +89,9 @@ class Arbiter:
         vetoed = pick.prior <= -2 or "(Gnomish Mines)" in pick.desc and self.mines_policy() == "avoid" or \
             (pick.kind == "wait" and not c["threats"]) or \
             top.kind in ("pray", "quaff", "cast", "elbereth", "flee")
-        if self.directive and conf >= 0.5 and margin >= 0.15 and not vetoed:
+        crisis_call = CFG["fight_question"] and self.crisis_active(c) and top.prior - acts[1].prior < 1 \
+            if len(acts) > 1 else False
+        if (self.directive or crisis_call) and conf >= 0.5 and margin >= 0.15 and not vetoed:
             if pick is not top:
                 self.overrides += 1
             chosen = pick

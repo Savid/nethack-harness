@@ -63,8 +63,11 @@ class Level:
         self.up, self.up_branch, self.shop, self.mines = None, False, False, False
         self.has_shop = False                      # a shop is somewhere on this level (sounds or a greeting)
         self.no_kick = self.no_dig = False
-        self.extra_budget = 0
-        self.stair_ban_until = 0                   # decision index until which this level's stairs are not taken                      # search turns granted after an "exhausted" report
+        self.extra_budget = 0                      # search turns granted after an "exhausted" report
+        self.stair_ban_until = 0                   # decision index until which this level's stairs are not taken
+        self.turns = 0                             # game turns spent here
+        self.hazards = set()                       # never-melee monsters met here (level notes)
+        self.imported = {}                         # notes from another copy of this game: "down", "up", "holes"
         self.shop_doors = set()                    # doors (and doorways) of shops: never kicked
         self.probed = set()                        # escape-ladder probes already tried here
         self.arrived = None                        # wall-clock time of arrival

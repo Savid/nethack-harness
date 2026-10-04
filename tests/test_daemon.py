@@ -76,6 +76,23 @@ class DaemonTest(Case):
             time.sleep(0.1)
         self.assertFalse(self.status()["alive"])
 
+    def test_game_gone_ends_with_postmortem_and_notes(self):
+        notes = os.path.join(self.state, "notes.json")
+        out = cli(self.state, "start", "--socket", self.game.path, "--decide", "none", "--set", "briefing=0",
+                  "--set", "quiet=0.02", "--notes-out", notes, "--timeout", "2")
+        self.assertIn(out.returncode, (0, 2), out.stdout + out.stderr)
+        self.game.close()
+        os.unlink(self.game.path)                 # the game's terminal goes away
+        for _ in range(100):
+            if self.status().get("state") == "ended":
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.status().get("state"), "ended")
+        self.assertTrue(os.path.exists(os.path.join(self.state, "postmortem.txt")))
+        self.assertTrue(os.path.exists(notes))
+        log = open(os.path.join(self.state, "daemon.log")).read()
+        self.assertNotIn("Traceback", log)
+
 
 if __name__ == "__main__":
     unittest.main()

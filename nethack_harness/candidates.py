@@ -119,8 +119,18 @@ class Candidates:
         if c["under"] == "<" and dl > 1 and hpf < 1 / 3 and th and min(h["dist"] for h in th) >= 2:
             acts.append(Act("flee_up", "Escape up the stairs you stand on", "<", "flee", 6))
         usable = [x for x in downs if not (x[3] == "branch" and policy == "avoid")]
+        imported = [q for q in lv.imported.get("down", []) if q not in lv.downs and
+                     lv.excluded.get(q, -1) <= self.decisions] if not usable else []
+        if imported and ok and not th:
+            # another copy of this game saw down stairs here: head for them (the game's travel finds a way)
+            q = min(imported, key=lambda q: cheb(q, hero))
+            acts.append(Act("goto_imported_stairs", "Travel toward the down stairs another copy saw at %d,%d" % (
+                q[0] + 1, q[1] + 1), travel(hero, q), "travel", 4.6, q))
         if fr:
-            d, p = self.rng.choice([x for x in fr if x[0] <= fr[0][0] + 1])
+            if imported:      # explore toward the imported stairs first
+                d, p = min(fr, key=lambda x: x[0] + 2 * cheb(x[1], min(imported, key=lambda q: cheb(q, hero))))
+            else:
+                d, p = self.rng.choice([x for x in fr if x[0] <= fr[0][0] + 1])
             keys = travel(hero, p)
             if d == 1 and lv.cell(v, p)[0] == "#":
                 keys = "G" + next(k for k, q in nbrs(hero) if q == p)    # follow a corridor in one command
