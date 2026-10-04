@@ -4,6 +4,8 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -185,12 +187,28 @@ class ControlRobustnessTest(Case):
 
     def test_stuck_loop_is_reported(self):
         d = tempfile.mkdtemp()
-        with open(os.path.join(d, "status.json"), "w") as f:
-            json.dump({"state": "running", "pid": os.getpid(), "escalation": 0, "beat": time.time() - 60,
-                       "home": os.path.realpath(d)}, f)
-        rc, text = self.run_cli("--dir", d, "wait", "--timeout", "5")
-        self.assertEqual(rc, 1)
-        self.assertIn("stuck", text)
+        fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "_daemon"])
+        try:
+            with open(os.path.join(d, "status.json"), "w") as f:
+                json.dump({"state": "running", "pid": fake.pid, "escalation": 0, "beat": time.time() - 60,
+                           "home": os.path.realpath(d)}, f)
+            rc, text = self.run_cli("--dir", d, "wait", "--timeout", "5")
+            self.assertEqual(rc, 1)
+            self.assertIn("stuck", text)
+            # nobody holds the dir's lock, so stop must not signal that process
+            rc, text = self.run_cli("--dir", d, "stop")
+            self.assertIn("marked stopped", text)
+            self.assertIsNone(fake.poll())
+        finally:
+            fake.kill()
+
+    def test_a_reused_pid_is_not_a_daemon(self):
+        stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            st = {"state": "running", "pid": stranger.pid}
+            self.assertFalse(nh.control.alive(st))
+        finally:
+            stranger.kill()
 
     def test_copied_state_dir_is_not_ours(self):
         d = tempfile.mkdtemp()
@@ -260,10 +278,10 @@ class LiveFindingsTest(Case):
         self.assertEqual(sorted(p.inv), ["d", "e", "f"])
 
     def test_terrain_names_are_not_monsters(self):
-        for name in ("wall", "dark part of a room", "doorway", "unknown"):
-            self.assertTrue(K.NOT_A_MONSTER.search(name), name)
+        for name in ("wall", "dark part of a room", "doorway", "unknown", "a doorway or the floor of a room (r)"):
+            self.assertTrue(K.not_a_monster(name), name)
         for name in ("floating eye", "water moccasin", "stone giant", "peaceful watchman"):
-            self.assertFalse(K.NOT_A_MONSTER.search(name), name)
+            self.assertFalse(K.not_a_monster(name), name)
 
 
 class LycanthropyTest(Case):
@@ -516,3 +534,40 @@ class PersonaP1Test(Case):
         v.st["pw"] = 10
         self.assertEqual(p.spell("attack", v), ("a", "force bolt"))
         self.assertEqual(p.spell("heal", v), ("b", "healing"))
+
+
+class AdversarialR3Test(Case):
+    def test_fights_and_kicks_are_not_oscillation(self):
+        for key in ("attack_l", "kick_k"):
+            p = nh.Pilot(FakeTerm(), None)
+            p.decisions, p.progress = 40, 30
+            for _ in range(10):
+                p.trail.append((3, (10, 40), key))
+            self.assertIsNone(p.oscillation(3))
+            self.assertIsNone(p.level(3).bans.get(((10, 40), key)))
+
+    def test_shop_sounds_do_not_make_a_shop_door(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.message("You hear someone cursing shoplifters.", p.term.view())
+        lv = p.lv[3]
+        self.assertTrue(lv.has_shop)
+        self.assertFalse(lv.shop or lv.no_dig or lv.shop_doors)
+
+    def test_kills_count_as_progress(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.decisions, p.progress = 50, 10
+        p.message("You kill the imp!", p.term.view())
+        self.assertEqual(p.progress, 50)
+
+    def test_repeat_refuses_a_bare_count(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                rc = nh.main(["--dir", tempfile.mkdtemp(), "repeat", "20", "--times", "2"])
+            except SystemExit as e:
+                rc = e.code
+        self.assertEqual(rc, 64)
+
+    def test_terrain_lists_are_not_monsters(self):
+        self.assertTrue(K.not_a_monster("a doorway or the floor of a room or the dark part of a room (r)"))
+        self.assertFalse(K.not_a_monster("imp (peaceful imp)"))

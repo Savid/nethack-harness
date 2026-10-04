@@ -26,6 +26,11 @@ class Messages:
             self.engulfed = False
         self.msgs.append(text)
         self.msg_log.append((v.st.get("turn"), text))
+        self.msg_count += 1
+        if K.PROGRESS.search(text):
+            # a kill, a hit, a door giving way: a fight or a door in progress is not a stall
+            self.progress, self.progress_turn, self.progress_time = self.decisions, v.st.get("turn", 0), self.clock()
+            self.trail.clear()
         self.note("msg", text[:200])
         if "You begin praying" in text and v.st.get("turn") is not None:
             self.last_prayer = v.st["turn"]
@@ -52,8 +57,10 @@ class Messages:
         if re.search(r"[Cc]losed for inventory", text) and v.hero:
             lv.shop_doors.update(q for _, q in nbrs(v.hero))       # the engraving lies before a shop door
         text = re.sub(r'You read: ".*?"|"[^"]*"', "", text)    # engravings and epitaphs are not events
+        if K.SHOP_SOUND.search(text):
+            lv.has_shop = True                         # a level-wide sound: says nothing about where we stand
         if K.SHOP.search(text):
-            lv.shop = lv.no_dig = True
+            lv.shop = lv.has_shop = lv.no_dig = True
             if v.hero:                                 # greeted in the doorway: never kick around here
                 lv.shop_doors.update([v.hero] + [q for _, q in nbrs(v.hero)])
         if K.BOULDER_FAIL.search(text) and self.last_try and self.last_try["kind"] == "push":

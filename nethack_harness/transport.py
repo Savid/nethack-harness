@@ -66,6 +66,7 @@ class Term:
         self.link = Link(where)
         self.vt = VT()
         self.seen = ""                 # recent decoded output (prayers typed by hand are spotted in it)
+        self.after_run = False         # the last command was travel or a run (T: may be stale next)
         self.cursor = 0
         self.sends = 0
         self.send_time = 0.0
@@ -152,12 +153,13 @@ class Term:
         data = keys.encode() if isinstance(keys, str) else keys
         self.poll(data)
         self.settle(before, multi=bool(MULTI_TURN.match(data)))
-        if COUNTED.match(data) and self.ready() and 1 <= self.vt.y <= 21 and \
+        if (COUNTED.match(data) or self.after_run) and self.ready() and 1 <= self.vt.y <= 21 and \
                 not any("--More--" in r for r in self.vt.lines()):
-            # The game can leave T: stale after a counted command (notably one that follows travel or a run),
-            # even though the turn counter itself moved on. A redraw (^R) takes no game time and fixes the screen.
+            # After travel or a run the game stops redrawing T: until a later command (and counted commands can
+            # leave it stale too), though the turn counter itself moves on. ^R takes no game time and fixes it.
             self.poll(b"\x12")
             self.settle()
+        self.after_run = bool(RUNS.match(data))
         self.send_time += time.monotonic() - started
 
     def view(self):
@@ -171,6 +173,7 @@ class Term:
 # but then the game leaves T: stale after a counted command, so the harness keeps the default.)
 MULTI_TURN = re.compile(rb"^(?:n?\d+|_|G|[HJKLYUBN]|m[0-9])")
 COUNTED = re.compile(rb"^(?:n|m)?\d+")
+RUNS = re.compile(rb"^(?:_|G|[HJKLYUBN])")
 
 
 def serve_local(args):

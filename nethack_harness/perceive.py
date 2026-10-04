@@ -232,11 +232,14 @@ class Perception:
                     name = "hallucinated monster"
                 elif d <= 5 and ch != "~":
                     name = self.farlook(v, p)
-                    if K.NOT_A_MONSTER.search(name):
-                        # farlook named terrain or nothing on a monster glyph: never melee it on that word;
-                        # forget the answer so the next look can confirm what it is
+                    if K.not_a_monster(name):
+                        # farlook named terrain or nothing on a monster glyph: forget the answer and look again
+                        # next time; after one retry an empty answer is a monster we cannot name (a hostile)
                         self.species = {k: x for k, x in self.species.items() if x != name}
-                        name = "unidentified %s (farlook said %r)" % (ch, name[:30])
+                        tries = self.farlook_retries[p] = self.farlook_retries.get(p, 0) + 1
+                        empty = (name or "").strip().lower() in ("", "unknown")
+                        name = "unidentified %s (farlook said %r)" % (ch, name[:30]) if not (empty and tries > 1) \
+                            else "unknown %s monster" % ch
                     if "tame" in name:
                         continue
                     if "statue" in name:

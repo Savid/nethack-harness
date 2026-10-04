@@ -37,7 +37,9 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.last_crisis = None                          # the most recent crisis ladder, kept after it ends
         self.inv_complete = False                        # a whole inventory menu has been read at least once
         self.spells = {}                                 # name -> (letter, level, failure %), from the + menu
-        self.last_code = None                            # the code of the latest escalation (escalation.py)
+        self.last_code = None
+        self.msg_count = 0                               # messages seen so far (no-op detection)
+        self.farlook_retries = {}                        # square -> looks that named no monster there                            # the code of the latest escalation (escalation.py)
         self.hunger_noted = None
         self.last_st = {}                                # the last status line read on a normal screen
         self.keys = self.decisions = self.calls = self.escs = 0
@@ -134,6 +136,11 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
                         self.note("hook_error", "on_escalation plan item %r: %s" % (item, e))
                 return None
         return reason
+
+    @staticmethod
+    def map_sig(v):
+        """A fingerprint of the map rows, to tell "nothing happened" from "something changed"."""
+        return hash(tuple(v.rows[1:22]))
 
     def esc_facts(self):
         v = self.term.view()

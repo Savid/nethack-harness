@@ -20,8 +20,7 @@ class Execution:
         if a.kind == "pray":
             self.praying = True
             try:
-                self.last_prayer = c["turn"]
-                self.flow("#pray\r", until=14)
+                self.flow("#pray\r", until=14)        # the prayer is recorded from "You begin praying"
             finally:
                 self.praying = False
             return

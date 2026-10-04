@@ -30,7 +30,7 @@ class Candidates:
                 if q not in lv.locked:
                     blocked = any(re.search(r"door is closed|bump into a door", x) for x in list(self.msgs)[-2:])
                     new = q in lv.door_frontier or v.ch(2 * q[0] - hero[0], 2 * q[1] - hero[1]) == " "
-                    acts.append(Act("open_" + k, "Open the closed door to the " + K.DN[k], k, "door",
+                    acts.append(Act("open_" + k, "Open the closed door to the " + K.DN[k], "o" + k, "door",
                                     6 if blocked else 5 if new else 1 if fr else 2.4, q))     # before probes
                 elif lv.kicks[q] < K.KICK_TRIES and self.kickable(q, c):
                     acts.append(Act("kick_" + k, "Kick open the locked door to the " + K.DN[k], "\x04" + k, "kick",
@@ -91,7 +91,7 @@ class Candidates:
         trapdoor_here = lv.traps.get(hero) in ("trap door", "hole")
         if c["under"] == ">" or (trapdoor_here and CFG["trapdoors"]):
             branch = lv.downs.get(hero) == "branch"
-            escape = th and hpf >= 0.4
+            escape = th and hpf >= 0.4 and dl < self.depth_cap(c["xl"], c["hpmax"], c["ac"])   # never past the cap
             pr = 7 if escape else 6 if ok else -3
             if branch and policy == "avoid":
                 pr = 0.2
@@ -171,6 +171,12 @@ class Candidates:
     def linger_act(self, v, c, cap):
         """While the depth gate holds: walk to a random known square some way off (monsters come to a moving
         hero, and walking costs less food than searching in place); search only when nowhere is reachable."""
+        lv = c["lv"]
+        if c["dl"] > cap and lv.up and lv.up in c["dist"]:
+            # below the cap (a trap door, a fall): climb back toward it rather than linger where it is too deep
+            return Act("linger", "Climb back toward the depth cap (Dlvl %d) by the up stairs %s" % (
+                cap, compass(c["hero"], lv.up)), ("<" if c["hero"] == lv.up else travel(c["hero"], lv.up) + "<"),
+                "travel", 0, lv.up)
         far = [p for p, d in c["dist"].items() if 6 <= d <= 40]
         if far:
             p = self.rng.choice(far)
@@ -246,7 +252,8 @@ class Candidates:
                     acts[i] = Act(a.key, a.desc + " (unreachable: locked door %s)" % K.DN[k], a.keys, a.kind, -3,
                                   a.target)
             else:
-                acts[i] = Act("open_" + k, "%s: open the closed door %s on the way" % (a.desc, K.DN[k]), k, "door",
+                acts[i] = Act("open_" + k, "%s: open the closed door %s on the way" % (a.desc, K.DN[k]), "o" + k,
+                              "door",
                               a.prior, q)
         return acts
 

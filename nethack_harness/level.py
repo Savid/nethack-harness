@@ -61,6 +61,7 @@ class Level:
         self.noops = collections.Counter()
         self.traps = {}                            # pos -> farlook description
         self.up, self.up_branch, self.shop, self.mines = None, False, False, False
+        self.has_shop = False                      # a shop is somewhere on this level (sounds or a greeting)
         self.no_kick = self.no_dig = False
         self.extra_budget = 0
         self.stair_ban_until = 0                   # decision index until which this level's stairs are not taken                      # search turns granted after an "exhausted" report

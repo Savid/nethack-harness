@@ -260,7 +260,7 @@ def dismiss_more(term, note):
     return note
 
 
-def guarded_repeat(term, p, keys, c):
+def guarded_repeat(term, p, keys, c, beat=None):
     """Send KEYS up to c["times"] times while paused; stop at the first sign of trouble. Returns the reply.
     Ordinary --More-- prompts are dismissed and read; alarming ones stop the batch."""
     stop_on = re.compile(c["stop_on"]) if c.get("stop_on") else None
@@ -269,12 +269,16 @@ def guarded_repeat(term, p, keys, c):
     v = term.view()
     if v.prompt:
         return "repeat: nothing sent: a prompt is open (%s); answer it first\n%s\n" % (v.msg[:120], v.text_screen())
-    done, why = 0, "done"
+    done, why, started = 0, "done", time.time()
     for _ in range(c["times"]):
+        if beat:
+            beat()                       # a long batch must not look like a stuck loop
+        if time.time() - started > 45:
+            why = "time limit (45 s) reached"
+            break
         before = term.view()
         hp0, mon0, dl0 = before.st.get("hp"), monsters_near(before), before.st.get("dlvl")
         term.send(keys)
-        p.note("manual", "repeat %r" % keys[:40])
         done += 1
         msgs = [term.view().msg.replace("--More--", "").strip()]
         alarm = next((m for m in msgs if K_ALARM.search(m)), None)
@@ -284,10 +288,18 @@ def guarded_repeat(term, p, keys, c):
         text = "  ".join(m for m in msgs if m)
         seen += [m for m in msgs if m]
         v = term.view()
+        for m in msgs:
+            if m:
+                p.message(m, v)          # the loop learns from what happened (locked doors, kills, prayers)
         hp, hpmax = v.st.get("hp"), max(1, v.st.get("hpmax") or 1)
         falling = hp is not None and hp0 is not None and hp < hp0
         if v.dead:
             why = "the hero died"
+        elif v.asking and not v.prompt and v.msg:
+            term.send(b"\x1b")          # an open question the keys left behind (a Count:, a text prompt)
+            why = "a prompt was left open and escaped: %s" % v.msg[:80]
+        elif (v.st.get("turn"), v.rows) == (before.st.get("turn"), before.rows):
+            why = "nothing changed (the game refused or ignored the keys)"
         elif alarm:
             why = "alarming message: %s" % alarm[:120]
         elif v.more or v.prompt:
@@ -307,6 +319,7 @@ def guarded_repeat(term, p, keys, c):
         else:
             continue
         break
+    p.note("manual", "repeat %r x%d (%s)" % (keys[:40], done, why))
     return "repeat: sent %d of %d (%s)\nmessages: %s\n%s\n" % (
         done, c["times"], why, " / ".join(seen[-6:]) or "-", term.view().text_screen())
 
@@ -374,7 +387,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m4" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m1" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -574,7 +587,8 @@ def daemon(args):
             if not paused:
                 reply = "refused: the inner loop is running; pause it first\n"
             else:
-                reply = guarded_repeat(term, p, base64.b64decode(c.get("keys", "")), c)
+                reply = guarded_repeat(term, p, base64.b64decode(c.get("keys", "")), c,
+                                       beat=lambda: publish() if time.time() - beat["at"] > 2 else None)
             store.text("reply-%d.txt" % c["seq"], reply)
         elif cmd in ("send", "screen"):
             if cmd == "send" and not paused:
@@ -601,6 +615,7 @@ def daemon(args):
     if problems:
         pause("setup problem: " + "; ".join(problems))
         publish()
+    gone = 0
     try:
         while True:
             if time.time() - beat["at"] > 2:
@@ -624,6 +639,12 @@ def daemon(args):
             if status["state"] == "ended" or paused:
                 try:
                     term.poll()   # stay in sync while the outer loop plays by hand
+                    gone = 0
+                except Closed:
+                    gone += 1
+                    if gone >= 5 and status["state"] != "ended":
+                        pause(GAME_OVER, ended=True)      # the game went away while paused
+                        publish()
                 except Exception:
                     pass
                 time.sleep(0.2)
@@ -706,10 +727,27 @@ def ours(store, st):
 
 
 def alive(status):
+    """The recorded daemon process still exists and is a harness daemon (a reused pid is not)."""
     try:
-        os.kill(int(status["pid"]), 0)
-        return True
+        pid = int(status["pid"])
+        os.kill(pid, 0)
     except (OSError, KeyError, TypeError, ValueError):
+        return False
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return b"_daemon" in f.read()
+    except OSError:
+        return True                  # no /proc here: trust the signal check
+
+
+def lock_free(store):
+    """True when no process holds the state dir's daemon lock (so no loop is running there)."""
+    try:
+        with open(store.path("daemon.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        return True
+    except OSError:
         return False
 
 
@@ -717,7 +755,8 @@ def wait(store, timeout, since):
     end = time.time() + timeout
     while time.time() < end:
         st = store.read("status.json")
-        if st.get("escalation", 0) > since and st.get("state") in ("paused", "ended"):
+        live = alive(st) and ours(store, st)
+        if st.get("escalation", 0) > since and (st.get("state") == "ended" or st.get("state") == "paused" and live):
             print(store.text("escalation.txt"))
             if st["state"] == "paused":
                 print("\n[paused: the keyboard is yours (send, screen). Continue with resume; help for options]")
@@ -896,6 +935,9 @@ def main(argv=None):
         except ValueError as e:
             print("--plan: %s" % e, file=sys.stderr)
             return 64
+    if a.cmd == "repeat" and a.keys is not None and re.search(r"[0-9]$", a.keys):
+        print("repeat wants whole commands: KEYS ends in a count (digits) with no command after it")
+        return 64
     try:
         store = Store(a.dir)
     except OSError as e:
@@ -941,7 +983,7 @@ def main(argv=None):
     if a.cmd == "wait":
         return wait(store, a.timeout, st.get("escalation", 0) - (1 if st.get("state") in ("paused", "ended") else 0))
     if a.cmd == "status":
-        print(json.dumps(dict(st, alive=alive(st)), default=str))
+        print(json.dumps(dict(st, alive=alive(st) and ours(store, st)), default=str))
         return 0
     if a.cmd == "log":
         try:
@@ -970,6 +1012,12 @@ def main(argv=None):
         return wait(store, 1, st.get("escalation", 0) - 1)
     if a.cmd == "stop" and stuck(st):
         pid = int(st["pid"])
+        if lock_free(store) or not alive(st):
+            # nobody holds this dir's lock: the recorded pid is gone or belongs to someone else; signal no one
+            st.update(state="stopped")
+            store.write("status.json", st)
+            print("no inner loop holds %s (pid %d is not ours); marked stopped" % (store.dir, pid))
+            return 0
         os.kill(pid, signal.SIGTERM)
         for _ in range(30):
             if not alive(st):

@@ -34,8 +34,9 @@ ALARM = re.compile(r"You are slowing down|limbs are stiffening|deathly sick|can'
                    r"You are slimed|turning into green slime|closed for inventory|You stole|strangled|"
                    r"You can't move(?! diagonally)|How dare you|break my door|You owe|You feel like a hypocrite")
 STONING = re.compile(r"You are slowing down|limbs are stiffening")
-SHOP = re.compile(r"Welcome to [A-Z][\w' -]*'s|cash register|shoplifters|[Cc]losed for inventory|"
-                  r"leave your (?:pick-axe|dwarvish mattock) outside")
+SHOP = re.compile(r"Welcome to [A-Z][\w' -]*'s|[Cc]losed for inventory|"
+                  r"leave your (?:pick-axe|dwarvish mattock) outside")     # at a shop's door
+SHOP_SOUND = re.compile(r"cash register|cursing shoplifters")             # somewhere on the level
 PRAY_OK = re.compile(r"You feel that .+ is (?:well-pleased|pleased|satisfied)\.|You feel much better\.|"
                      r"Your stomach feels content\.|You feel a hopeful feeling|reconciliation")
 PRAY_BAD = re.compile(r"You feel that .+ is displeased\.|Thou hast angered me|Thou must relearn|You feel guilty|"
@@ -179,10 +180,22 @@ KICK_TRIES = 12      # kicks at one locked door before giving up on it (weak her
 
 # What farlook says about a square that holds no monster after all. A monster glyph whose farlook reads
 # like this is never attacked on that word.
-NOT_A_MONSTER = re.compile(r"^(?:an? |the )?(?:wall|dark part of a room|floor of a room|room|corridor|doorway|"
-                           r"open door|closed door|broken door|stone|solid rock|boulder|fountain|altar|grave|"
-                           r"tree|sink|throne|staircase|ladder|web|iron bars|water|lava|air|cloud|unknown|"
-                           r"nothing|unexplored)\s*(?:[(,.;:].*)?$|^$", re.I)
+TERRAIN = {"wall", "dark part of a room", "floor of a room", "room", "corridor", "doorway", "open door",
+           "closed door", "broken door", "stone", "solid rock", "boulder", "fountain", "altar", "grave", "tree",
+           "sink", "throne", "staircase", "staircase up", "staircase down", "ladder", "web", "iron bars", "water",
+           "lava", "air", "cloud", "unexplored", "dark part of a corridor", "lit corridor"}
+
+
+def not_a_monster(name):
+    """True when farlook's text names only terrain (or nothing) before any parenthesis: "a doorway or the floor
+    of a room", "wall". "unknown" or empty counts as nothing."""
+    head = (name or "").split("(")[0].strip().lower().rstrip(".;:,")
+    if head in ("", "unknown", "nothing"):
+        return True
+    parts = [re.sub(r"^(?:an? |the )", "", x.strip()) for x in re.split(r",| or ", head) if x.strip()]
+    return bool(parts) and all(x in TERRAIN for x in parts)
+
+
 SPARE_MISSILES = r"\b(?:daggers?|darts?|knives|knife|rocks?|flint stones?|shuriken|arrows?|crossbow bolts?|spears?)\b"
 SPARE_FOOD = r"\b(?:apples?|carrots?|oranges?|pears?|bananas?|melons?|kelp fronds?)\b"
 
@@ -263,3 +276,11 @@ def fireable(ammo, wielded):
 # Spells the loop casts by itself: name -> (Pw cost, use). Learned from the + menu at start.
 SPELLS = {"force bolt": (5, "attack"), "healing": (5, "heal"), "extra healing": (15, "heal")}
 SPELL_LINE = re.compile(r"\b([a-zA-Z]) - ([a-z][a-z ]+?)\s+(\d+)\s+\w+\s+(\d+)%")
+
+
+# Actions that rightly repeat on one square (fights, kicks, missiles, prayers, waits): never "oscillation".
+STEADY_ACTIONS = ("attack_", "kick_", "fire_", "throw_", "zap_", "pray", "quaff", "cast_", "elbereth", "rest_s",
+                  "search_more", "linger", "flee_up", "retreat", "leave_line_")
+# Messages that show a fight or a door making progress.
+PROGRESS = re.compile(r"You kill|You destroy|is killed|is destroyed|You hit|You smite|You bite|You kick at|"
+                      r"crashes open|The door opens|shatters to pieces|You break open")

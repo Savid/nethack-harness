@@ -42,8 +42,9 @@ class Stepper:
             out = "level"
         elif len(lv.near) > t["known"]:
             out = "new"
-        elif c["turn"] == t["turn"] and hero == t["hero"]:
-            out = "noop"
+        elif c["turn"] == t["turn"] and hero == t["hero"] and self.msg_count == t["msgs"] and \
+                self.map_sig(v) == t["map"]:
+            out = "noop"        # nothing happened at all: no time, no message, no change on the map
         elif t.get("target") and t["kind"] in ("explore", "travel"):
             now = c["dist"].get(t["target"])
             out = "nocloser" if now is None or (t["tdist"] is not None and now >= t["tdist"] and hero != t["target"]) \
@@ -57,9 +58,9 @@ class Stepper:
         if out == "noop":
             lv.noops[(t["hero"], t["key"])] += 1
             if lv.noops[(t["hero"], t["key"])] >= 2:
-                # Moves can be blocked for a while (a pet, a peaceful): ban them briefly; other no-ops for good.
-                temporary = t["kind"] in ("explore", "travel", "move", "door")
-                lv.ban(t["hero"], t["key"], self.decisions + 15 if temporary else -1)
+                # Something blocks it for a while (a pet, a peaceful, a held prompt): ban it briefly, never for
+                # the level, so a door or a fight is always tried again.
+                lv.ban(t["hero"], t["key"], self.decisions + 15)
                 lv.noops[(t["hero"], t["key"])] = 0
             self.frozen += 1
         else:
@@ -89,7 +90,7 @@ class Stepper:
                 self.level(d).stair_ban_until = self.decisions + 60
             return "oscillating: Dlvl %s <-> %s %d times; the involved stairs are now avoided" % (
                 levels[-1], levels[-2], len(levels))
-        t = [x for x in self.trail if x[2] not in ("search_more", "linger", "rest_s")][-12:]   # deliberate waits
+        t = [x for x in self.trail if not x[2].startswith(K.STEADY_ACTIONS)][-12:]   # fights, kicks, waits
         if len(t) >= 10:
             spots = collections.Counter((x[0], x[1]) for x in t)
             keys = collections.Counter(x[2] for x in t)
@@ -188,6 +189,21 @@ class Stepper:
         if reason and self.esc(reason, hp=c["hp"], hpmax=c["hpmax"]):
             return reason
         return self.decide_and_act(v, c, acts, near)
+
+    def door_notes(self, c):
+        """Locked doors the loop gave up on, and banned actions here: named, with the keys to try by hand."""
+        lv, notes = c["lv"], []
+        for q in sorted(lv.locked):
+            why = "%d kicks failed" % lv.kicks[q] if lv.kicks[q] >= K.KICK_TRIES else \
+                "not kicked (shop or watch)" if not self.kickable(q, c) else "%d kicks so far" % lv.kicks[q]
+            notes.append("locked door at %s: %s" % (pos1(q), why))
+        bans = sorted({key for (pos, key), until in lv.bans.items() if pos == c["hero"] and
+                       (until == -1 or until > self.decisions)})
+        if bans:
+            notes.append("banned here: " + ", ".join(bans))
+        if not notes:
+            return ""
+        return "; " + "; ".join(notes) + " (kick a door by hand: stand beside it, send --hex '04' then the direction)"
 
     def bookkeep(self, v, c):
         """After each look: outcome of the last action, frozen turns, level arrivals, milestones, blindness and
@@ -346,6 +362,7 @@ class Stepper:
                                                                     for h in c["obst"][:3]) if c["obst"] else "")
             if c["obst"]:
                 reason += "; options: throw an item at it (t), wait for it to move, another route, dig"
+            reason += self.door_notes(c)
         if reason:
             # An unchanged situation is not news. After a resume, the same kind of escalation waits until the
             # turn counter moves (150 turns for exhausted/stalled verdicts), the hero moves, or the level changes.
@@ -400,6 +417,10 @@ class Stepper:
         if reason and self.esc(reason, hp=c["hp"], hpmax=c["hpmax"], **info):
             self.pending = (acts, info) if "top" in info else None
             return reason
+        if chosen.prior <= -2 and chosen.key in ("descend", "goto_stairs", "leave_mines"):
+            # the stairs are the best of a bad lot but forbidden (the depth cap, HP): never take them anyway
+            self.note("stall", "stairs forbidden (%s %.1f): waiting a turn instead" % (chosen.key, chosen.prior))
+            chosen = Act("wait_s", "Wait one turn: the stairs are forbidden right now", "ms", "wait", -1)
         self.trail.append((dl, c["hero"], chosen.key))
         self.waits = self.waits + 1 if chosen.kind == "wait" else 0
         if self.waits >= 5:
@@ -410,6 +431,7 @@ class Stepper:
                   turn=c["turn"], **info)
         tdist = c["dist"].get(chosen.target) if chosen.target else None
         self.last_try = {"dl": dl, "hero": c["hero"], "turn": c["turn"], "known": len(lv.near), "key": chosen.key,
-                         "kind": chosen.kind, "target": chosen.target, "tdist": tdist}
+                         "kind": chosen.kind, "target": chosen.target, "tdist": tdist, "msgs": self.msg_count,
+                         "map": self.map_sig(v)}
         self.do(v, c, chosen)
         return None
