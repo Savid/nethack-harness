@@ -166,6 +166,16 @@ class Hooks:
                 return None, str(out["action"])
         return None, None
 
+    def escalation(self, facts, esc):
+        """Plugins may answer an escalation themselves: on_escalation(facts, {"code", "text"}) returns None
+        (pause as usual), {"continue": true} (play on) or {"plan": [items]} (queue them and play on)."""
+        for name, mod in self.plugins.items():
+            if self.enabled(name) and hasattr(mod, "on_escalation"):
+                out = self.call(name, "on_escalation", facts, esc)
+                if out:
+                    return out
+        return None
+
     def resumed(self, facts, orders):
         for name, mod in self.plugins.items():
             if self.enabled(name) and hasattr(mod, "on_resume"):
@@ -203,6 +213,10 @@ class Hooks:
                                                                "; plugin disabled after 2 errors" if off else ""))
         out = box.get("out")
         try:
+            if fn == "on_escalation" and out is not None and not (
+                    isinstance(out, dict) and (out.get("continue") is True or isinstance(out.get("plan"), list))):
+                raise HookError("hook error in %s.on_escalation: return None, {\"continue\": true} or "
+                                "{\"plan\": [items]}" % name)
             if fn == "extra_questions" and out is not None and not isinstance(out, dict):
                 raise HookError("hook error in %s.extra_questions: must return a dict" % name)
             if fn == "on_answers" and out is not None:

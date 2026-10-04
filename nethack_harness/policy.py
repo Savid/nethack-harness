@@ -7,6 +7,7 @@ import time
 
 from . import knowledge as K
 from .decide import Unhealthy, builtin_questions, confidence, normalize
+from .escalation import BY_CODE, classify, parse_pause_on
 from .hooks import HOOK_API, HookError, Hooks
 from .level import Level, cheb, compass, door, nbrs, on_map, passable, pos1, travel
 from .settings import CFG, effort, val
@@ -47,6 +48,7 @@ class Pilot:
         self.last_crisis = None                          # the most recent crisis ladder, kept after it ends
         self.inv_complete = False                        # a whole inventory menu has been read at least once
         self.spells = {}                                 # name -> (letter, level, failure %), from the + menu
+        self.last_code = None                            # the code of the latest escalation (escalation.py)
         self.hunger_noted = None
         self.last_st = {}                                # the last status line read on a normal screen
         self.keys = self.decisions = self.calls = self.escs = 0
@@ -189,8 +191,39 @@ class Pilot:
         self.keys += 1
 
     def esc(self, reason, **kw):
-        self.note("escalate", reason, turn=self.turn, **kw)
-        return None if CFG.get("auto") else reason   # auto: benchmarks log escalations and play on
+        """Every escalation passes here. Returns the reason to pause on, or None to play on: when its code is
+        silenced by pause_on, when an on_escalation plugin answers it, or in auto mode (benchmarks)."""
+        code = classify(reason)
+        self.last_code = code
+        self.note("escalate", reason, turn=self.turn, code=code, **kw)
+        if CFG["auto"]:
+            return None
+        if code not in parse_pause_on(CFG["pause_on"]):
+            self.note("silenced", "%s (pause_on): %s" % (code, reason[:120]))
+            return None
+        if self.hooks is not None and BY_CODE.get(code) is not None and BY_CODE[code].silenceable:
+            try:
+                answer = self.hooks.escalation(self.esc_facts(), {"code": code, "text": reason})
+            except HookError as e:
+                self.note("hook_error", str(e))
+                answer = None
+            if answer:
+                self.note("hook_answer", "%s: %s" % (code, answer))
+                for item in answer.get("plan") or []:
+                    try:
+                        self.check_plan(str(item))
+                        self.plan.append(str(item))
+                    except ValueError as e:
+                        self.note("hook_error", "on_escalation plan item %r: %s" % (item, e))
+                return None
+        return reason
+
+    def esc_facts(self):
+        v = self.term.view()
+        st = v.st if v.st.get("dlvl") is not None else self.last_st
+        return {"api": HOOK_API, "dlvl": st.get("dlvl"), "hp": st.get("hp"), "hpmax": st.get("hpmax"),
+                "xl": st.get("xl"), "turn": st.get("turn"), "decisions": self.decisions, "conditions": list(v.cond),
+                "orders": self.directive, "plan": list(self.plan)}
 
     def prayer_band(self, turn, trouble=None):
         """Prayer in bands. After a prayer the timeout is random (median about 350) and a prayer in major trouble
@@ -1736,19 +1769,20 @@ class Pilot:
         if reason:
             # An unchanged situation is not news. After a resume, the same kind of escalation waits until the
             # turn counter moves (150 turns for exhausted/stalled verdicts), the hero moves, or the level changes.
-            kind = " ".join(re.findall(r"[A-Za-z]+", reason)[:2])
+            kind = classify(reason)
             last = self.esc_seen.get(kind)
             repeats = self.esc_counts.get((kind, dl), 0)
-            window = 150 * 2 ** min(repeats, 5) if kind in ("level exhausted", "stalled") else 1
+            base = BY_CODE[kind].window if kind in BY_CODE else 1
+            window = base * 2 ** min(repeats, 5) if base > 1 else base
             if last and last[1:] == (dl, c["hero"]) and c["turn"] - last[0] < window:
-                if kind == "level exhausted":
+                if kind == "level_exhausted":
                     acts.insert(0, Act("search_more", "Search 20 turns (this level was already reported exhausted)",
                                        "20s", "search", 0))
                 reason = None
             else:
                 self.esc_seen[kind] = (c["turn"], dl, c["hero"])
                 self.esc_counts[(kind, dl)] = repeats + 1
-                if kind == "level exhausted":
+                if kind == "level_exhausted":
                     lv.extra_budget += CFG["search_budget"]   # then search on
         if reason and self.esc(reason, hp=c["hp"], hpmax=c["hpmax"]):
             return reason

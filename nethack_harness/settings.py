@@ -52,6 +52,7 @@ DEFAULTS = {
     "quiet": 0.06,          # seconds of terminal silence that end a key send
     "last_prayer": -1,      # set to the turn of a prayer made by hand
     "auto": 0,              # 1: log escalations and play on without pausing (benchmarks only)
+    "pause_on": "all",      # which escalation codes pause: all | code,code | all,-code (help escalations)
 }
 RISK = {
     "low": {"descend_hp": 0.85, "rest_hp": 0.85, "hp_escalate": 0.5, "elbereth_hp": 0.5, "lead": -1},
@@ -155,6 +156,9 @@ def validate(sets):
                 raise ValueError("%s is a fraction between 0 and 1" % k)
             if k not in SIGNED and k not in FRACTIONS and value < 0:
                 raise ValueError("%s must be zero or more" % k)
+        if k == "pause_on":
+            from .escalation import parse_pause_on
+            parse_pause_on(value)
         if k == "avoid" and value:
             try:
                 re.compile(value)

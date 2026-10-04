@@ -112,6 +112,13 @@ While paused:
   settings, last keys and messages. It is also written to `postmortem.txt` at
   game over, and works after the loop has exited.
 
+Every escalation has a code (`help escalations` lists them): the status JSON
+has `code`, the report's last line reads `REASON [code]: …`, and plugins see
+it. `--set pause_on=all,-milestone,-branch_point` silences codes (they are
+logged and play goes on; safety codes such as `low_hp` always pause). A
+plugin's `on_escalation(facts, esc)` may answer an escalation itself with
+`{"continue": true}` or `{"plan": [items]}`.
+
 Reports give prayer as a band: `safe`, `uncertain (last T…, N ago; the
 timeout is random after a prayer)`, `fails (last T…, N ago)` when the last
 prayer was under 200 turns ago, or `broken` after a failed prayer.

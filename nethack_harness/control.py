@@ -13,6 +13,7 @@ import time
 
 from . import __version__
 from .decide import decider
+from .escalation import classify, help_text as escalation_help
 from .hooks import HookError, Hooks
 from .policy import GAME_OVER, Pilot
 from .report import postmortem, status as status_of, summary
@@ -59,7 +60,7 @@ Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --
   probe --socket S --decide URL           one decision on the current screen (look-ups only)
   serve-local --socket S --nethack BIN    run nethack in a pty behind a terminal socket (testing)
   help [TOPIC]                            this map; topics: protocol commands settings modes effort plan hooks
-                                          plugins playbook
+                                          plugins escalations playbook
   --version                               print the version
 Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions FILE  --plugin FILE
                 --enable KEY  --disable KEY""",
@@ -118,6 +119,8 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("pickup_food", "", "1 = pick up known-safe food the hero steps on"),
             ("ranged", "", "1 = fire quivered missiles at hostiles approaching in a line"),
             ("auto", "", "1 = log escalations and play on without pausing (benchmarks only)"),
+            ("pause_on", "", "which escalation codes pause: all | code,code | all,-code,-code "
+                             "(help escalations)"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
             ("last_prayer", "", "turn of a prayer you made by hand")]),
@@ -161,11 +164,14 @@ CRISIS ITEMS (one call each instead of hand-typed keys mid-fight)
   def extra_questions(facts): return {key: question}           # added to this decision's call
   def on_answers(facts, answers): return None | {"escalate": "why"} | {"action": "keys to send instead"}
   def on_resume(facts, orders): ...                             # orders: directive, mode, set, enable, disable
+  def on_escalation(facts, esc): return None | {"continue": true} | {"plan": [items]}
+                                  # esc: {"code", "text"}; answer an escalation yourself (help escalations);
+                                  # codes marked [always pauses] never reach it
   facts: dlvl hp hpmax hp_percent xl turn conditions new_level hostiles standing_on role race messages
          decisions keys mode risk orders screen state""",
     "playbook": """ESCALATION PLAYBOOK
-  low HP, no safe remedy: quaff a potion, cast healing (Za.), engrave Elbereth (E - Elbereth; @ humans and
-      minotaurs ignore it), go upstairs, or finish a weak foe; then --set risk=low or --mode careful
+  low HP, no safe remedy: --plan goal:quaff, goal:elbereth (@ humans and minotaurs ignore it), goal:retreat,
+      or finish a weak foe with goal:fight:DIR; then --set risk=low or --mode careful
   danger / uncertain: act yourself, or resume with --directive (the model then decides contested steps)
   stalled / level exhausted: read the map; fire or throw at blockers that must not be meleed; search dead ends
       (send 15s); kick locked doors (send --hex '04 6c'); push boulders; --set dig=1 with a pick-axe; read a
@@ -177,6 +183,9 @@ CRISIS ITEMS (one call each instead of hand-typed keys mid-fight)
 }
 
 
+HELP["escalations"] = escalation_help()
+
+
 def help_text(topic=None):
     if topic:
         if topic not in HELP:
@@ -184,7 +193,7 @@ def help_text(topic=None):
         return HELP[topic]
     return ("nethack-harness %s: a fast NetHack inner loop for an outer-loop agent.\n\n" % __version__ +
             "\n\n".join(HELP[t] for t in ("protocol", "commands", "settings", "effort", "modes", "plan", "hooks",
-                                           "plugins", "playbook")))
+                                           "plugins", "escalations", "playbook")))
 
 
 class Store:
@@ -489,7 +498,8 @@ def daemon(args):
         except Exception as e:
             text = "ESCALATION: %s (report failed: %s)" % (reason, e)
         store.text("escalation.txt", text)
-        status.update(state="ended" if ended else "paused", reason=reason, escalation=status["escalation"] + 1)
+        status.update(state="ended" if ended else "paused", reason=reason, code=classify(reason),
+                      escalation=status["escalation"] + 1)
         if ended:
             ended_at = time.time()
             try:
@@ -556,7 +566,7 @@ def daemon(args):
             p.hp_hist.clear()                    # HP lost while the outer loop played is not news any more
             p.hit_turn = -99
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
-            status.update(state="running", reason=None)
+            status.update(state="running", reason=None, code=None)
             term.sync()
         elif cmd == "postmortem":
             store.text("reply-%d.txt" % c["seq"], postmortem(p, status.get("reason")))

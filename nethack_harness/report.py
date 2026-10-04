@@ -4,6 +4,7 @@ import re
 import time
 
 from . import knowledge as K
+from .escalation import classify
 from .level import compass, pos1
 from .settings import CFG, describe, effort, val
 
@@ -141,7 +142,8 @@ def summary(p, reason):
     out.append("recent: " + " / ".join(t + (" x%d" % n if n > 1 else "") for t, n in recent[-10:]))
     out.append(footer(p))
     # Repeat the gist last, so a reader that keeps only the tail still has it.
-    return "\n".join(out + ["--- screen ---", v.text_screen(), "REASON: %s | %s" % (reason, out[1])])
+    return "\n".join(out + ["--- screen ---", v.text_screen(),
+                             "REASON [%s]: %s | %s" % (classify(reason), reason, out[1])])
 
 
 def clip(text, n=300):
