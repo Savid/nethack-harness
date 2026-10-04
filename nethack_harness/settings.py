@@ -28,7 +28,7 @@ DEFAULTS = {
     "sturdy_ac": 7,
     "fragile_lead": 1,      # pace: no deeper than XL + this until pace_xl (always, while fragile); +1 at risk=high
     "pace_xl": 4,           # ...from this XL a sturdy hero may go one level deeper (XL + fragile_lead + 1)
-    "gate_patience": 600,   # turns held by the depth cap on an explored level before one level more is allowed
+    "gate_patience": 0,     # opt-in: turns held by the depth cap on an explored level before one level more is allowed
     "cap_lift": 120,        # seconds on a level after which the depth lead no longer blocks descending
     "potions": 1,           # quaff known healing potions in emergencies
     "spells": 1,            # cast known spells: healing when hurt, force bolt at dangerous foes and blockers
