@@ -87,10 +87,15 @@ class Stepper:
         if len(levels) >= 4 and len(set(levels[-4:])) <= 2 and levels[-1] == levels[-3] and \
                 levels[-2] == levels[-4] and self.max_dl <= max(levels):
             self.level_trail.clear()
-            for d in set(levels):
-                self.level(d).stair_ban_until = self.decisions + 60
-            return "oscillating: Dlvl %s <-> %s %d times; the involved stairs are now avoided" % (
-                levels[-1], levels[-2], len(levels))
+            deep, shallow = max(levels[-2:]), min(levels[-2:])
+            # keep every staircase usable for escape; only hold off going back down for a while
+            self.level(shallow).stair_ban_until = self.decisions + 40
+            campers = self.fled_from.get(deep) or []
+            who = ", ".join("%s at %s" % (n, pos1(p)) for n, p in campers) or "something that keeps driving the hero off"
+            return ("camped: the Dlvl %d arrival is camped by %s (Dlvl %d <-> %d %d times); the loop explores Dlvl %d "
+                    "for a while. Options: --plan goal:stairs then goal:fight:DIR or goal:elbereth there, explore "
+                    "here (--plan goal:explore:40), or other stairs") % (
+                deep, who, shallow, deep, len(levels), shallow)
         t = [x for x in self.trail if not x[2].startswith(K.STEADY_ACTIONS)][-12:]   # fights, kicks, waits
         if len(t) >= 10:
             spots = collections.Counter((x[0], x[1]) for x in t)
@@ -292,7 +297,21 @@ class Stepper:
         same_fight = last_fight and last_fight[0] == who and c["turn"] - last_fight[2] < 100 and \
             c["hp"] > last_fight[1] - step       # the same attackers, and HP has not fallen another step
         cr = self.crisis
-        if cr and not self.crisis_active(c):
+        holding = c["on_elbereth"] and c["hpf"] < val("rest_hp") and \
+            any(h["dist"] <= max(2, 2 * h["speed"] // 12) for h in c["seen_hostiles"])
+        if cr and not self.crisis_active(c) and cr["dl"] == dl and holding and cr.get("holds", 0) < 3:
+            # still on a verified Elbereth with the threat near: hold the square instead of walking off
+            cr["until"], cr["holds"] = c["turn"] + CFG["crisis_turns"], cr.get("holds", 0) + 1
+            self.note("crisis", "holding the Elbereth square: %s still near" % ", ".join(
+                h["name"] for h in c["seen_hostiles"][:2]))
+        elif cr and not self.crisis_active(c) and cr["dl"] == dl and holding:
+            self.crisis, self.last_crisis = None, dict(cr, ended=c["turn"], hp_end=c["hp"])
+            reason = "camped: held Elbereth at %s for %d turns; %s still near, HP %d/%d. Options: --plan " \
+                "goal:fight:DIR, goal:retreat, goal:quaff or goal:pray (prayer: %s)" % (
+                    pos1(c["hero"]), 3 * CFG["crisis_turns"], ", ".join(
+                        "%s at %s" % (h["name"], pos1(h["pos"])) for h in c["seen_hostiles"][:2]),
+                    c["hp"], c["hpmax"], self.prayer_band(c["turn"], c["trouble"]))
+        elif cr and not self.crisis_active(c):
             # the ladder's window is over: done if the bleeding stopped, hand over if HP is still falling
             self.crisis, self.last_crisis = None, dict(cr, ended=c["turn"], hp_end=c["hp"])
             if cr["dl"] == dl and c["hp"] < cr["hp"] - step and (c["hit"] or near):
@@ -423,8 +442,8 @@ class Stepper:
         info = {"src": "rule"}
         chosen = top
         contested = not (top.prior >= 6.5 or len(acts) == 1 or (calm and top.prior - acts[1].prior >= 1))
-        if CFG["fight_question"] and self.crisis_active(c) and len(acts) > 1 and top.prior - acts[1].prior < 1 and \
-                top.kind not in ("pray", "quaff", "cast"):
+        if CFG["fight_question"] and self.crisis_active(c) and len(acts) > 1 and top.kind not in ("pray", "quaff", "cast") \
+                and (top.prior - acts[1].prior < 1 or c["incoming"] >= c["hp"]):
             contested = True          # a close call inside the crisis ladder: one fight-or-retreat question
         ans, took, reason, fresh = self.fetch_answers(v, c, acts, near, contested, facts)
         if fresh and "act" in ans:         # a reused answer only stands in for the call, as before

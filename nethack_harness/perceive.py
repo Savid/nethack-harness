@@ -275,6 +275,7 @@ class Perception:
                 m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name)) or \
                     (not c["hallu"] and K.keep_away(name, self.race, self.role))
                 m["threat"] = 99 if m["avoid"] else 0 if c["hallu"] else K.threat_xl(ch, base, bright, name)
+                m["dmg"], m["rdmg"], m["speed"] = K.monster_power(name, ch, base, bright)
                 (obst if never else peace if "peaceful" in name else hostile).append(m)
         for p, desc in list(lv.traps.items()):   # identify nearby traps once: trap doors are free descents
             if desc is None and v.ch(*p) == "^" and cheb(p, hero) <= 7 and not c["hallu"]:
@@ -284,12 +285,19 @@ class Perception:
                 if lv.traps[p] in ("level teleporter", "magic portal"):
                     lv.cost[p] += 60
         hostile.sort(key=lambda h: h["dist"])
+        c["seen_hostiles"] = list(hostile)      # every hostile in view, fleeing or far ones included
         if self.decisions < self.boost_until:   # oscillating: treat monsters that keep their distance as scenery
             hostile = [h for h in hostile if h["dist"] <= 1]
         self.hostiles, self.obst = hostile, obst
         c.update(hostiles=hostile, peace=peace, obst=obst, watch=watch)
         lv.blocked = {h["pos"] for h in obst} | lv.statues
         c["threats"] = [h for h in hostile if h["dist"] <= 2]
+        # the most damage the hostiles can do before the hero acts again: melee from those that can reach the
+        # hero this turn, missiles and spells from those in a straight line
+        c["incoming"] = sum(h["dmg"] for h in hostile if h["dist"] <= max(1, -(-h["speed"] // 12))) + \
+            sum(h["rdmg"] for h in hostile if 2 <= h["dist"] <= 8 and (
+                h["pos"][0] == hero[0] or h["pos"][1] == hero[1] or
+                abs(h["pos"][0] - hero[0]) == abs(h["pos"][1] - hero[1])))
         c["dist"] = lv.paths(v, hero)
         c["under"] = lv.terr.get(hero, "?")
         c["frontier"] = lv.frontier(v, c["dist"])

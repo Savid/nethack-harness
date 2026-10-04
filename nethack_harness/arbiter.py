@@ -86,17 +86,21 @@ class Arbiter:
         margin = ranked[0][1] - (ranked[1][1] if len(ranked) > 1 else 0)
         if pick is not top:
             self.disagreements += 1
+        crisis = self.crisis_active(c)
         vetoed = pick.prior <= -2 or "(Gnomish Mines)" in pick.desc and self.mines_policy() == "avoid" or \
             (pick.kind == "wait" and not c["threats"]) or \
-            top.kind in ("pray", "quaff", "cast", "elbereth", "flee")
-        crisis_call = CFG["fight_question"] and self.crisis_active(c) and top.prior - acts[1].prior < 1 \
-            if len(acts) > 1 else False
+            top.kind in (("pray", "quaff", "cast") if crisis else ("pray", "quaff", "cast", "elbereth", "flee"))
+        crisis_call = CFG["fight_question"] and crisis and len(acts) > 1 and (
+            top.prior - acts[1].prior < 1 or c["incoming"] >= c["hp"] or ranked[0][1] >= 0.7)
         if (self.directive or crisis_call) and conf >= 0.5 and margin >= 0.15 and not vetoed:
             if pick is not top:
                 self.overrides += 1
             chosen = pick
         budget_ok = self.clock() - self.last_model_esc >= CFG["esc_gap"] and self.decisions >= self.calm_until
-        if budget_ok and danger > CFG["danger_max"] and (pick is not top or hpf < 0.5):
+        if crisis and danger >= 0.6 and pick is not top and pick is not chosen:
+            reason = "danger %.2f in a crisis (rules want %s, model wants %s %.2f)" % (danger, top.key, pick.key,
+                                                                                       ranked[0][1])
+        elif budget_ok and danger > CFG["danger_max"] and (pick is not top or hpf < 0.5):
             reason = "danger %.2f (rules want %s, model wants %s %.2f)" % (danger, top.key, pick.key,
                                                                           ranked[0][1])
         elif budget_ok and danger > 0.5 and hpf < 0.5 and conf < CFG["p_min"]:

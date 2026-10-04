@@ -354,7 +354,7 @@ class CrisisTest(Case):
         p.level(3).up = (2, 2)
         c = p.context(p.term.view())
         a = p.retreat_act(p.term.view(), c)
-        self.assertTrue(a.keys.endswith("<"), a.desc)
+        self.assertEqual((a.target, a.keys.startswith("_")), ((2, 2), True), a.desc)
 
     def test_ladder_order_and_elbereth_rules(self):
         rows = [" ------- ", " |.....| ", " |..@d.| ", " |.....| ", " ------- "]
@@ -676,3 +676,55 @@ class CompactOutputTest(Case):
             self.assertLess(len(text), 1200, name)
             self.assertIn("ESCALATION [low_hp]", text)
         self.assertLessEqual(len(nh.control.help_text("brief").encode()), 2500)
+
+
+class V7Test(Case):
+    def pilot(self, rows, cursor, lookups):
+        p = nh.Pilot(FakeTerm(screen("", rows), cursor), None)
+        p.lookup = lambda pos: lookups.get(pos)
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        return p
+
+    def test_no_keys_into_a_dead_game(self):
+        p = nh.Pilot(FakeTerm(screen("You die...--More--", [" |..@..| "]), (0, 18)), None)
+        with self.assertRaises(nh.policy.Dead):
+            p.send(" ")
+
+    def test_failed_farlook_judges_by_glyph_and_never_throws_at_it(self):
+        p = self.pilot([" -------- ", " |......| ", " |..@d..| ", " |......| ", " -------- "], (3, 4), {})
+        c = p.context(p.term.view())
+        self.assertEqual(c["obst"], [])
+        self.assertTrue(c["hostiles"][0]["name"].startswith("likely "))
+
+    def test_deadly_incoming_damage_reorders_the_ladder(self):
+        p = self.pilot([" -------- ", " |......| ", " |..@G..| ", " |......| ", " -------- "], (3, 4),
+                       {(3, 5): "gnome king"})
+        v = p.term.view()
+        c = p.context(v)
+        self.assertGreaterEqual(c["incoming"], 20)
+        c["hp"], c["can_pray"] = 6, False
+        p.crisis = {"until": 999, "dl": 3, "hp": 12, "tried": [], "why": "test"}
+        acts = p.actions(v, c)
+        self.assertTrue(acts[0].key.startswith("attack"), [a.key for a in acts[:3]])
+
+    def test_stair_keys_are_not_bundled_with_travel(self):
+        p = self.pilot([" --------- ", " |......>| ", " |..@....| ", " --------- "], (3, 4), {})
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        go = [a for a in p.actions(v, c) if a.key == "goto_stairs"]
+        self.assertTrue(go and not go[0].keys.endswith(">"))
+
+    def test_stair_ping_pong_is_a_camped_report(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.fled_from[4] = [("dwarf", (11, 39))]
+        p.level_trail.extend([3, 4, 3, 4])
+        reason = p.oscillation(3)
+        self.assertTrue(reason.startswith("camped: the Dlvl 4 arrival is camped by dwarf at 12,40"), reason)
+        self.assertEqual(nh.escalation.classify(reason), "camped")
+        self.assertEqual(p.level(4).stair_ban_until, 0)       # the deeper level's way up stays open
+
+    def test_settings_keep_an_hp_floor(self):
+        with self.assertRaises(ValueError):
+            nh.apply_settings(None, {"rest_hp": "0.3", "hp_escalate": "0", "crisis_turns": "1000"})

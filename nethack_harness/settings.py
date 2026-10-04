@@ -138,6 +138,11 @@ def apply_settings(mode=None, sets=None):
         for k in MODE_KEYS:
             CFG[k] = DEFAULTS[k]
         CFG.update(MODES[mode])
+    merged = dict(CFG, **pending)
+    if merged["rest_hp"] is not None and merged["rest_hp"] < 0.4 and merged["hp_escalate"] == 0 and \
+            merged["crisis_turns"] > 50:
+        raise ValueError("these settings remove every HP floor at once (rest_hp < 0.4, hp_escalate=0, "
+                         "crisis_turns > 50); keep at least one")
     CFG.update(pending)
 
 

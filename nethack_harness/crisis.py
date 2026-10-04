@@ -24,7 +24,7 @@ class Crisis:
             if route and all(cheb(q, t) > 1 for q in route[1:] for t in threats) and \
                     not any(lv.cell(v, q)[0] == "+" for q in route):
                 return Act("retreat", "Retreat to the %s stairs %d steps %s and take them" % (
-                    "up" if key == "<" else "down", len(route), compass(hero, p)), travel(hero, p) + key, "retreat",
+                    "up" if key == "<" else "down", len(route), compass(hero, p)), travel(hero, p), "retreat",
                     8.8, p)
         here = sum(cheb(hero, t) == 1 for t in threats)
         best = None
@@ -72,6 +72,15 @@ class Crisis:
         if retreat:
             ladder.append(retreat)
         fight = [a for a in acts if a.kind in ("attack", "fire", "throw", "zap")]
+        if c["incoming"] >= c["hp"]:
+            # they can kill the hero before it acts again: a one-turn step (engrave, rest, a walk away) is no
+            # safer than fighting; only prayer, potions and stairs underfoot beat a blow that may end it
+            for a in ladder:
+                if a.kind in ("elbereth", "rest", "retreat") or a.key.startswith("leave_line"):
+                    a.prior = 5.5
+            for a in fight:
+                h = next((h for h in c["hostiles"] if h["pos"] == a.target), None)
+                a.prior = 6.5 if h and h["threat"] <= c["xl"] else 5.8
         tried = self.crisis["tried"] if self.crisis else []
         for a in ladder:         # a step tried twice in this crisis without ending it goes behind the others
             if a.key != "rest_s" and tried.count(a.key) >= 2:

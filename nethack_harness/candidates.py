@@ -109,7 +109,7 @@ class Candidates:
         if downs and not (downs[0][3] == "branch" and policy == "avoid"):
             _, d, p, kind = downs[0]
             label = {"branch": " (Gnomish Mines)", "trapdoor": " (trap door: free descent)"}.get(kind, "")
-            keys = travel(hero, p) + (">" if ok else "")      # travel and descend in one send
+            keys = travel(hero, p)          # the stairs key is sent only once standing on them
             pr = (1.5 if th else 5.5 if kind == "trapdoor" else 5) if ok else -2
             if ok and self.endgame():
                 pr = 7.5           # the clock is nearly out: any descent beats everything but emergencies
@@ -119,7 +119,7 @@ class Candidates:
                             keys, "travel", pr, p))
         if lv.mines and (lv.up or c["under"] == "<") and policy == "avoid" and not th:
             acts.append(Act("leave_mines", "Leave the Gnomish Mines by the up stairs",
-                            "<" if c["under"] == "<" else travel(hero, lv.up or hero) + "<", "travel", 7, lv.up))
+                            "<" if c["under"] == "<" else travel(hero, lv.up or hero), "travel", 7, lv.up))
         if c["under"] == "<" and dl > 1 and hpf < 1 / 3 and th and min(h["dist"] for h in th) >= 2:
             acts.append(Act("flee_up", "Escape up the stairs you stand on", "<", "flee", 6))
         usable = [x for x in downs if not (x[3] == "branch" and policy == "avoid")]
@@ -144,7 +144,7 @@ class Candidates:
                 d, compass(hero, p)), keys, "explore", pr, p))
         if CFG["mapping"] == 2 and "mapping" not in lv.probed and not th and self.items(K.MAPPING.pattern):
             acts.append(Act("read_mapping", "Read a scroll of magic mapping on arrival (mapping=2)", "r", "read", 6.0))
-        calm_level = not hs and not c["hit"]
+        calm_level = not c["seen_hostiles"] and not c["hit"]     # a fleeing monster in view still counts
         if calm_level and not fr and not usable:
             acts += self.ladder_actions(v, c)
         if calm_level and hpf < val("rest_hp"):
@@ -178,8 +178,8 @@ class Candidates:
         if adjacent or c["hit"]:   # never start a counted search, rest or wait with a hostile next to you
             acts = [a for a in acts if a.kind not in ("search", "rest", "wait") or a.key == "rest_s" and c["on_elbereth"]]
         acts = [a for a in acts if not lv.banned(hero, a.key, self.decisions)]
-        if lv.stair_ban_until > self.decisions:
-            acts = [a for a in acts if a.key not in ("descend", "goto_stairs", "leave_mines", "flee_up")]
+        if lv.stair_ban_until > self.decisions:       # going down is on hold here; escaping up never is
+            acts = [a for a in acts if a.key not in ("descend", "goto_stairs", "goto_imported_stairs")]
         return sorted(acts, key=lambda a: -a.prior) or [Act("search", "Search here 15 turns", "15s", "search", -3)]
 
     def linger_act(self, v, c, cap):
@@ -189,7 +189,7 @@ class Candidates:
         if c["dl"] > cap and lv.up and lv.up in c["dist"]:
             # below the cap (a trap door, a fall): climb back toward it rather than linger where it is too deep
             return Act("linger", "Climb back toward the depth cap (Dlvl %d) by the up stairs %s" % (
-                cap, compass(c["hero"], lv.up)), ("<" if c["hero"] == lv.up else travel(c["hero"], lv.up) + "<"),
+                cap, compass(c["hero"], lv.up)), ("<" if c["hero"] == lv.up else travel(c["hero"], lv.up)),
                 "travel", 0, lv.up)
         far = [p for p, d in c["dist"].items() if 6 <= d <= 40]
         if far:

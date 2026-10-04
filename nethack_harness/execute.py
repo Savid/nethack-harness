@@ -11,6 +11,9 @@ class Execution:
     def do(self, v, c, a):
         lv = c["lv"]
         self.last_act = a
+        if a.key == "flee_up" or (a.kind == "retreat" and a.target == lv.up):
+            # remember who drove us off this level: a stair ping-pong is then reported as a camped arrival
+            self.fled_from[c["dl"]] = [(h["name"], h["pos"]) for h in c["hostiles"] if h["dist"] <= 3][:3]
         if a.kind == "read":
             lv.probed.add("mapping")
         if a.kind == "throw":
@@ -31,9 +34,10 @@ class Execution:
             self.engrave_elbereth(c)
             return
         if a.key == "rest_s":
-            if self.read_engraving().lower() != "elbereth":      # scuffed since: do not rest on it
-                self.elbereth_failed, self.elbereth_at = (c["dl"], c["hero"], c["turn"]), None
-                self.note("elbereth", "the engraving no longer reads Elbereth: not resting on it")
+            if self.read_engraving().lower() != "elbereth":      # scuffed since: engrave it again, once
+                self.note("elbereth", "the engraving no longer reads Elbereth: engraving again")
+                if not self.engrave_elbereth(c):
+                    self.elbereth_failed, self.elbereth_at = (c["dl"], c["hero"], c["turn"]), None
                 return
             self.send("ms")
             return
@@ -280,6 +284,8 @@ class Execution:
                 raise Hard("goal:retreat: no stairs within 8 steps clear of the attackers and no square next to "
                            "fewer of them")
             self.do(v, c, act)
+            if act.desc.startswith("Retreat to the"):     # then take the stairs, once standing on them
+                self.plan.appendleft("goal:up" if " up " in act.desc else "goal:stairs")
             return True
         if goal == "fight":
             return self.plan_fight(v, c, param)
@@ -290,19 +296,26 @@ class Execution:
                 raise Hard("plan goal dig: no pick-axe or mattock in the pack")
             self.do(v, c, Act("dig", "dig (plan)", "a" + tool[0][0], "dig"))
             return True
-        if goal == "stairs":
-            self.plan.popleft()
-            downs = [p for p in lv.downs if p in c["dist"]]
-            if c["under"] == ">":
-                self.send(">")
-            elif downs:
-                self.send(travel(hero, min(downs, key=c["dist"].get)) + ">")
-            else:
-                self.probe(v, c, Act("probe_stairs", "", "", "probe"))
-            return True
-        if goal == "up":
-            self.plan.popleft()
-            self.send("<" if c["under"] == "<" else travel(hero, lv.up) + "<" if lv.up else "\x1b")
+        if goal in ("stairs", "up"):
+            # travel first; the stairs key goes only once standing on the stairs; re-plan if travel stops short
+            key = ">" if goal == "stairs" else "<"
+            targets = [p for p in lv.downs if p in c["dist"]] if goal == "stairs" else \
+                ([lv.up] if lv.up and lv.up in c["dist"] else [])
+            if c["under"] == key:
+                self.plan.popleft()
+                self.plan_tries = 0
+                self.send(key)
+                return True
+            self.plan_tries += 1
+            if not targets or self.plan_tries > 3:
+                self.plan.popleft()
+                self.plan_tries = 0
+                if goal == "stairs" and not targets:
+                    self.probe(v, c, Act("probe_stairs", "", "", "probe"))
+                    return True
+                raise Hard("goal:%s: %s" % (goal, "no known way to the stairs" if not targets
+                                             else "travel stopped short three times"))
+            self.send(travel(hero, min(targets, key=c["dist"].get)))
             return True
         if goal == "travel":
             self.plan.popleft()

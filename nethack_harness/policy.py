@@ -81,6 +81,8 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.journal, self.key_index, self.key_source = None, 0, "loop"   # the key journal (record)
         self.marks = {}                    # name -> {"i", "turn", "dlvl"} (H mark)
         self.replay_hp = None              # HP when a plan replay began
+        self.plan_tries = 0                # travel attempts for the current goal:stairs / goal:up
+        self.fled_from = {}                # dlvl -> [(monster, pos)] that drove the hero up its stairs
         self.anchor = None                 # fingerprint of this game's first screen (level notes)
         self.endgame_noted = False         # the endgame escalation was given
         self.time_budget = None            # (seconds left, monotonic reference, process identity): time_left

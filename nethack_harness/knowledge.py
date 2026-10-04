@@ -314,3 +314,14 @@ def max_damage(name, sym=None, base=None, bright=None):
     if m is None and sym:
         m = MONSTERS.get(guess_monster(sym, base, bright))
     return (m[5], m[6]) if m else (8, 0)
+
+
+def monster_power(name, sym=None, base=None, bright=None):
+    """(most melee damage, most ranged damage per hero turn, speed) from the monster facts; a guess by glyph
+    when the name is unknown, and a modest default otherwise."""
+    from .monsters import MONSTERS
+    key = re.sub(r"^(?:likely |peaceful |the |an? )+", "", name or "").split(" (")[0].strip()
+    m = MONSTERS.get(key)
+    if m is None and sym:
+        m = MONSTERS.get(guess_monster(sym, base, bright))
+    return (m[5], m[6], m[4]) if m else (8, 0, 12)
