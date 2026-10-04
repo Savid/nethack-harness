@@ -34,8 +34,9 @@ def capabilities(p):
 def depth_line(p, st):
     xl, hpmax, ac = st.get("xl", 1), st.get("hpmax", 1), st.get("ac", 10)
     cap, _, how = p.depth_limits(xl, hpmax, ac)
-    return "%s start: the loop descends to Dlvl %d at most for now (%s); cap_lift never lifts the pace for a " \
-        "fragile hero before XL 3" % ("fragile" if p.fragile(hpmax, ac, xl) else "sturdy", cap, how)
+    below = ", ".join("%s up to %d a turn" % kv for kv in K.dangers_at(cap + 1, xl))
+    return "%s start: the loop descends to Dlvl %d at most for now (%s). Deeper: %s" % (
+        "fragile" if p.fragile(hpmax, ac, xl) else "sturdy", cap, how.split("; lift")[0], below)
 
 
 def suggestions(p):

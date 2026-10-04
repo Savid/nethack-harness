@@ -586,7 +586,8 @@ def daemon(args):
     beat = {"at": 0.0}
 
     inbox = {"path": cfg.get("inbox"), "offset": 0}
-    level_notes = {"notes_out": cfg.get("notes_out"), "notes_in": cfg.get("notes_in"), "mtime": None,
+    level_notes = {"notes_out": cfg.get("notes_out") or store.path("notes.json"), "notes_in": cfg.get("notes_in"),
+                   "mtime": None,
                    "written": None}
 
     def read_inbox():

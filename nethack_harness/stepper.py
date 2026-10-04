@@ -269,8 +269,11 @@ class Stepper:
         if lv.mines and ("mines", dl) not in self.branch_seen and not any(k[0] == "mines" for k in self.branch_seen):
             self.branch_seen.add(("mines", dl))
             if CFG["mines"] == "escalate" or CFG["branch_points"]:
-                branch_reason = "branch point: entered the Gnomish Mines (Dlvl %d); mines policy is %s" % (
-                    dl, self.mines_policy())
+                friendly = self.race in ("gnomish", "dwarvish")
+                branch_reason = ("branch point: entered the Gnomish Mines (Dlvl %d); mines policy is %s; for a %s "
+                                 "hero most gnomes, dwarves and hobbits here are %s%s") % (
+                    dl, self.mines_policy(), self.race or "?", "peaceful" if friendly else "hostile",
+                    "" if self.mines_policy() != "avoid" else "; resume to leave by the up stairs")
         trapdoors = [p for p, t in lv.traps.items() if t in ("trap door", "hole")]
         if trapdoors and ("trapdoor", dl) not in self.branch_seen:
             self.branch_seen.add(("trapdoor", dl))
@@ -319,8 +322,9 @@ class Stepper:
                     cr["hp"], c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
         elif cr and cr.get("empty"):
             self.crisis, self.last_crisis = None, dict(cr, ended=c["turn"], hp_end=c["hp"])
-            reason = "losing fast: the crisis ladder is exhausted at HP %d/%d (%s; tried: %s)" % (
-                c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
+            if (c["hit"] or near) and c["hpf"] < 0.7:     # re-check: a prayer or a kill may have ended it
+                reason = "losing fast: the crisis ladder is exhausted at HP %d/%d (%s; tried: %s)" % (
+                    c["hp"], c["hpmax"], cr["why"], ", ".join(cr["tried"]) or "nothing applied")
         if reason:
             pass
         elif drop >= max(CFG["hp_drop"] * c["hpmax"], CFG["hp_drop_min"]) and not same_fight and \
@@ -375,8 +379,10 @@ class Stepper:
                 self.gate_noted = (dl, c["xl"])
                 where = "already %d below the cap; it holds here" % (dl - cap) if dl > cap else \
                     "may not go below Dlvl %d" % cap
-                reason = ("depth gate: Dlvl %d is explored and the loop %s at XL %d (%s). It wanders the level for "
-                          "experience meanwhile; or play on by hand" % (dl, where, c["xl"], how))
+                below = ", ".join("%s up to %d a turn" % kv for kv in K.dangers_at(cap + 1, c["xl"]))
+                reason = ("depth gate: Dlvl %d is explored and the loop %s at XL %d, max HP %d (%s). Below: %s. It "
+                          "wanders the level for experience meanwhile; to go down once anyway: --plan goal:stairs" % (
+                              dl, where, c["xl"], c["hpmax"], how.split("; lift")[0], below))
         elif acts[0].prior <= -2 and not near and (c["frontier"] or self.lv_downs_usable(c)):
             here = [k for k, until in lv.bans.items() if k[0] == c["hero"] and until > self.decisions]
             if self.decisions < self.move_ban_until or here:

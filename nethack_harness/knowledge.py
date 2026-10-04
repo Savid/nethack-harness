@@ -325,3 +325,13 @@ def monster_power(name, sym=None, base=None, bright=None):
     if m is None and sym:
         m = MONSTERS.get(guess_monster(sym, base, bright))
     return (m[5], m[6], m[4]) if m else (8, 0, 12)
+
+
+def dangers_at(dlvl, xl, n=3):
+    """The hardest-hitting ordinary monsters that can appear at this depth for this XL (the game generates
+    monsters up to about (depth + XL) / 2 levels... plus a little), as (name, most damage per hero turn)."""
+    from .monsters import MONSTERS
+    top = (dlvl + xl) // 2 + 1
+    pool = [(m[5], name) for name, m in MONSTERS.items() if 0 < m[3] <= top and m[5] > 0 and
+            not re.search(r"\b(?:king|queen|lord|lady|Oracle|shopkeeper|guard|priest|watch|Medusa|Wizard)\b", name)]
+    return [(name, d) for d, name in sorted(pool, reverse=True)[:n]]

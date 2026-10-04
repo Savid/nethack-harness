@@ -19,6 +19,10 @@ CLR = {"CLR_BLACK": ("blue", False), "CLR_RED": ("red", False), "CLR_GREEN": ("g
        "CLR_BRIGHT_MAGENTA": ("magenta", True), "CLR_BRIGHT_CYAN": ("cyan", True), "CLR_WHITE": ("gray", True)}
 RANGED = ("AT_BREA", "AT_SPIT", "AT_GAZE", "AT_MAGC")
 SKIP = ("AT_NONE", "AT_BOOM")          # passive and death explosions do not hit an attacker's turn
+# Damage types that cost no hit points directly (they blind, stun, steal, teleport, rust ...).
+NO_HP = ("AD_BLND", "AD_SLEE", "AD_STON", "AD_TLPT", "AD_SGLD", "AD_SITM", "AD_SEDU", "AD_HALU", "AD_CONF",
+         "AD_STUN", "AD_SLOW", "AD_PLYS", "AD_DREN", "AD_RUST", "AD_CORR", "AD_DCAY", "AD_ENCH", "AD_STCK",
+         "AD_LYCA", "AD_POLY", "AD_CURS", "AD_SSEX", "AD_SPC1", "AD_SPC2", "AD_WERE")
 
 
 def main(src):
@@ -33,7 +37,7 @@ def main(src):
         name, sym, level, speed, attacks, colour = m.groups()
         melee = ranged = 0
         for at, ad, n, d in re.findall(r"ATTK\((\w+),\s*(\w+),\s*(\d+),\s*(\d+)\)", attacks):
-            if at in SKIP:
+            if at in SKIP or ad in NO_HP:
                 continue
             most = int(n) * int(d) + (8 if at == "AT_WEAP" else 0)
             if at in RANGED:
