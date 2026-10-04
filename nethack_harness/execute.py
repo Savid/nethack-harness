@@ -11,6 +11,9 @@ class Execution:
     def do(self, v, c, a):
         lv = c["lv"]
         self.last_act = a
+        if a.key == "flee_swarm" and c["swarm"]:
+            self.swarm_fled = (c["dl"], "%d %s" % (len(c["swarm"]), c["swarm"][0]["name"]))
+            lv.hazards.add("swarm: " + self.swarm_fled[1])
         if a.key == "flee_up" or (a.kind == "retreat" and a.target == lv.up):
             # remember who drove us off this level: a stair ping-pong is then reported as a camped arrival
             self.fled_from[c["dl"]] = [(h["name"], h["pos"]) for h in c["hostiles"] if h["dist"] <= 3][:3]

@@ -228,6 +228,14 @@ class Stepper:
     def bookkeep(self, v, c):
         """After each look: outcome of the last action, frozen turns, level arrivals, milestones, blindness and
         branch points (the last raise Hard: they always reach the outer loop)."""
+        sf = self.swarm_fled
+        if sf and c["dl"] < sf[0]:
+            # safely up from a swarm: hold off going back down for a while, and say so once
+            self.swarm_fled = None
+            c["lv"].stair_ban_until = self.decisions + CFG["swarm_hold"]
+            raise Hard("swarm: %s, poisonous and fast, on Dlvl %d; left by the up stairs and holding off going back "
+                       "down for %d decisions. Options: another way down, or come back stronger" % (
+                           sf[1], sf[0], CFG["swarm_hold"]))
         if not self.endgame():
             self.endgame_noted = False
         elif not self.endgame_noted:

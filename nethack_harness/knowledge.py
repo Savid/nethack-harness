@@ -192,7 +192,8 @@ def not_a_monster(name):
     return bool(parts) and all(x in TERRAIN for x in parts)
 
 
-SPARE_MISSILES = r"\b(?:daggers?|darts?|knives|knife|rocks?|flint stones?|shuriken|arrows?|crossbow bolts?|spears?)\b"
+SPARE_MISSILES = r"\b(?:daggers?|darts?|knives|knife|rocks?|flint stones?|shuriken|arrows?|ya|crossbow bolts?|spears?)\b"
+LAUNCHER_NAMES = r"\b(?:bow|yumi|crossbow|sling)\b"            # never thrown away: the ammunition needs them
 SPARE_FOOD = r"\b(?:apples?|carrots?|oranges?|pears?|bananas?|melons?|kelp fronds?)\b"
 
 WEAK_ROLES = ("Healer", "Tourist", "Wizard", "Archeologist", "Rogue")
@@ -321,6 +322,13 @@ def monster_power(name, sym=None, base=None, bright=None):
     if m is None and sym:
         m = MONSTERS.get(guess_monster(sym, base, bright))
     return (m[5], m[6], m[4], m[3]) if m else (8, 0, 12, 1)
+
+
+def is_poisonous(name, sym=None, base=None, bright=None):
+    from .monsters import MONSTERS
+    key = re.sub(r"^(?:likely |peaceful |the |an? )+", "", name or "").split(" (")[0].strip()
+    m = MONSTERS.get(key) or (MONSTERS.get(guess_monster(sym, base, bright)) if sym else None)
+    return bool(m and "P" in m[7])
 
 
 def dangers_at(dlvl, xl, n=3):

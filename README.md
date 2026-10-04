@@ -186,7 +186,8 @@ decisions, model calls (and how many reused an earlier answer) and escalations.
 | `mapping` | 1 | 1 reads magic mapping when a level runs out of options; 2 reads one on each new level |
 | `mines` | auto | `allow` for gnome or dwarf heroes, otherwise `avoid`; or `escalate`. An unused Mines staircase looks like any other, so the harness reads the dungeon overview (`^O`) on each new level, leaves at once under `avoid`, and never takes that staircase again |
 | `dig` | 0 | 1 = dig down with a pick-axe or mattock |
-| `avoid` | | Regex of monster names never to melee |
+| `swarm_count`, `swarm_xl`, `swarm_hold` | 3, 10, 150 | A swarm is at least `swarm_count` fast, poisonous attackers in view (killer bees, soldier ants; speed and poison come from the monster data) below XL `swarm_xl`. Below Dlvl 1 the loop leaves by the up stairs instead of fighting in the open, pauses once with "swarm: 4 killer bee, poisonous and fast, on Dlvl 6; ..." and holds off going back down for `swarm_hold` decisions |
+| `avoid` | | Regex of monster names never to melee, even when they attack. Monsters the loop keeps away from by itself (nymphs, slow monsters far above the hero's level such as mimics) are not approached or waited for, but are fought back while they attack |
 | `quiet` | 0.06 | Seconds of terminal silence that end a key send |
 
 `help settings` lists every key.
@@ -232,6 +233,23 @@ The loop feeds the hero itself:
   at Hungry when possible.
 
 Spells cost nutrition, so trivial adjacent monsters are meleed, not bolted.
+
+### Monsters
+
+- **Never-melee blockers** (floating eyes, molds, blobs, gas spores) are
+  fired at, bolted or hit with thrown missiles, spare weapons, gems or fruit,
+  never wielded weapons or launchers. A gas spore is killed from 2 squares
+  away; the loop steps back first. The game's travel command stops at such a
+  monster, so near one the loop steps around it along its own route.
+- **Mimics.** After "That boulder is a mimic!" every other boulder on the
+  level is suspect: the loop does not push one, and steps around them by hand.
+  It walks away from slow monsters it keeps away from and never waits for them.
+- **Knights** never attack a monster that is fleeing (seen turning to flee) or
+  helpless (asleep or unable to move) unless it is undead, because "You
+  caitiff!" costs alignment and an out-of-favour Knight prays in vain. The
+  crisis ladder may still fight.
+- **Swarms** of fast, poisonous attackers make the loop leave by the up stairs
+  (see `swarm_count`).
 
 ## Terminal socket protocol
 

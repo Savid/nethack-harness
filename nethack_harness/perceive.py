@@ -178,13 +178,23 @@ class Perception:
         return 2 if K.EXPLODERS.search(h["name"]) else 1
 
     def spare_missile(self):
-        """(letter, name) of something safe to throw: missiles and rocks first, then plain fruit, but only fruit
-        the hero can spare (the rest of the pack's food still holds RESERVE_FOOD nutrition)."""
-        for rx in (K.SPARE_MISSILES, K.SPARE_FOOD):
-            for k, t in self.items(rx):
-                if not K.item_state(t) and not re.search(r"\bcursed|loadstone", t) and \
-                        (rx == K.SPARE_MISSILES or self.pack_nutrition(skip=k) >= RESERVE_FOOD):
-                    return k, t
+        """(letter, name) of something safe to throw at a blocker: missiles and rocks first, then any weapon not
+        in use (the alternate weapon included), then gems and stones, then plain fruit."""
+        def ok(t, allow=()):
+            state = K.item_state(t) - set(allow)
+            return not state and not re.search(r"\bcursed|loadstone", t) and not re.search(K.LAUNCHER_NAMES, t)
+        for k, t in self.items(K.SPARE_MISSILES):        # missiles, even quivered ammunition thrown by hand
+            if ok(t, allow=("alternate", "quivered")):
+                return k, t
+        for k, t in self.items(section="Weapons"):
+            if ok(t, allow=("alternate",)):
+                return k, t
+        for k, t in self.items(section="Gems/Stones"):
+            if ok(t):
+                return k, t
+        for k, t in self.items(K.SPARE_FOOD):   # only fruit the hero can spare: the rest still holds RESERVE_FOOD
+            if ok(t) and self.pack_nutrition(skip=k) >= RESERVE_FOOD:
+                return k, t
         return None
 
     def mines_policy(self):
@@ -204,36 +214,70 @@ class Perception:
         """What the game says is at p (the ; command), cached per glyph or square. A `lookup` function, when
         set, answers instead of the game (replay fixtures and tests)."""
         if self.lookup is not None:
-            return self.lookup(p) or "unknown"
+            return (self.lookup(p) or "unknown").partition(", ")[0]
         ch = v.ch(*p)
         base, bright = v.col(*p)
         key = (v.st.get("dlvl"), ch, base, bright) if ch not in K.AMBIGUOUS and cache else \
             (v.st.get("dlvl"), p, ch, base)
         if key not in self.species:
-            self.term.send(travel(v.hero, p, ";"))
-            text = self.term.view().msg
-            for _ in range(20):               # the answer can arrive late or in pieces: wait up to about a second
-                if "(" in text and ")" in text:
-                    break
-                time.sleep(0.05)
-                self.term.poll()
-                again = self.term.view().msg
-                if again == text and text:
-                    break
-                text = again
-            if not text:
-                self.note("farlook", "empty answer at %s; screen top: %r" % (pos1(p), self.term.view().rows[0][:80]))
-            for _ in range(3):
-                w = self.term.view()
-                if w.more:
-                    self.term.send(" ")
-                elif w.menu or w.getpos:
-                    self.term.send("\x1b")
-                else:
-                    break
-            m = re.findall(r"\(([^()]*)\)", text)
-            self.species[key] = (m[-1] if m else re.sub(r"^\S\s+", "", text)).strip()[:60] or "unknown"
+            self.species[key] = self.look(v, p)[0]
         return self.species[key]
+
+    def look(self, v, p):
+        """Ask the game what is at p now: (name, status), status being what follows the name (", asleep",
+        ", can't move ...", ", meditating"), never cached because it changes."""
+        if self.lookup is not None:
+            name, _, status = (self.lookup(p) or "unknown").partition(", ")
+            return name, status
+        self.term.send(travel(v.hero, p, ";"))
+        text = self.term.view().msg
+        for _ in range(20):               # the answer can arrive late or in pieces: wait up to about a second
+            if "(" in text and ")" in text:
+                break
+            time.sleep(0.05)
+            self.term.poll()
+            again = self.term.view().msg
+            if again == text and text:
+                break
+            text = again
+        if not text:
+            self.note("farlook", "empty answer at %s; screen top: %r" % (pos1(p), self.term.view().rows[0][:80]))
+        for _ in range(3):
+            w = self.term.view()
+            if w.more:
+                self.term.send(" ")
+            elif w.menu or w.getpos:
+                self.term.send("\x1b")
+            else:
+                break
+        m = re.findall(r"\(([^()]*)\)", text)
+        full = (m[-1] if m else re.sub(r"^\S\s+", "", text)).strip()
+        name, _, status = full.partition(", ")
+        return name.strip()[:60] or "unknown", status
+
+    def chivalry(self, v, c, hostile):
+        """A Knight loses alignment ("You caitiff!") for attacking a fleeing or helpless monster that is not
+        undead, and a Knight out of favour prays in vain. Mark those monsters: fleeing ones are followed from
+        the game's "turns to flee" message, helpless ones are looked at when adjacent."""
+        turn = c["turn"]
+        kept = []
+        for f in self.fleeing:
+            if turn - f["turn"] > 100:
+                continue
+            near = [h for h in hostile if h["name"] == f["name"] and cheb(h["pos"], f["pos"]) <= 2]
+            if near:
+                h = min(near, key=lambda h: cheb(h["pos"], f["pos"]))
+                f["pos"] = h["pos"]
+                h["fleeing"] = True
+                kept.append(f)
+        self.fleeing = kept
+        for h in hostile:
+            if h["dist"] == 1 and h["ch"] in K.MON:
+                if self.looked.get(h["pos"], (None,))[0] != turn:
+                    self.looked[h["pos"]] = (turn, self.look(v, h["pos"])[1])
+                h["helpless"] = bool(re.search(r"asleep|can't move", self.looked[h["pos"]][1]))
+            undead = h["ch"] in "ZMVWL" or re.search(r"zombie|mummy|ghost|wraith|vampire|lich|shade", h["name"])
+            h["caitiff"] = bool((h.get("fleeing") or h.get("helpless")) and not undead)
 
     def context(self, v):
         st, hero = v.st, v.hero
@@ -277,11 +321,13 @@ class Perception:
                 m = {"pos": p, "ch": ch, "base": base, "bright": bright, "dist": d, "name": name}
                 never = None if c["hallu"] else K.never_melee(ch, base, bright, name)
                 m["never"] = never
-                m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name)) or \
-                    (not c["hallu"] and K.keep_away(name, self.race, self.role))
+                user = bool(CFG["avoid"] and re.search(CFG["avoid"], name))
+                m["avoid"] = user or (not c["hallu"] and K.keep_away(name, self.race, self.role))
+                m["strict"] = user           # the outer loop's avoid list: never melee, even when attacked
                 m["threat"] = 99 if m["avoid"] else 0 if c["hallu"] else K.threat_xl(ch, base, bright, name)
                 m["dmg"], m["rdmg"], m["speed"], level = K.monster_power(name, ch, base, bright)
                 m["level"] = level
+                m["poison"] = K.is_poisonous(name, ch, base, bright)
                 if not c["hallu"] and m["speed"] < 12 and level >= xl + 3 and "peaceful" not in name:
                     m["avoid"] = True        # far stronger but slower than the hero: walk away, never melee
                 (obst if never else peace if "peaceful" in name else hostile).append(m)
@@ -293,12 +339,17 @@ class Perception:
                 if lv.traps[p] in ("level teleporter", "magic portal"):
                     lv.cost[p] += 60
         hostile.sort(key=lambda h: h["dist"])
+        if self.role == "Knight" and not c["hallu"]:
+            self.chivalry(v, c, hostile)
         c["seen_hostiles"] = list(hostile)      # every hostile in view, fleeing or far ones included
+        # a swarm: several fast, poisonous attackers in view (killer bees, soldier ants) at a low level
+        fast = [h for h in hostile if h["speed"] > 12 and h["poison"]]
+        c["swarm"] = fast if len(fast) >= CFG["swarm_count"] and xl < CFG["swarm_xl"] else []
         if self.decisions < self.boost_until:   # oscillating: treat monsters that keep their distance as scenery
             hostile = [h for h in hostile if h["dist"] <= 1]
         self.hostiles, self.obst = hostile, obst
         c.update(hostiles=hostile, peace=peace, obst=obst, watch=watch)
-        lv.blocked = {h["pos"] for h in obst} | lv.statues
+        lv.blocked = {h["pos"] for h in obst + [h for h in hostile if h.get("caitiff")]} | lv.statues
         c["threats"] = [h for h in hostile if h["dist"] <= 2]
         # the most damage the hostiles can do before the hero acts again: melee from those that can reach the
         # hero this turn, missiles and spells from those in a straight line
@@ -308,6 +359,10 @@ class Perception:
                 abs(h["pos"][0] - hero[0]) == abs(h["pos"][1] - hero[1])))
         c["dist"] = lv.paths(v, hero)
         c["under"] = lv.terr.get(hero, "?")
+        if c["under"] == "?" and hero in lv.downs:
+            c["under"] = ">"         # never seen this square (blind, say) but stairs are known here
+        elif c["under"] == "?" and hero == lv.up:
+            c["under"] = "<"
         c["frontier"] = lv.frontier(v, c["dist"])
         div = 5 if xl <= 5 else 6 if xl <= 13 else 7    # the game's own low-HP rule for prayer
         c["trouble"] = hp <= 5 or hp * div <= min(hpmax, 15 * xl) or any(x in v.cond for x in K.MAJOR)

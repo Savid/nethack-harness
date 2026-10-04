@@ -467,6 +467,8 @@ class CodeReviewTest(Case):
         p.inv = {"a": ("a +1 dwarvish spear (weapon in right hand)", "Weapons"),
                  "b": ("a +0 dagger (alternate weapon; not wielded)", "Weapons"),
                  "c": ("2 apples", "Comestibles")}
+        self.assertEqual(p.spare_missile()[0], "b")          # the alternate dagger, never the wielded spear
+        del p.inv["b"]
         self.assertIsNone(p.spare_missile())          # the only food is never thrown
         p.inv["d"] = ("2 food rations", "Comestibles")
         self.assertEqual(p.spare_missile()[0], "c")   # spare fruit is
@@ -756,3 +758,107 @@ class ClosedShopTest(Case):
                                     (4, 8)))
         self.assertNotIn("\x04k", term.sent)
         self.assertIn((4, 8), lv.shop_doors)
+
+
+class BrokenDoorTest(Case):
+    def test_a_broken_door_is_no_longer_a_closed_door(self):
+        p = nh.Pilot(FakeTerm(), None)
+        lv = p.level(3)
+        lv.terr[(2, 4)], lv.tfg[(2, 4)] = "+", "brown"
+        lv.locked.add((2, 4))
+        p.last_act = nh.Act("open_l", "open", "ol", "door", 3, (2, 4))
+        p.message("This door is broken.", p.term.view())
+        self.assertEqual(lv.terr[(2, 4)], ".")
+        self.assertNotIn((2, 4), lv.locked)
+
+
+class SwarmTest(Case):
+    def test_a_swarm_sends_the_hero_up(self):
+        rows = [" ---------- ", " |<.......| ", " |..@.aaa.| ", " |........| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 4)), None)
+        p.lookup = lambda pos: "killer bee"
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        self.assertEqual(len(c["swarm"]), 3)
+        acts = p.actions(v, c)
+        self.assertEqual(acts[0].key, "flee_swarm", [a.key for a in acts[:3]])
+        p.swarm_fled = (3, "3 killer bee")
+        c2 = dict(c, dl=2)
+        with self.assertRaises(nh.policy.Hard) as e:
+            p.bookkeep(v, c2)
+        self.assertTrue(str(e.exception).startswith("swarm: 3 killer bee"))
+
+
+class StepAroundTest(Case):
+    def test_travel_steps_around_a_monster_it_must_not_melee(self):
+        rows = [" ---------- ", " |........| ", " |..F@....| ", " |........| ", " |.>......| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 5)), None)
+        p.lookup = lambda pos: "acid blob" if pos == (3, 4) else None
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        lv = c["lv"]
+        lv.downs = {(5, 3): "main"} if isinstance(lv.downs, dict) else [(5, 3)]
+        a = nh.Act("goto_stairs", "Travel to the down stairs", nh.level.travel((3, 5), (5, 3)), "travel", 5, (5, 3))
+        acts = [a]
+        p.through_doors(v, c, acts)
+        self.assertEqual(len(acts[0].keys), 1, acts[0].keys)
+        self.assertIn("around the acid blob", acts[0].desc)
+
+
+class ChivalryTest(Case):
+    def knight(self, look):
+        rows = [" ---------- ", " |........| ", " |..d@....| ", " |........| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 5)), None)
+        p.lookup = look
+        p.role = "Knight"
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        p.view()
+        return p, p.term.view()
+
+    def test_a_knight_leaves_a_sleeping_monster_alone(self):
+        p, v = self.knight(lambda pos: "jackal, asleep")
+        c = p.context(v)
+        self.assertTrue(c["hostiles"][0]["caitiff"])
+        self.assertFalse([a for a in p.actions(v, c) if a.kind == "attack"])
+        p.crisis = {"until": 10 ** 6, "dl": 1, "hp": 1, "tried": [], "why": "test"}
+        self.assertTrue([a for a in p.actions(v, c) if a.kind == "attack"])     # the ladder may still fight
+
+    def test_a_knight_leaves_a_fleeing_monster_alone(self):
+        p, v = self.knight(lambda pos: "jackal")
+        c = p.context(v)
+        self.assertTrue([a for a in p.actions(v, c) if a.kind == "attack"])
+        p.message("You hit the jackal.  The jackal turns to flee.", v)
+        c = p.context(v)
+        self.assertTrue(c["hostiles"][0].get("fleeing"))
+        self.assertFalse([a for a in p.actions(v, c) if a.kind == "attack"])
+
+    def test_other_roles_still_fight(self):
+        p, v = self.knight(lambda pos: "jackal, asleep")
+        p.role = "Valkyrie"
+        c = p.context(v)
+        self.assertTrue([a for a in p.actions(v, c) if a.kind == "attack"])
+
+
+class MimicTest(Case):
+    def test_after_a_boulder_mimic_the_other_boulders_are_suspect(self):
+        rows = [" ---------- ", " |........| ", " |...@0...| ", " |........| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 5)), None)
+        p.lookup = lambda pos: None
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        push = [a for a in p.actions(v, c) if a.key.startswith("push_")]
+        p.message("That boulder is a small mimic!", v)
+        self.assertIn("boulder", c["lv"].disguises)
+        again = [a for a in p.actions(v, c) if a.key.startswith("push_")]
+        self.assertTrue(all(a.prior <= -4 for a in again))
+        self.assertTrue(not push or push[0].prior > -4)

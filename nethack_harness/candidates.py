@@ -10,12 +10,18 @@ from .base import Act
 class Candidates:
     def actions(self, v, c):
         hero, lv, dist, hpf, th, hs = c["hero"], c["lv"], c["dist"], c["hpf"], c["threats"], c["hostiles"]
+        if not self.crisis:
+            # a Knight never attacks a fleeing or helpless monster (alignment, then prayer) unless the crisis
+            # ladder has to fight
+            hs = [h for h in hs if not h.get("caitiff")]
         acts, hurt, dl, fr = [], hpf < 0.5, c["dl"], c["frontier"]
         moving_banned = self.decisions < self.move_ban_until
         adjacent = [h for h in hs if h["dist"] == 1]
         for k, q in nbrs(hero):
             ch, fg = v.ch(*q), v.fg(*q)
-            m = next((h for h in hs if h["pos"] == q and not h["avoid"]), None)
+            # monsters kept away from (nymphs, homunculi, mimics) are not approached, but one already attacking the
+            # hero is fought back: running from a monster that keeps biting only loses more
+            m = next((h for h in hs if h["pos"] == q and (not h["avoid"] or c["hit"] and not h["strict"])), None)
             if m:
                 over = c["xl"] < m["threat"]
                 pr = -5 if c["on_elbereth"] else (1 if over else 2 if hurt else 4)
@@ -25,7 +31,9 @@ class Candidates:
                 acts.append(Act("attack_" + k, "Attack the unseen monster to the " + K.DN[k], "F" + k, "attack", 3.5,
                                 q))
             elif ch in K.BOULDERS and v.ch(2 * q[0] - hero[0], 2 * q[1] - hero[1]) in " .#":
-                acts.append(Act("push_" + k, "Push the boulder " + K.DN[k], k, "push", -1 if fr else 3, q))
+                # a boulder on a level where a mimic posed as one may be another mimic: never bump it
+                pr = -4 if "boulder" in lv.disguises else -1 if fr else 3
+                acts.append(Act("push_" + k, "Push the boulder " + K.DN[k], k, "push", pr, q))
             elif ch == "+" and door(ch, fg) and k in "hjkl":
                 if q not in lv.locked:
                     blocked = any(re.search(r"door is closed|bump into a door", x) for x in list(self.msgs)[-2:])
@@ -45,8 +53,11 @@ class Candidates:
                 nd = cheb(q, t["pos"])
                 rel = "away from" if nd > t["dist"] else "toward" if nd < t["dist"] else "beside"
                 what = {"#": "corridor", "<": "the up stairs", ">": "the down stairs", "^": "a TRAP"}.get(ch, "floor")
+                # a slow monster the hero must keep away from (a mimic, a much stronger one) cannot follow: walk off
+                pr = 2.5 if rel == "away from" and t["avoid"] and t["dist"] <= 2 and t["speed"] < 12 else \
+                    0.5 if rel == "away from" and hurt and t["dist"] == 1 else -1
                 acts.append(Act("move_" + k, "Step %s onto %s (%s the %s)" % (K.DN[k], what, rel, t["name"]), k,
-                                "move", 0.5 if rel == "away from" and hurt and t["dist"] == 1 else -1, q))
+                                "move", pr, q))
         wielded = next((t for _, t in self.items() if "wielded" in K.item_state(t)), "")
         quiver = [(k, t) for k, t in self.items() if "quivered" in K.item_state(t) and K.fireable(t, wielded)]
         if quiver and CFG["ranged"] and not adjacent:
@@ -82,6 +93,14 @@ class Candidates:
         if spare and not adjacent and not fr:
             for h in c["obst"]:          # a passive blocker on the way: throw something at it, never melee it
                 dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
+                if h["dist"] < self.min_range(h):
+                    # too close to kill safely (it explodes): step straight back first, then throw
+                    back = (hero[0] - ((dr > 0) - (dr < 0)), hero[1] - ((dc > 0) - (dc < 0)))
+                    k = next((k for k, q in nbrs(hero) if q == back and dist.get(q) == 1), None)
+                    if k:
+                        acts.append(Act("back_" + k, "Step back from the %s to throw from a safe distance" % h["name"],
+                                        k, "move", 3.0, back))
+                    break
                 if self.min_range(h) <= h["dist"] <= 4 and (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
                     k = next(k for k, d in K.DIRS.items() if d == ((dr > 0) - (dr < 0), (dc > 0) - (dc < 0)))
                     acts.append(Act("throw_" + k, "Throw %s at the %s %s (it must not be meleed)" % (
@@ -122,6 +141,15 @@ class Candidates:
         if lv.mines and (lv.up or c["under"] == "<") and policy == "avoid" and not th:
             acts.append(Act("leave_mines", "Leave the Gnomish Mines by the up stairs",
                             "<" if c["under"] == "<" else travel(hero, lv.up or hero), "travel", 7, lv.up))
+        if c["swarm"] and dl > 1:
+            # a swarm of fast poisonous attackers: do not fight it in the open; leave by the up stairs
+            names = "%d %s" % (len(c["swarm"]), c["swarm"][0]["name"])
+            if c["under"] == "<":
+                acts.append(Act("flee_swarm", "Leave the swarm (%s) up the stairs you stand on" % names, "<", "flee",
+                                9.5))
+            elif lv.up and lv.up in dist:
+                acts.append(Act("flee_swarm", "Head for the up stairs %s, away from the swarm (%s)" % (
+                    compass(hero, lv.up), names), travel(hero, lv.up), "travel", 8.5, lv.up))
         if c["under"] == "<" and dl > 1 and hpf < 1 / 3 and th and min(h["dist"] for h in th) >= 2:
             acts.append(Act("flee_up", "Escape up the stairs you stand on", "<", "flee", 6))
         usable = [x for x in downs if not (x[3] == "branch" and policy == "avoid")]
@@ -156,7 +184,7 @@ class Candidates:
             acts.append(Act("rest", "Wait out blindness or hallucination (20 turns)", "20s", "rest", 4))
         if c["on_elbereth"] and any(h["dist"] <= 3 for h in hs) and hpf < 0.7 and not c["ranged"]:
             acts.append(Act("rest_s", "Rest one turn on the verified Elbereth", "ms", "rest", 5))
-        if hs and not adjacent and self.waits < 5:
+        if any(not h["avoid"] for h in hs) and not adjacent and self.waits < 5:   # never wait for a mimic
             acts.append(Act("wait", "Wait two turns and let monsters come to you", "2s", "wait",
                             0.8 if hurt and th else -1.5))
         self.food_actions(v, c, acts)
@@ -250,7 +278,17 @@ class Candidates:
             route = lv.route(v, hero, target) if target else None
             if not route:
                 continue
-            j = next((n for n, q in enumerate(route) if lv.cell(v, q)[0] == "+"), None)
+            near = [h for h in c["obst"] if h["dist"] <= 2]
+            if "boulder" in lv.disguises:
+                near += [{"name": "boulder (maybe a mimic)", "pos": q} for _, q in nbrs(hero) if v.ch(*q) in K.BOULDERS]
+            if near and lv.cell(v, route[0])[0] != "+" and v.ch(*route[0]) not in K.MON:
+                # the game's travel walks straight into a monster the hero must not melee and stops there: take
+                # the first step of the known route around it by hand instead
+                k = next(k for k, n in nbrs(hero) if n == route[0])
+                acts[i] = Act(a.key, "%s (stepping %s around the %s)" % (a.desc, K.DN[k], near[0]["name"]), k,
+                              a.kind, a.prior, a.target)
+                continue
+            j = next((n for n, q in enumerate(route) if lv.cell(v, q)[0] == "+" and door(*lv.cell(v, q))), None)
             if j is None:
                 continue
             q, before = route[j], (route[j - 1] if j else hero)

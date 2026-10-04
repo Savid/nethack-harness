@@ -18,7 +18,7 @@ from .hooks import HookError, Hooks
 from . import notes as notes_mod
 from .base import unescape
 from .policy import GAME_OVER, Pilot
-from .report import postmortem, status as status_of, summary
+from .report import live_settings, postmortem, status as status_of, summary
 from .settings import CFG, DEFAULTS, EFFORT, MODE_KEYS, MODES, RISK, apply_settings, describe, validate
 from .knowledge import ALARM as K_ALARM, MON
 from .transport import Closed, Held, Term, serve_local
@@ -73,6 +73,10 @@ SETTING_DOCS = [
             ("fight_handoff", "", "losing fast: ladder (pray, quaff, stairs underfoot, verified Elbereth, retreat, "
                                   "then fight; escalate only if HP keeps falling) | escalate (hand over at once)"),
             ("crisis_turns", "", "turns the crisis ladder runs before a still-falling HP is handed over"),
+            ("swarm_count", "", "this many fast, poisonous attackers in view (killer bees, soldier ants) is a swarm: "
+                                "the loop leaves the level by the up stairs and says so"),
+            ("swarm_xl", "", "...only below this experience level"),
+            ("swarm_hold", "", "decisions before going back down to a level left because of a swarm"),
             ("fight_question", "", "1 = in a crisis, a close call between ladder steps (retreat, Elbereth, fight) "
                                    "is one decision-model question; it may pick only a legal step"),
             ("branch_points", "", "1 = pause once at each branch point (Mines, trap door or hole, depth jump, "
@@ -577,7 +581,7 @@ def daemon(args):
         status.update(keys=p.keys, decisions=p.decisions, model_calls=p.calls, reused_answers=p.reused,
                       max_dlvl=p.max_dl, model_ms=int(1000 * p.mtime / max(1, p.calls)), done=done,
                       last=next((h["text"] for h in reversed(p.hist) if h["kind"] == "act"), "")[:120],
-                      settings=dict(CFG), details=status_of(p),
+                      settings=live_settings(p), details=status_of(p),
                       breaker=max(0, int(p.breaker_until - time.time())), beat=time.time(),
                       home=os.path.realpath(store.dir))
         beat["at"] = time.time()

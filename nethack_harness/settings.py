@@ -47,6 +47,9 @@ DEFAULTS = {
     "milestone_from": 1,    # ...and only for depths at least this deep
     "fight_handoff": "ladder",  # losing fast: "ladder" runs the crisis ladder first; "escalate" hands over at once
     "crisis_turns": 12,     # turns the crisis ladder has before a still-falling HP is handed over
+    "swarm_count": 3,       # this many fast, poisonous attackers in view is a swarm: leave the level by the up stairs
+    "swarm_xl": 10,         # ...below this XL
+    "swarm_hold": 150,      # decisions before going back down to a level left because of a swarm
     "fight_question": 1,    # 1: in a crisis, a close call between ladder steps goes to the decision model
     "pickup_food": 1,       # pick up known-safe food the hero steps on
     "ranged": 1,            # fire the quivered missiles (f) at hostiles approaching in a line

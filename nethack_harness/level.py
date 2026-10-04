@@ -71,6 +71,7 @@ class Level:
         self.imported = {}                         # notes from another copy of this game: "down", "up", "holes"
         self.closed_shop_spots = set()             # squares where "Closed for inventory" was read
         self.shop_doors = set()                    # doors (and doorways) of shops: never kicked
+        self.disguises = set()                     # what mimics here posed as ("boulder", "door"): suspect the rest
         self.probed = set()                        # escape-ladder probes already tried here
         self.arrived = None                        # wall-clock time of arrival
         self.now = 0                               # the pilot's decision counter, for expiring exclusions

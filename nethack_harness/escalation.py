@@ -43,6 +43,8 @@ REGISTRY = [
          "uncertain in a risky spot: attack_h 0.40, move_l 0.35"),
     Spec("hunger", r"^(?:Weak|Fainting|Fainted) from hunger|^Hungry with no food", "hunger with no remedy",
          "Weak from hunger, no food, no safe prayer"),
+    Spec("swarm", r"^swarm: ", "left a swarm of fast, poisonous attackers by the up stairs",
+         "swarm: 4 killer bee, poisonous and fast, on Dlvl 6; left by the up stairs ..."),
     Spec("camped", r"^camped: ", "stair ping-pong: a monster camps the arrival of a deeper level",
          "camped: the Dlvl 5 arrival is camped by dwarf at 12,40 (Dlvl 4 <-> 5 4 times) ..."),
     Spec("oscillating", r"^oscillating: ", "a loop between two squares, actions or levels",

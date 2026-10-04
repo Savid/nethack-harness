@@ -2,7 +2,7 @@
 import re
 
 from . import knowledge as K
-from .level import Level, nbrs
+from .level import Level, cheb, nbrs
 from .settings import CFG
 from .base import GAME_OVER, Hard
 
@@ -38,6 +38,24 @@ class Messages:
             self.prayer_broken = True
             self.note("prayer", "prayer failed: no more prayers this game")
         self.food_message(text, v)
+        for what in re.findall(r"(?:That|The) ([a-z ]+?) is an? [a-z ]*mimic!|Wait! That's an? [a-z ]*mimic!", text):
+            lv.disguises.add(what.split()[-1] if what else "object")   # e.g. "boulder": the others may be too
+        if self.role == "Knight":
+            # remember monsters that flee: a Knight attacking one loses alignment ("You caitiff!")
+            hero, turn = v.hero, v.st.get("turn", 0)
+            for name in re.findall(r"(?:The |An? )?([a-z][a-z -]*?) (?:and then )?turns to flee", text):
+                near = sorted((h for h in self.hostiles if h["name"] == name), key=lambda h: cheb(h["pos"], hero))
+                if near:
+                    self.fleeing.append({"name": name, "pos": near[0]["pos"], "turn": turn})
+            if "You caitiff" in text and self.last_act and self.last_act.target:
+                for h in self.hostiles:
+                    if h["pos"] == self.last_act.target:
+                        self.fleeing.append({"name": h["name"], "pos": h["pos"], "turn": turn})
+        if re.search(r"This door is broken|This door is already open|This door's already open|"
+                     r"You see no door there|There is no door here", text) and self.last_act and self.last_act.target:
+            q = self.last_act.target           # remembered as a closed door, but it is not one any more
+            lv.terr[q], lv.tfg[q] = ".", "default"
+            lv.locked.discard(q)
         if "This door is locked" in text and self.last_act and self.last_act.kind == "door":
             lv.locked.add(self.last_act.target)
         if re.search(r"The door opens|crashes open|shatters to pieces|You break open the lock|"

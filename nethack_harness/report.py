@@ -206,6 +206,14 @@ def full(p, reason):
                              "REASON [%s]: %s | %s" % (classify(reason), reason, out[1])])
 
 
+def live_settings(p):
+    """Settings as they act now: one-shot inputs (time_left) show their live value."""
+    out = dict(CFG)
+    left = p.seconds_left()
+    out["time_left"] = int(left) if left is not None else None
+    return out
+
+
 def time_left_text(p):
     left = p.seconds_left()
     if left is not None:
@@ -230,7 +238,7 @@ def footer(p):
 
 
 def status(p):
-    return {"settings": dict(CFG), "effort": dict(effort(), level=CFG["effort"]), "hooks": hooks_line(p),
+    return {"settings": live_settings(p), "effort": dict(effort(), level=CFG["effort"]), "hooks": hooks_line(p),
             "role": p.role, "race": p.race, "alignment": p.align, "max_dlvl": p.max_dl, "keys": p.keys,
             "decisions": p.decisions, "model_calls": p.calls, "reused_answers": p.reused,
             "plan": list(p.plan), "orders": clip(p.directive, 2000), "prayer": {"last": p.last_prayer, "broken": p.prayer_broken},
