@@ -14,10 +14,11 @@ from .crisis import Crisis
 from .execute import Execution
 from .modelview import ModelView
 from .stepper import Stepper
+from .arbiter import Arbiter
 from .base import GAME_OVER, RACE_MONSTER, Act, Hard  # noqa: F401  (re-exported)
 
 
-class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Stepper):
+class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Stepper, Arbiter):
     def __init__(self, term, decide):
         self.term, self.decide = term, decide
         self.paused_total, self.paused_at = 0.0, None     # the play clock stops while the outer loop has it
