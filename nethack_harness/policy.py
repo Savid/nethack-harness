@@ -90,6 +90,7 @@ class Pilot(Perception, Messages, Food, Candidates, Crisis, Execution, ModelView
         self.plan_tries = 0                # travel attempts for the current goal:stairs / goal:up
         self.fleeing = []                  # monsters seen turning to flee: [{"name", "pos", "turn"}] (Knights)
         self.looked = {}                   # square -> (turn, farlook status) for adjacent monsters (Knights)
+        self.course = None                 # (key, target, until decision): the trip under way
         self.swarm_fled = None             # (dlvl, "N name") when the hero left a swarm behind
         self.fled_from = {}                # dlvl -> [(monster, pos)] that drove the hero up its stairs
         self.anchor = None                 # fingerprint of this game's first screen (level notes)

@@ -250,6 +250,25 @@ Spells cost nutrition, so trivial adjacent monsters are meleed, not bolted.
   crisis ladder may still fight.
 - **Swarms** of fast, poisonous attackers make the loop leave by the up stairs
   (see `swarm_count`).
+- **Walled in** by a blocker with a mild passive (acid blob, green, red or
+  yellow mold, lichen) and nothing to throw, the loop hits it once probing has
+  failed and its HP is clear of the worst passive damage. It never does this to
+  floating eyes, gas spores, brown molds or cockatrices.
+- **Blind**, the loop applies a unicorn horn (or a towel for a face covered in
+  goo), and otherwise waits blindness out where nothing is attacking. Below half
+  HP it does not swing at unseen-monster markers, and the crisis ladder skips
+  them.
+
+### Movement
+
+The game's travel command picks its own path. When a trip makes no progress,
+because travel swings between two squares or stops at a monster, the loop walks
+its own route one step at a time. It waits a turn for a peaceful monster in the
+way, and stops using a step the game refused without a turn passing. Once a
+trip is under way, it keeps to it while nothing threatens and it is still
+nearly the best option, so two near-equal goals cannot walk the hero back and
+forth. A staircase hidden under objects is learned from the "There is a
+staircase down here" message.
 
 ## Terminal socket protocol
 

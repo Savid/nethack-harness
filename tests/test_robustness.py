@@ -862,3 +862,67 @@ class MimicTest(Case):
         again = [a for a in p.actions(v, c) if a.key.startswith("push_")]
         self.assertTrue(all(a.prior <= -4 for a in again))
         self.assertTrue(not push or push[0].prior > -4)
+
+
+class BlindTest(Case):
+    def blind(self, inv, hp="HP:5(16)"):
+        rows = [" ---------- ", " |........| ", " |..I@....| ", " |........| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows, status2="Dlvl:2 $:0 %s Pw:5(5) AC:6 Xp:1 T:60 Blind" % hp),
+                              (3, 5)), None)
+        p.lookup = lambda pos: None
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        p.inv = inv
+        v = p.term.view()
+        p.view()
+        return p, v, p.context(v)
+
+    def test_a_unicorn_horn_cures_blindness_first(self):
+        p, v, c = self.blind({"h": ("an uncursed unicorn horn", "Tools")})
+        self.assertTrue(c["blind"])
+        acts = p.actions(v, c)
+        self.assertEqual(acts[0].key, "cure", [(a.key, a.prior) for a in acts[:4]])
+        self.assertEqual(acts[0].keys, "ah")
+
+    def test_blind_and_hurt_the_unseen_marker_is_not_the_first_choice(self):
+        p, v, c = self.blind({})
+        acts = p.actions(v, c)
+        attack = [a for a in acts if a.key.startswith("attack_")]
+        self.assertTrue(attack and attack[0].prior <= 0.5)
+        ladder = p.crisis_ladder(v, c, acts)
+        self.assertFalse([a for a in ladder if a.key.startswith("attack_")])
+
+
+class StalledTravelTest(Case):
+    def test_after_travel_made_no_progress_the_route_is_walked_by_hand(self):
+        rows = [" ---------- ", " |........| ", " |....@...| ", " |........| ", " |.>......| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 6)), None)
+        p.lookup = lambda pos: None
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        a = nh.Act("goto_stairs", "Travel to the down stairs", nh.level.travel((3, 6), (5, 3)), "travel", 5, (5, 3))
+        acts = [a]
+        p.through_doors(v, c, acts)
+        self.assertTrue(acts[0].keys.startswith("_"))
+        c["lv"].failed[(5, 3)] = 1
+        acts = [a]
+        p.through_doors(v, c, acts)
+        self.assertEqual(len(acts[0].keys), 1, acts[0].keys)
+        self.assertIn("by hand", acts[0].desc)
+
+
+class SoftBlockerTest(Case):
+    def test_walled_in_by_an_acid_blob_with_nothing_to_throw_the_hero_hits_it(self):
+        p = nh.Pilot(FakeTerm(), None)
+        c = {"hero": (5, 5), "lv": p.level(2), "dist": {(5, 5): 0}, "hostiles": [], "hp": 16,
+             "obst": [{"name": "acid blob", "pos": (5, 6), "dist": 1}]}
+        p.inv = {}
+        acts = p.ladder_actions(p.term.view(), c)
+        self.assertIn("attack_l", [a.key for a in acts])
+        c["hp"] = 12
+        self.assertNotIn("attack_l", [a.key for a in p.ladder_actions(p.term.view(), c)])
+        c["hp"], c["obst"][0]["name"] = 30, "gas spore"
+        self.assertNotIn("attack_l", [a.key for a in p.ladder_actions(p.term.view(), c)])

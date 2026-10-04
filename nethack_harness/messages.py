@@ -38,6 +38,14 @@ class Messages:
             self.prayer_broken = True
             self.note("prayer", "prayer failed: no more prayers this game")
         self.food_message(text, v)
+        stairs = re.search(r"There is a (staircase|ladder) (down|up) here", text)
+        if stairs and v.hero:
+            # objects on stairs hide them on the map: the message is the only sign
+            lv.terr[v.hero], lv.tfg[v.hero] = (">" if stairs.group(2) == "down" else "<"), "default"
+            if stairs.group(2) == "down":
+                lv.downs.setdefault(v.hero, "main")
+            else:
+                lv.up = v.hero
         for what in re.findall(r"(?:That|The) ([a-z ]+?) is an? [a-z ]*mimic!|Wait! That's an? [a-z ]*mimic!", text):
             lv.disguises.add(what.split()[-1] if what else "object")   # e.g. "boulder": the others may be too
         if self.role == "Knight":

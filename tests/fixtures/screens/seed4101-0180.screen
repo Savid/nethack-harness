@@ -1,6 +1,6 @@
 cursor 14 28
 lookup 14,29 acid blob
-expect probe_stairs probe_frontier search
+expect probe_stairs probe_frontier attack_l
 ==== chars
 
 

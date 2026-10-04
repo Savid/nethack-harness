@@ -28,7 +28,9 @@ class Candidates:
                 acts.append(Act("attack_" + k, "Attack the %s adjacent %s%s" % (
                     m["name"], K.DN[k], " (dangerous at your level)" if over else ""), "F" + k, "attack", pr, q))
             elif (ch == "I" or ch in K.WARNING) and (c["hit"] or c["blind"]):
-                acts.append(Act("attack_" + k, "Attack the unseen monster to the " + K.DN[k], "F" + k, "attack", 3.5,
+                # blind and hurt: an "I" may be stale; healing, prayer and waiting it out come first
+                pr = 0.5 if c["blind"] and hurt else 3.5
+                acts.append(Act("attack_" + k, "Attack the unseen monster to the " + K.DN[k], "F" + k, "attack", pr,
                                 q))
             elif ch in K.BOULDERS and v.ch(2 * q[0] - hero[0], 2 * q[1] - hero[1]) in " .#":
                 # a boulder on a level where a mimic posed as one may be another mimic: never bump it
@@ -181,7 +183,9 @@ class Candidates:
             acts.append(Act("rest", "Rest 20 turns to regain HP (HP %d/%d, no monsters in view)" % (
                 c["hp"], c["hpmax"]), "20s", "rest", 3 + 2 * (hpf < 0.35) - (c["hungry"] is not None)))
         if (c["blind"] or c["hallu"]) and not c["hit"]:
-            acts.append(Act("rest", "Wait out blindness or hallucination (20 turns)", "20s", "rest", 4))
+            # wait it out where nothing is attacking rather than walking blind into the unknown
+            acts.append(Act("rest", "Wait out blindness or hallucination (20 turns)", "20s", "rest",
+                            6 if c["blind"] else 4))
         if c["on_elbereth"] and any(h["dist"] <= 3 for h in hs) and hpf < 0.7 and not c["ranged"]:
             acts.append(Act("rest_s", "Rest one turn on the verified Elbereth", "ms", "rest", 5))
         if any(not h["avoid"] for h in hs) and not adjacent and self.waits < 5:   # never wait for a mimic
@@ -281,12 +285,22 @@ class Candidates:
             near = [h for h in c["obst"] if h["dist"] <= 2]
             if "boulder" in lv.disguises:
                 near += [{"name": "boulder (maybe a mimic)", "pos": q} for _, q in nbrs(hero) if v.ch(*q) in K.BOULDERS]
-            if near and lv.cell(v, route[0])[0] != "+" and v.ch(*route[0]) not in K.MON:
-                # the game's travel walks straight into a monster the hero must not melee and stops there: take
-                # the first step of the known route around it by hand instead
+            stalled = lv.failed[a.target] >= 1          # the game's travel already failed to get closer to it
+            if (near or stalled) and lv.cell(v, route[0])[0] != "+":
+                # the game's travel walks into a monster the hero must not melee, or takes a route of its own that
+                # goes nowhere (it then swings between two squares): walk the known route by hand, a step a time
                 k = next(k for k, n in nbrs(hero) if n == route[0])
-                acts[i] = Act(a.key, "%s (stepping %s around the %s)" % (a.desc, K.DN[k], near[0]["name"]), k,
-                              a.kind, a.prior, a.target)
+                why = "around the %s" % near[0]["name"] if near else "by hand: travel made no progress"
+                who = next((h for h in c["peace"] if h["pos"] == route[0]), None)
+                if who:
+                    acts[i] = Act("wait_s", "%s (the peaceful %s %s is in the way: wait a turn)" % (
+                        a.desc, who["name"], K.DN[k]), "s", "wait", a.prior - 0.5, a.target)
+                elif v.ch(*route[0]) in K.MON:
+                    acts[i] = Act(a.key, a.desc + " (a monster is in the way %s)" % K.DN[k], a.keys, a.kind, -1,
+                                  a.target)          # attacking it, or anything else, comes first
+                else:
+                    acts[i] = Act(a.key, "%s (stepping %s %s)" % (a.desc, K.DN[k], why), k, a.kind, a.prior,
+                                  a.target)
                 continue
             j = next((n for n, q in enumerate(route) if lv.cell(v, q)[0] == "+" and door(*lv.cell(v, q))), None)
             if j is None:
@@ -334,6 +348,22 @@ class Candidates:
                 act.door = q
                 acts.append(act)
                 break
+        # walled in by a blocker with a mild passive and nothing to throw at it: hit it rather than starve
+        if not self.spare_missile() and not any(h["dist"] <= 3 for h in c["hostiles"]):
+            for h in sorted(c["obst"], key=lambda h: h["dist"]):
+                soft = next((d for n, d in K.SOFT_BLOCKERS.items() if n in h["name"]), None)
+                if soft is None or c["hp"] <= soft + 6 or "Stun" in v.cond:
+                    continue
+                if h["dist"] == 1:
+                    k = next(k for k, n in nbrs(hero) if n == h["pos"])
+                    acts.append(Act("attack_" + k, "Hit the %s %s: it walls the way and its passive is mild (at most "
+                                    "%d damage)" % (h["name"], K.DN[k], soft), "F" + k, "attack", 3.9, h["pos"]))
+                    break
+                spot = min((n for _, n in nbrs(h["pos"]) if n in dist), key=dist.get, default=None)
+                if spot is not None and spot != hero:
+                    acts.append(Act("goto_blocker", "Go next to the %s %s to clear the way" % (
+                        h["name"], compass(hero, h["pos"])), travel(hero, spot), "travel", 3.8, spot))
+                    break
         if CFG["probe"] and "stairs" not in lv.probed:
             acts.append(Act("probe_stairs", "Ask the game where known down stairs are (travel prompt)", "", "probe",
                             4.5))
@@ -364,8 +394,24 @@ class Candidates:
         most a quarter of the hero's HP."""
         return h.get("level", 0) <= c["xl"] and h["dmg"] * 4 <= c["hp"] and not h["avoid"]
 
+    def cure_act(self, v, c):
+        """Apply a unicorn horn against blindness, confusion or stunning; a towel against a face covered in goo."""
+        if c["blind"] or "Conf" in v.cond or "Stun" in v.cond:
+            horn = [(k, t) for k, t in self.items(r"\bunicorn horn\b") if "cursed" not in t.replace("uncursed", "")]
+            if horn:
+                return Act("cure", "Apply the %s (cures blindness, confusion, stunning)" % horn[0][1],
+                           "a" + horn[0][0], "apply", 8)
+        if c["blind"] and any(re.search(r"cream|goop|venom|blinded by the pie", m) for m in list(self.msgs)[-30:]):
+            towel = self.items(r"\btowel\b")
+            if towel:
+                return Act("cure", "Wipe your face with the %s" % towel[0][1], "a" + towel[0][0], "apply", 8)
+        return None
+
     def emergency_actions(self, v, c, acts):
         hpf, th = c["hpf"], c["threats"]
+        cure = self.cure_act(v, c)
+        if cure:
+            acts.append(cure)
         low = hpf < 1 / 3 or c["hp"] < 8
         heal = self.items(K.HEALING.pattern)
         if c["can_pray"] and c["trouble"]:

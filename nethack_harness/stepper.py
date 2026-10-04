@@ -57,6 +57,11 @@ class Stepper:
             c["dist"] = lv.paths(v, hero)
             c["frontier"] = lv.frontier(v, c["dist"])
         if out == "noop":
+            step = K.DIRS.get(t.get("keys", ""))
+            if step:
+                # a single step the game refused without a word or a turn (a doorway diagonal, a tight squeeze):
+                # route around that step for a while
+                lv.no_step[(t["hero"], (t["hero"][0] + step[0], t["hero"][1] + step[1]))] = self.decisions + 200
             lv.noops[(t["hero"], t["key"])] += 1
             if lv.noops[(t["hero"], t["key"])] >= 2:
                 # Something blocks it for a while (a pet, a peaceful, a held prompt): ban it briefly, never for
@@ -66,6 +71,8 @@ class Stepper:
             self.frozen += 1
         else:
             self.frozen = 0
+        if t.get("target") and hero == t["target"]:
+            lv.failed.pop(t["target"], None)          # got there: the game's travel may be trusted again
         if out == "nocloser" and t.get("target"):
             lv.failed[t["target"]] += 1
             if lv.failed[t["target"]] >= 2:
@@ -447,6 +454,21 @@ class Stepper:
                     lv.extra_budget += CFG["search_budget"]   # then search on
         return reason, acts, near
 
+    def keep_course(self, c, acts):
+        """Two trips of similar worth (explore here, the stairs there) can win turn about and walk the hero back
+        and forth. Once a trip is under way, keep it while nothing threatens and it is still nearly the best."""
+        course = self.course
+        if course and (course[2] < self.decisions or c["hero"] == course[1] or c["threats"] or c["hit"]):
+            course = self.course = None
+        if course and acts and acts[0].kind in ("travel", "explore", "wait", "search", "move", "door"):
+            keep = next((a for a in acts if (a.key, a.target) == course[:2]), None)
+            if keep and keep is not acts[0] and keep.prior >= acts[0].prior - 1.5 and keep.prior > 0:
+                acts = [keep] + [a for a in acts if a is not keep]
+        top = acts[0] if acts else None
+        if top and top.kind in ("travel", "explore") and top.target and (not course or course[:2] != (top.key, top.target)):
+            self.course = (top.key, top.target, self.decisions + 12)
+        return acts
+
     def decide_and_act(self, v, c, acts, near):
         """Pick among the legal actions (the rules' order, the decision model on contested steps, plugins),
         escalate if the model or a hook says so, then act."""
@@ -457,6 +479,7 @@ class Stepper:
             self.seen_levels.add(dl)
             self.new_level_pending.add(dl)
         facts = self.facts(v, c, dl in self.new_level_pending)
+        acts = self.keep_course(c, acts)
         top = acts[0]
         calm = not near and not c["hit"] and hpf >= 0.5 and \
             not set(v.cond) & {"Weak", "Fainting", "Conf", "Stun", "Blind", "Hallu"}
@@ -503,6 +526,6 @@ class Stepper:
         tdist = c["dist"].get(chosen.target) if chosen.target else None
         self.last_try = {"dl": dl, "hero": c["hero"], "turn": c["turn"], "known": len(lv.near), "key": chosen.key,
                          "kind": chosen.kind, "target": chosen.target, "tdist": tdist, "msgs": self.msg_count,
-                         "map": self.map_sig(v)}
+                         "map": self.map_sig(v), "keys": chosen.keys}
         self.do(v, c, chosen)
         return None

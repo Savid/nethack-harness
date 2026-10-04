@@ -111,6 +111,9 @@ NEVER_MELEE = {
     ("b", "green", False): "acid blob: passive acid",
 }
 SAFE_F = {("F", "green", True), ("F", "magenta", False), ("F", "magenta", True)}  # lichen, violet fungus, shrieker
+# Blockers whose passive response is mild: when one walls the hero in and there is nothing to throw, hitting
+# it is safer than starving behind it. Value: the most passive damage a hit can bring (d(level + 1, 4) or 1d8).
+SOFT_BLOCKERS = {"acid blob": 8, "green mold": 8, "red mold": 8, "yellow mold": 0, "lichen": 0}
 NEVER_NAMES = ("floating eye", "gas spore", " mold", "cockatrice", "chickatrice", "acid blob", "jelly",
                "yellow light", "black light", "sphere")
 # Do not start melee below this experience level: escape, Elbereth or ranged attacks instead.

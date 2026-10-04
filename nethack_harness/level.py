@@ -75,6 +75,7 @@ class Level:
         self.probed = set()                        # escape-ladder probes already tried here
         self.arrived = None                        # wall-clock time of arrival
         self.now = 0                               # the pilot's decision counter, for expiring exclusions
+        self.no_step = {}                          # (from, to) -> decision: a step the game refused at no cost
 
     def observe(self, v):
         for r in range(1, 22):
@@ -150,6 +151,8 @@ class Level:
                 if ch in BOULDERS or not passable(ch, fg, q not in self.locked):
                     continue
                 if k in "yubn" and (door(ch, fg) or door(*c0)):
+                    continue
+                if self.no_step and self.no_step.get((p, q), -1) > self.now:
                     continue
                 trap = ch == "^" and self.traps.get(q) not in ("trap door", "hole")
                 nd = d + 1 + 8 * trap + 3 * (ch == "+") + self.cost[q]

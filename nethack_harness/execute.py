@@ -14,6 +14,8 @@ class Execution:
         if a.key == "flee_swarm" and c["swarm"]:
             self.swarm_fled = (c["dl"], "%d %s" % (len(c["swarm"]), c["swarm"][0]["name"]))
             lv.hazards.add("swarm: " + self.swarm_fled[1])
+        if a.key == "leave_mines":
+            self.level_trail.clear()    # out of the Mines and on to the main stairs: not a stair ping-pong
         if a.key == "flee_up" or (a.kind == "retreat" and a.target == lv.up):
             # remember who drove us off this level: a stair ping-pong is then reported as a camped arrival
             self.fled_from[c["dl"]] = [(h["name"], h["pos"]) for h in c["hostiles"] if h["dist"] <= 3][:3]
@@ -111,6 +113,11 @@ class Execution:
             self.note("probe", "%s probe: nothing known" % which)
             return
         p = w.cursor
+        if which == "stairs" and (v.ch(*p) == "<" or p == lv.up):
+            # the cursor's stair keys visit up staircases too: this one is no way down
+            self.send("\x1b\x1b")
+            self.note("probe", "stairs probe: only the up stairs at %s" % (p,))
+            return
         if which == "stairs":
             lv.downs.setdefault(p, "main")
             self.note("probe", "stairs probe found > at %s" % (p,))

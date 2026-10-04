@@ -57,6 +57,9 @@ class Crisis:
         if heal_spell and c["hpf"] < 0.5:
             ladder.append(Act("cast_heal", "Cast %s on yourself" % heal_spell[1], "Z%s." % heal_spell[0], "cast",
                               9.3))
+        cure = self.cure_act(v, c)
+        if cure:
+            ladder.append(Act(cure.key, cure.desc, cure.keys, cure.kind, 9.25))
         if c["under"] == "<" and c["dl"] > 1:
             ladder.append(Act("flee_up", "Escape up the stairs you stand on", "<", "flee", 9.2))
         elif c["under"] == ">" and self.descend_ok(dict(c, hpf=1.0)) and \
@@ -74,6 +77,9 @@ class Crisis:
         if retreat:
             ladder.append(retreat)
         fight = [a for a in acts if a.kind in ("attack", "fire", "throw", "zap")]
+        if c["blind"] and c["hpf"] < 0.5:
+            # blind and hurt: an unseen marker may be a long-gone monster or something worse; waste no turns on it
+            fight = [a for a in fight if not (a.target and (v.ch(*a.target) == "I" or v.ch(*a.target) in K.WARNING))]
         if c["incoming"] >= c["hp"]:
             # they can kill the hero before it acts again: a one-turn step (engrave, rest, a walk away) is no
             # safer than fighting; only prayer, potions and stairs underfoot beat a blow that may end it
