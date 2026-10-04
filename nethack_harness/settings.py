@@ -52,8 +52,8 @@ DEFAULTS = {
     "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
     "quiet": 0.06,          # seconds of terminal silence that end a key send
     "last_prayer": -1,      # set to the turn of a prayer made by hand
-    "deadline": 0,          # wall-clock deadline (epoch seconds) set by the outer loop; 0 = none
-    "endgame_secs": 180,    # in the last this-many seconds before the deadline: no depth cap, descend at HP >= 50%
+    "time_left": -1,        # seconds of play left from now (the outer loop's clock); counted on a monotonic clock
+    "endgame_secs": 180,    # in the last this-many seconds of time_left: no depth cap, descend at HP >= 50%
     "tiebreak_seed": -1,    # reseed the loop's tie-breaking choices (a copy then explores differently)
     "auto": 0,              # 1: log escalations and play on without pausing (benchmarks only)
     "pause_on": "all",      # which escalation codes pause: all | code,code | all,-code (help escalations)
@@ -121,7 +121,7 @@ CHOICES = {"mines": ("auto", "allow", "avoid", "escalate"), "milestone": ("off",
 FLAGS = ("fight_question", "dig", "potions", "spells", "elbereth", "trapdoors", "probe", "briefing", "branch_points", "pickup_food",
          "ranged", "auto")
 FRACTIONS = ("descend_hp", "rest_hp", "hp_escalate", "elbereth_hp", "danger_max", "p_min", "hp_drop", "milestone_hp")
-SIGNED = ("lead", "fragile_lead", "last_prayer", "tiebreak_seed")
+SIGNED = ("lead", "fragile_lead", "last_prayer", "tiebreak_seed", "time_left")
 
 
 MODE_KEYS = sorted({k for m in MODES.values() for k in m})
@@ -177,4 +177,5 @@ def effort():
 
 
 def describe():
-    return " ".join("%s=%s" % (k, CFG[k]) for k in DEFAULTS if k not in ("last_prayer", "tiebreak_seed"))
+    return " ".join("%s=%s" % (k, CFG[k]) for k in DEFAULTS
+                    if k not in ("last_prayer", "tiebreak_seed", "time_left"))

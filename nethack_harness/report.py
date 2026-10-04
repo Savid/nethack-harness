@@ -99,7 +99,8 @@ def summary(p, reason):
                st.get("dlvl"), st.get("hp"), st.get("hpmax"), st.get("ac"), st.get("xl"), st.get("turn"),
                " ".join(v.cond), p.race or "", p.role or "", "never" if lp is None else "T%d (%d ago)" % (
                    lp, (st.get("turn") or 0) - lp), " (prayer broken)" if p.prayer_broken else "", CFG["mode"],
-               CFG["risk"], CFG["effort"], clip(p.directive) or "-")]
+               CFG["risk"], CFG["effort"], clip(p.directive) or "-") +
+           (" | time left %s" % time_left_text(p) if p.time_budget else "")]
     if p.pending:
         acts, i = p.pending
         out.append("model: %s | danger %.2f | confidence %.2f" % (", ".join("%s %.2f" % kv for kv in i["top"]),
@@ -146,6 +147,15 @@ def summary(p, reason):
                              "REASON [%s]: %s | %s" % (classify(reason), reason, out[1])])
 
 
+def time_left_text(p):
+    left = p.seconds_left()
+    if left is not None:
+        return "%d s" % left
+    if p.time_budget:
+        return "unknown (set in another process; resume with --set time_left=SECONDS)"
+    return "not set"
+
+
 def clip(text, n=300):
     """Long orders are the outer loop's own text: echo a prefix, not all of it, in every report."""
     text = text or ""
@@ -169,6 +179,7 @@ def status(p):
             "depth_cap": p.depth_cap(p.term.view().st.get("xl", 1), p.term.view().st.get("hpmax", 1),
                                      p.term.view().st.get("ac", 10)) if p.term else None,
             "milestones": list(p.milestones), "tiebreak_seed": p.tiebreak,
+            "time_left": time_left_text(p),
             "model_errors": p.breaker_trips, "last_model_error": p.last_model_error,
             "recent_ms": [int(x * 1000) for x in p.latencies]}
 

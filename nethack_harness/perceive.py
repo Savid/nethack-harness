@@ -1,10 +1,21 @@
 """What the loop knows: the screen, the pack, the character, the level's branch, farlook, depth limits."""
+import os
 import re
 import time
 
 from . import knowledge as K
 from .level import cheb, Level, travel
 from .settings import CFG, val
+
+
+def process_identity():
+    """This process on this boot: monotonic times are only comparable within it."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            boot = f.read().strip()
+    except OSError:
+        boot = ""
+    return "%s/%d" % (boot, os.getpid())
 
 
 class Perception:
@@ -321,11 +332,23 @@ class Perception:
     def depth_cap(self, xl, hpmax, ac):
         return 99 if self.endgame() else self.depth_limits(xl, hpmax, ac)[0]
 
-    @staticmethod
-    def endgame():
-        """The final endgame_secs before the outer loop's wall-clock deadline: depth caps are lifted, the HP
-        gate for stairs is 0.5 at most, and any descent (the Mines included) is preferred."""
-        return CFG["deadline"] > 0 and time.time() >= CFG["deadline"] - CFG["endgame_secs"]
+    def endgame(self):
+        """The final endgame_secs of time_left: depth caps are lifted, the HP gate for stairs is 0.5 at most, and
+        any descent (the Mines included) is preferred."""
+        left = self.seconds_left()
+        return left is not None and left <= CFG["endgame_secs"]
+
+    def set_time_left(self, seconds):
+        """Remember the outer loop's remaining time against this process's monotonic clock."""
+        self.time_budget = (float(seconds), time.monotonic(), process_identity())
+
+    def seconds_left(self):
+        """Seconds of play left, or None when unknown: never set, or set in another process (a restart or a copy
+        of the state directory), whose monotonic clock means nothing here."""
+        b = self.time_budget
+        if not b or b[2] != process_identity():
+            return None
+        return max(0.0, b[0] - (time.monotonic() - b[1]))
 
     def descend_ok(self, c):
         lv = c["lv"]
