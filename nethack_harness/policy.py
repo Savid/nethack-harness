@@ -15,12 +15,14 @@ from .food import Food
 from .crisis import Crisis
 from .execute import Execution
 from .modelview import ModelView
+from .course import Course
+from .pauses import Pauses
 from .stepper import Stepper
 from .arbiter import Arbiter
 from .base import GAME_OVER, RACE_MONSTER, Act, Dead, Hard, escape  # noqa: F401  (re-exported)
 
 
-class Pilot(Perception, Messages, Food, Candidates, Crisis, Execution, ModelView, Stepper, Arbiter):
+class Pilot(Perception, Messages, Food, Candidates, Crisis, Execution, ModelView, Stepper, Course, Pauses, Arbiter):
     def __init__(self, term, decide):
         self.term, self.decide = term, decide
         self.paused_total, self.paused_at = 0.0, None     # the play clock stops while the outer loop has it

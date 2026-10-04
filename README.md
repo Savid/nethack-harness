@@ -365,14 +365,20 @@ sliming, theft, an angry shopkeeper).
 | `crisis` | The crisis ladder, retreat, verified Elbereth |
 | `execute` | Carrying out actions and plan items |
 | `modelview` | What the decision model sees and is asked |
-| `stepper` | One decision: bookkeeping, outcomes, escalations, arbitration |
+| `stepper` | One decision: bookkeeping, then arbitration and the action |
+| `course` | Action outcomes, futility (oscillation) checks, keeping a trip under way |
+| `pauses` | When to hand back: milestones, shop-door notes, the escalation checks of each step |
 | `escalation` | Escalation codes, dedupe windows, pause_on |
 | `base` | Act, Hard and shared sentinels |
 | `decide` | Endpoint client, answer normalization, questions |
 | `hooks` | Declarative and plugin hooks |
 | `report` | Escalation reports, briefing, status |
 | `settings` | Tunables, modes, risk, effort |
-| `control` | Daemon, state directory, command line, help |
+| `control` | Command line: start, wait, resume and the other commands |
+| `daemon` | The background loop: start-up, command handling, pauses, the step loop |
+| `store` | State directory: atomic files, command queue, key journal, level notes, saved pilot |
+| `manual` | Guarded key batches (`repeat`) while paused |
+| `helptext` | `help` text: the capability map and topics |
 
 ## Development
 

@@ -440,7 +440,7 @@ class MilestoneTest(Case):
 class CodeReviewTest(Case):
     def test_help_lists_every_setting_once(self):
         import re as re_
-        names = re_.findall(r"^  (\w+)", nh.control.help_text("settings"), re_.M)
+        names = re_.findall(r"^  (\w+)", nh.helptext.help_text("settings"), re_.M)
         self.assertEqual(sorted(names), sorted(nh.settings.DEFAULTS))
 
     def test_values_are_validated(self):
@@ -523,8 +523,8 @@ class PersonaTest(Case):
 
 class PersonaP1Test(Case):
     def test_send_escapes_and_one_based_positions(self):
-        self.assertEqual(nh.control.unescape(r"#pray\r"), "#pray\r")
-        self.assertEqual(nh.control.unescape(r"\e\x04l"), "\x1b\x04l")
+        self.assertEqual(nh.base.unescape(r"#pray\r"), "#pray\r")
+        self.assertEqual(nh.base.unescape(r"\e\x04l"), "\x1b\x04l")
         self.assertEqual(nh.level.pos1((5, 50)), "6,51")
 
     def test_spells_are_learned_and_used_by_cost(self):
@@ -585,10 +585,10 @@ class JournalTest(Case):
         p.send("Fh")
         p.record("#pray\r", "hand")
         p.journal.close()
-        store = nh.control.Store(d)
+        store = nh.store.Store(d)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            nh.control.print_keys(store, raw=True)
+            nh.store.print_keys(store, raw=True)
         self.assertEqual(out.getvalue().split(), ["Fh", "#pray\\r"])
         path = os.path.join(d, "replay.txt")
         with open(path, "w") as f:
@@ -679,7 +679,7 @@ class CompactOutputTest(Case):
             text = nh.report.summary(p, "low HP 4/16 with jackal near and no safe prayer, potion or Elbereth")
             self.assertLess(len(text), 1200, name)
             self.assertIn("ESCALATION [low_hp]", text)
-        self.assertLessEqual(len(nh.control.help_text("brief").encode()), 2500)
+        self.assertLessEqual(len(nh.helptext.help_text("brief").encode()), 2500)
 
 
 class V7Test(Case):
