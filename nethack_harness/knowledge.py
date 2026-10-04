@@ -284,3 +284,15 @@ STEADY_ACTIONS = ("attack_", "kick_", "fire_", "throw_", "zap_", "pray", "quaff"
 # Messages that show a fight or a door making progress.
 PROGRESS = re.compile(r"You kill|You destroy|is killed|is destroyed|You hit|You smite|You bite|You kick at|"
                       r"crashes open|The door opens|shatters to pieces|You break open")
+
+
+# What the outer loop can do about an alarming message (shown in the escalation; an on_escalation plugin can
+# automate it, e.g. answer "lycanthropy" with {"plan": ["goal:pray"]}).
+ALARM_HINTS = (
+    (r"feverish|You turn into a", "lycanthropy: a safe prayer cures it (--plan goal:pray), or eat a sprig of "
+                                   "wolfsbane, or quaff holy water"),
+    (r"deathly sick", "illness: pray if safe, or quaff a potion of healing or eat a eucalyptus leaf"),
+    (r"slimed|turning into green slime", "sliming: pray if safe, or burn it (fire), or eat a lizard"),
+    (r"You stole|stole", "theft: check the pack (send i)"),
+    (r"You owe|How dare you|break my door", "a shopkeeper is angry: pay (p) or leave"),
+)

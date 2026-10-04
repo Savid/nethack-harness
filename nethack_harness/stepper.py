@@ -340,10 +340,15 @@ class Stepper:
                 reason = ("depth gate: Dlvl %d is explored and the loop %s at XL %d (%s). It wanders the level for "
                           "experience meanwhile; or play on by hand" % (dl, where, c["xl"], how))
         elif acts[0].prior <= -2 and not near and (c["frontier"] or self.lv_downs_usable(c)):
-            if self.decisions < self.move_ban_until:
-                # the only thing left is waiting because moves are banned: lift the ban instead of deadlocking
+            here = [k for k, until in lv.bans.items() if k[0] == c["hero"] and until > self.decisions]
+            if self.decisions < self.move_ban_until or here:
+                # the only thing left is waiting because moves or actions here are banned for a while: lift those
+                # temporary bans instead of deadlocking (level-long bans stay)
                 self.move_ban_until = 0
-                self.note("stall", "move ban lifted: waiting was the only option left")
+                for k in here:
+                    del lv.bans[k]
+                self.note("stall", "bans lifted (%s): waiting was the only option left" % (
+                    ", ".join(sorted(k[1] for k in here)) or "moves"))
                 acts = self.actions(v, c)
             if acts and acts[0].prior <= -2:
                 self.note("stall", "blocked; best options: " + ", ".join("%s %.1f" % (a.key, a.prior)

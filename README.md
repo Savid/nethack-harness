@@ -238,13 +238,21 @@ API = 1
 def extra_questions(facts): ...        # -> {key: question}
 def on_answers(facts, answers): ...    # -> None | {"escalate": "reason"} | {"action": "keys to send instead"}
 def on_resume(facts, orders): ...      # facts: orders, mode, decisions; orders: directive, mode, set, enable, disable
+def on_escalation(facts, esc): ...     # esc: {"code", "text"} -> None | {"continue": True} | {"plan": [items]}
 ```
+
+`examples/auto_answers.py` answers some escalations itself (a safe prayer for
+lycanthropy, playing on at a trap door). Safety codes always reach the outer
+loop. Plugins run with a 5 s time limit; one that overruns or fails twice is
+disabled, and its output goes to a capped `hooks.log`.
 
 The decision `facts` hold `dlvl`, `hp`, `hpmax`, `hp_percent`, `xl`, `turn`,
 `conditions`, `new_level`, `hostiles`, `standing_on`, `role`, `race`,
 `messages`, `decisions`, `keys`, `mode`, `risk`, `orders`, `screen` and `state`.
 
 A plugin exception pauses the loop with a `hook error` instead of crashing it.
+Alarming messages carry a remedy hint where one is known (lycanthropy, illness,
+sliming, theft, an angry shopkeeper).
 
 ## Layout
 
