@@ -309,6 +309,35 @@ the release zipapp. Pushing a `v*` tag whose version matches `__version__`
 runs the release workflow, which tests, builds twice to check the bytes match,
 and publishes the zipapp and `SHA256SUMS` with the tag message as notes.
 
+## Benchmark
+
+`tools/bench.py` judges behaviour changes on many games instead of one
+anecdote. It plays seeded local games for a fixed wall time each, with no
+decision model by default, under a scripted outer loop. The `resume` loop
+resumes every escalation with no help. The `recommended` loop answers with the
+plan items this README recommends.
+
+For each game it records:
+- max depth, and the turn and time it first reached each Dlvl;
+- XL, turns, and death with its cause;
+- escalations by code, decisions and keys;
+- stuck periods (500 or more turns without a new deepest level) and turns
+  spent behind the depth gate.
+
+It prints medians and a per-role table. `compare` runs two commits side by
+side:
+
+```sh
+python3 tools/bench.py run --seeds 1-12 --secs 240 --out head.jsonl
+python3 tools/bench.py compare --base v0.4.1 --head master --seeds 1-12 --secs 240
+python3 tools/bench.py report base.jsonl head.jsonl
+```
+
+`--serve` is the shell command that starts one game's terminal socket,
+formatted with `{seed}`, `{socket}` and `{dir}`. The default uses
+`serve-local` with `nethack` and `seed:{seed}`. Pick seeds that cover fragile
+and sturdy roles. At most two games run at once.
+
 ## License
 
 MIT
