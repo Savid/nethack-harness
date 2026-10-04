@@ -175,11 +175,17 @@ def metrics(state, role, reasons, final, secs):
             hit = [m.group(1) for t in msgs for m in re.finditer(r"(?:The |the )([a-z][\w' -]*?) "
                                                                  r"(?:hits|bites|stings|kicks|claws|zaps)", t)]
             cause = hit[-1] if hit else "unknown"
-    codes = collections.Counter(code_of(x) for x in reasons)
+    # count escalations from the loop's own log (silenced codes included), falling back to the replies
+    logged = [r for r in rows if r["kind"] == "escalate"]
+    codes = collections.Counter(r.get("code") or code_of(r.get("text", "")) for r in logged) if logged else \
+        collections.Counter(code_of(x) for x in reasons)
+    osc = collections.Counter(re.sub(r"\d+", "N", r.get("text", ""))[:90] for r in logged
+                              if (r.get("code") or code_of(r.get("text", ""))) in ("oscillating", "camped"))
     return {"role": role, "sturdy": role in STURDY, "max_dlvl": deepest, "xl": xl, "turns": turn,
             "died": died, "cause": cause, "secs": secs,
             "dlvl_at": {str(k): {"t": round(v[0], 1), "turn": v[1]} for k, v in sorted(first_at.items())},
-            "escalations": dict(codes), "decisions": st.get("decisions"), "keys": st.get("keys"),
+            "escalations": dict(codes), "oscillations": dict(osc.most_common(8)),
+            "decisions": st.get("decisions"), "keys": st.get("keys"),
             "stuck": [{"dlvl": d, "from": a, "to": b, "turns": b - a} for d, a, b in stuck],
             "stuck_turns": sum(b - a for _, a, b in stuck), "gated_turns": gated_turns, "linger_acts": linger}
 
