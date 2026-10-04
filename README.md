@@ -107,6 +107,12 @@ While paused:
   the screen. Prefer it to unchecked key loops near danger.
 - `status` prints JSON with the settings, effort, hooks, plan, counters, kit
   and the current depth cap.
+- `mark NAME` names this moment in the key journal; `keys [--since NAME|T]
+  [--raw]` prints every key sent since then, tagged loop, plan, plugin, hand
+  or replay. `--raw` lines can be replayed with `--plan replay:FILE` (one send
+  per step; it stops on a 15% HP loss).
+- `--set tiebreak_seed=N` reseeds the loop's tie-breaking choices, so a copy of
+  a game explores differently while every safety rule stays the same.
 - `postmortem` prints the death (or the last crisis) in one block: best-guess
   killer, HP trail, crisis-ladder steps tried, last escalations, prayer band,
   settings, last keys and messages. It is also written to `postmortem.txt` at

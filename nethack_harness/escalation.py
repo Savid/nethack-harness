@@ -57,7 +57,7 @@ REGISTRY = [
          silenceable=False),
     Spec("frozen", r"^frozen: |^engulfed for |^blind for ", "turns not passing, a long engulf or blindness",
          "frozen: 16 actions without the turn counter moving"),
-    Spec("plan", r"^goal:|^plan goal|^unknown plan item", "a plan item could not run",
+    Spec("plan", r"^goal:|^plan goal|^plan replay|^unknown plan item", "a plan item could not run",
          "goal:retreat: no stairs within 8 steps ..."),
     Spec("hook", r"^hook[: ]", "a hook question or plugin asked for a pause, or failed", "hook:shop (yes 0.91)"),
     Spec("model_degraded", r"^decision endpoint degraded", "the decision endpoint keeps failing",

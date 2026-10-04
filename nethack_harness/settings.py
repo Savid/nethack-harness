@@ -51,6 +51,7 @@ DEFAULTS = {
     "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
     "quiet": 0.06,          # seconds of terminal silence that end a key send
     "last_prayer": -1,      # set to the turn of a prayer made by hand
+    "tiebreak_seed": -1,    # reseed the loop's tie-breaking choices (a copy then explores differently)
     "auto": 0,              # 1: log escalations and play on without pausing (benchmarks only)
     "pause_on": "all",      # which escalation codes pause: all | code,code | all,-code (help escalations)
 }
@@ -117,7 +118,7 @@ CHOICES = {"mines": ("auto", "allow", "avoid", "escalate"), "milestone": ("off",
 FLAGS = ("dig", "potions", "spells", "elbereth", "trapdoors", "probe", "briefing", "branch_points", "pickup_food",
          "ranged", "auto")
 FRACTIONS = ("descend_hp", "rest_hp", "hp_escalate", "elbereth_hp", "danger_max", "p_min", "hp_drop", "milestone_hp")
-SIGNED = ("lead", "fragile_lead", "last_prayer")
+SIGNED = ("lead", "fragile_lead", "last_prayer", "tiebreak_seed")
 
 
 MODE_KEYS = sorted({k for m in MODES.values() for k in m})
@@ -173,4 +174,4 @@ def effort():
 
 
 def describe():
-    return " ".join("%s=%s" % (k, CFG[k]) for k in DEFAULTS if k != "last_prayer")
+    return " ".join("%s=%s" % (k, CFG[k]) for k in DEFAULTS if k not in ("last_prayer", "tiebreak_seed"))

@@ -1,6 +1,7 @@
 """The inner loop. Rules own safety and mechanics; the decision model judges contested steps; anything tricky is
 escalated to the outer loop. step() plays one decision and returns an escalation reason or None."""
 import collections
+import json
 import random
 import time
 
@@ -15,7 +16,7 @@ from .execute import Execution
 from .modelview import ModelView
 from .stepper import Stepper
 from .arbiter import Arbiter
-from .base import GAME_OVER, RACE_MONSTER, Act, Hard  # noqa: F401  (re-exported)
+from .base import GAME_OVER, RACE_MONSTER, Act, Hard, escape  # noqa: F401  (re-exported)
 
 
 class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Stepper, Arbiter):
@@ -76,6 +77,10 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.progress_time = self.clock()
         self.rng = random.Random(0)
         self.lookup = None                 # optional p -> farlook text, instead of asking the game
+        self.tiebreak = None               # the tie-break seed set with --set tiebreak_seed
+        self.journal, self.key_index, self.key_source = None, 0, "loop"   # the key journal (record)
+        self.marks = {}                    # name -> {"i", "turn", "dlvl"} (H mark)
+        self.replay_hp = None              # HP when a plan replay began
         self.log = None
         self.hooks = Hooks()
 
@@ -104,8 +109,26 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
             self.paused_total += time.time() - self.paused_at
             self.paused_at = None
 
+    def record(self, keys, source):
+        """The key journal: every send, with its source (loop, plan, plugin, hand), turn and level."""
+        text = keys if isinstance(keys, str) else keys.decode("latin-1")
+        self.sent.append(text)
+        self.key_index += 1
+        if self.journal is not None:
+            st = self.last_st
+            try:
+                self.journal.write(json.dumps({"i": self.key_index, "t": st.get("turn"), "dl": st.get("dlvl"),
+                                               "src": source, "k": escape(text)}) + "\n")
+                self.journal.flush()
+            except (OSError, ValueError):
+                pass
+
+    def reseed(self, seed):
+        self.rng, self.tiebreak = random.Random(seed), seed
+        self.note("reseed", "tie-break seed %d" % seed)
+
     def send(self, keys):
-        self.sent.append(keys if isinstance(keys, str) else keys.decode("latin-1"))
+        self.record(keys, self.key_source)
         self.term.send(keys)
         self.keys += 1
 

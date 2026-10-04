@@ -15,6 +15,7 @@ from . import __version__
 from .decide import decider
 from .escalation import classify, help_text as escalation_help
 from .hooks import HookError, Hooks
+from .base import unescape
 from .policy import GAME_OVER, Pilot
 from .report import postmortem, status as status_of, summary
 from .settings import CFG, DEFAULTS, EFFORT, MODE_KEYS, MODES, RISK, apply_settings, describe, validate
@@ -51,6 +52,8 @@ Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --
   screen                                  the screen as the loop sees it        e.g. screen
   send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
                                           KEYS take escapes: \\r Enter, \\e Escape, \\xHH   e.g. send '#pray\\r'
+  mark NAME | keys [--since NAME|T] [--raw]  name a moment | print every key sent since (source-tagged);
+                                          --raw lines replay with --plan replay:FILE
   postmortem                              the death (or last crisis) in one block, also saved at game over
                                           as postmortem.txt: killer, HP trail, ladder steps, escalations
   repeat KEYS --times N [--stop-hp F] [--stop-on REGEX] [--allow-hp-loss]
@@ -123,7 +126,9 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
                              "(help escalations)"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
-            ("last_prayer", "", "turn of a prayer you made by hand")]),
+            ("last_prayer", "", "turn of a prayer you made by hand"),
+            ("tiebreak_seed", "", "reseed the loop's tie-breaking choices, so a copy explores differently while every "
+                                  "safety rule stays the same (status shows the seed)")]),
     "modes": "MODES (--mode M resets the mode-owned keys (%s) to defaults, then applies the mode; other settings "
              "such as mines, avoid, dig and effort are kept; --set after --mode wins)\n" % ", ".join(MODE_KEYS) + "\n".join(
         "  %-8s %s" % (m, " ".join("%s=%s" % kv for kv in v.items())) for m, v in MODES.items()) +
@@ -146,6 +151,7 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
   goal:explore[:N]     prefer exploring for N decisions
   goal:travel:R,C      travel to screen row R, column C (1-based)
   goal:pray            pray now
+  replay:FILE          send FILE's key lines (keys --raw) one per step; stops on a 15% HP loss
 CRISIS ITEMS (one call each instead of hand-typed keys mid-fight)
   goal:elbereth        engrave Elbereth in the dust, read it back, re-engrave once if misspelt
   goal:quaff[:L]       quaff letter L, or the first known healing potion
@@ -278,6 +284,7 @@ def guarded_repeat(term, p, keys, c, beat=None):
             break
         before = term.view()
         hp0, mon0, dl0 = before.st.get("hp"), monsters_near(before), before.st.get("dlvl")
+        p.record(keys, "hand")
         term.send(keys)
         done += 1
         msgs = [term.view().msg.replace("--More--", "").strip()]
@@ -324,18 +331,34 @@ def guarded_repeat(term, p, keys, c, beat=None):
         done, c["times"], why, " / ".join(seen[-6:]) or "-", term.view().text_screen())
 
 
-def unescape(keys):
-    """Backslash escapes in typed keys: \\r Enter, \\n, \\t, \\e Escape, \\\\ backslash, \\xHH a byte."""
-    table = {"r": "\r", "n": "\n", "t": "\t", "e": "\x1b", "\\": "\\"}
-    return re.sub(r"\\(x[0-9a-fA-F]{2}|[rnte\\])",
-                  lambda m: chr(int(m.group(1)[1:], 16)) if m.group(1)[0] == "x" else table[m.group(1)], keys)
+def print_keys(store, since=None, raw=False):
+    """Print the key journal, optionally from a mark or a turn on."""
+    rows = []
+    for name in ("keys.jsonl.1", "keys.jsonl"):
+        for line in store.text(name).splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    if since:
+        marks = store.read("marks.json")
+        if since in marks:
+            rows = [r for r in rows if r["i"] > marks[since]["i"]]
+        elif since.isdigit():
+            rows = [r for r in rows if (r.get("t") or 0) >= int(since)]
+        else:
+            print("no mark %r (marks: %s)" % (since, ", ".join(sorted(marks)) or "none"))
+            return 1
+    for r in rows:
+        print(r["k"] if raw else "T%-6s Dlvl%-3s %-7s %s" % (r.get("t"), r.get("dl"), r["src"], r["k"]))
+    return 0
 
 
 def save_pilot(store, p):
     """Returns None, or the error when the state directory cannot be written. A memory that could not be
     updated is removed, so a restart never resumes from stale knowledge."""
-    kept = (p.term, p.log, p.decide, p.hooks, p.paused_at)
-    p.term = p.log = p.decide = p.hooks = None
+    kept = (p.term, p.log, p.decide, p.hooks, p.paused_at, p.journal)
+    p.term = p.log = p.decide = p.hooks = p.journal = None
     if p.paused_at is None:
         p.paused_at = time.time()       # a restart from this memory does not count the downtime as play
     try:
@@ -351,7 +374,7 @@ def save_pilot(store, p):
                 pass
         return "%s: %s" % (type(e).__name__, e.strerror or e)
     finally:
-        p.term, p.log, p.decide, p.hooks, p.paused_at = kept
+        p.term, p.log, p.decide, p.hooks, p.paused_at, p.journal = kept
 
 
 LOG_CAP = 32 << 20
@@ -360,6 +383,10 @@ LOG_CAP = 32 << 20
 def trim_logs(store, p):
     """Keep log.jsonl and daemon.log bounded: the log rotates once to log.jsonl.1; daemon.log is cut."""
     try:
+        if p.journal and p.journal.tell() > LOG_CAP:
+            p.journal.close()
+            os.replace(store.path("keys.jsonl"), store.path("keys.jsonl.1"))
+            p.journal = open(store.path("keys.jsonl"), "a")
         if p.log and p.log.tell() > LOG_CAP:
             p.log.close()
             os.replace(store.path("log.jsonl"), store.path("log.jsonl.1"))
@@ -387,7 +414,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m1" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m2" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -448,6 +475,7 @@ def daemon(args):
         p.last_prayer, CFG["last_prayer"] = CFG["last_prayer"], -1
     p.term, p.decide, p.log, p.hooks = term, decide, open(store.path("log.jsonl"), "a"), Hooks()
     p.hooks.log_path = store.path("hooks.log")
+    p.journal = open(store.path("keys.jsonl"), "a")
     p.pending, p.progress, p.calm_until = None, p.decisions, p.decisions + CFG["calm"]
     p.start_clock()                       # time while the loop was stopped is not play time
     p.progress_time = p.clock()
@@ -455,6 +483,9 @@ def daemon(args):
         p.directive = cfg["directive"]
     p.plan.extend(cfg.get("plan") or [])
     p.rng = random.Random(cfg.get("seed") or os.getpid())
+    if CFG["tiebreak_seed"] >= 0:
+        p.reseed(CFG["tiebreak_seed"])
+        CFG["tiebreak_seed"] = -1
     kept = store.read("hooks.json") or {}
     problems += load_hooks(p.hooks, (kept.get("questions") or []) + cfg.get("questions", []),
                            (kept.get("plugins") or []) + cfg.get("plugins", []), cfg.get("enable"),
@@ -552,6 +583,9 @@ def daemon(args):
                 problems.append(str(e))
             if CFG["last_prayer"] >= 0:
                 p.last_prayer, CFG["last_prayer"] = CFG["last_prayer"], -1
+            if CFG["tiebreak_seed"] >= 0:
+                p.reseed(CFG["tiebreak_seed"])
+                CFG["tiebreak_seed"] = -1
             p.plan.extend(c.get("plan") or [])
             problems += load_hooks(p.hooks, c.get("questions"), c.get("plugins"), c.get("enable"),
                                    c.get("disable"))
@@ -581,6 +615,12 @@ def daemon(args):
             p.note("resume", "orders=%r %s plan=%s" % (p.directive[:300], describe(), list(p.plan)))
             status.update(state="running", reason=None, code=None)
             term.sync()
+        elif cmd == "mark":
+            st = p.last_st
+            p.marks[c["name"]] = {"i": p.key_index, "turn": st.get("turn"), "dlvl": st.get("dlvl")}
+            store.write("marks.json", p.marks)
+            store.text("reply-%d.txt" % c["seq"], "marked %s at key %d (T%s, Dlvl %s)\n" % (
+                c["name"], p.key_index, st.get("turn"), st.get("dlvl")))
         elif cmd == "postmortem":
             store.text("reply-%d.txt" % c["seq"], postmortem(p, status.get("reason")))
         elif cmd == "repeat":
@@ -604,6 +644,7 @@ def daemon(args):
                             break
                         note += "[dismissed --More--: %s]\n" % w.msg.replace("--More--", "").strip()[:160]
                         term.send(b" ")
+                    p.record(keys, "hand")
                     term.send(keys)
                     p.note("manual", repr(keys)[:80])
                 else:
@@ -881,6 +922,11 @@ def main(argv=None):
     sd = sub.add_parser("send", help="send keys while paused; prints the resulting screen")
     sd.add_argument("keys", nargs="?")
     sd.add_argument("--hex", help="bytes as hex, e.g. 1b for Escape, 0d for Enter")
+    mk = sub.add_parser("mark", help="name this moment in the key journal (for keys --since NAME)")
+    mk.add_argument("name")
+    ks = sub.add_parser("keys", help="the key journal: every key sent (loop, plan, plugin, hand, replay)")
+    ks.add_argument("--since", help="a mark NAME, or a turn number")
+    ks.add_argument("--raw", action="store_true", help="key lines only, ready for --plan replay:FILE")
     sub.add_parser("postmortem", help="the death or last crisis in one block: killer, HP trail, ladder steps, "
                                       "escalations, prayer, settings, last keys and messages")
     rp = sub.add_parser("repeat", help="while paused: send keys up to N times, stopping at the first sign of "
@@ -929,6 +975,8 @@ def main(argv=None):
                           "ms": int(took * 1000)}, indent=1))
         return 0
     sets = parse_sets(getattr(a, "set", None))       # bad settings are usage errors (64) before anything runs
+    if getattr(a, "plan", None):
+        a.plan = ["replay:" + os.path.abspath(x[7:]) if x.startswith("replay:") else x for x in a.plan]
     for item in getattr(a, "plan", None) or []:
         try:
             Pilot.check_plan(item)
@@ -998,6 +1046,8 @@ def main(argv=None):
                 continue
             print(d.get("step"), d.get("kind"), d.get("text", "")[:120], d.get("p", ""))
         return 0
+    if a.cmd == "keys":
+        return print_keys(store, a.since, a.raw)
     if a.cmd == "postmortem" and not (st and alive(st) and ours(store, st)):
         text = store.text("postmortem.txt")
         print(text or "no postmortem in %s (the game has not ended, and no loop is running)\n" % store.dir, end="")
@@ -1044,8 +1094,8 @@ def main(argv=None):
                 questions=[os.path.abspath(x) for x in a.questions], plugins=[os.path.abspath(x) for x in a.plugin],
                 enable=a.enable, disable=a.disable)
         return wait(store, a.timeout, st.get("escalation", 0))
-    if a.cmd == "postmortem":
-        seq = control(store, "postmortem")
+    if a.cmd in ("postmortem", "mark"):
+        seq = control(store, a.cmd, **({"name": a.name} if a.cmd == "mark" else {}))
         for _ in range(150):
             reply = store.text("reply-%d.txt" % seq)
             if reply:

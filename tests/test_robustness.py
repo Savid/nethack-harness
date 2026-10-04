@@ -570,3 +570,34 @@ class AdversarialR3Test(Case):
     def test_terrain_lists_are_not_monsters(self):
         self.assertTrue(K.not_a_monster("a doorway or the floor of a room or the dark part of a room (r)"))
         self.assertFalse(K.not_a_monster("imp (peaceful imp)"))
+
+
+class JournalTest(Case):
+    def test_keys_are_journaled_and_replayable(self):
+        d = tempfile.mkdtemp()
+        p = nh.Pilot(FakeTerm(), None)
+        p.journal = open(os.path.join(d, "keys.jsonl"), "a")
+        p.last_st = {"turn": 5, "dlvl": 1}
+        p.send("Fh")
+        p.record("#pray\r", "hand")
+        p.journal.close()
+        store = nh.control.Store(d)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            nh.control.print_keys(store, raw=True)
+        self.assertEqual(out.getvalue().split(), ["Fh", "#pray\\r"])
+        path = os.path.join(d, "replay.txt")
+        with open(path, "w") as f:
+            f.write(out.getvalue())
+        nh.Pilot.check_plan("replay:" + path)
+        q = nh.Pilot(FakeTerm(), None)
+        q.plan.append("replay:" + path)
+        c = {"hp": 10, "hpmax": 10}
+        self.assertTrue(q.run_plan(q.term.view(), c))
+        self.assertTrue(q.run_plan(q.term.view(), c))
+        self.assertFalse(q.run_plan(q.term.view(), c))
+        self.assertEqual(q.term.sent, ["Fh", "#pray\r"])
+
+    def test_tiebreak_seed_is_a_setting(self):
+        nh.apply_settings(None, {"tiebreak_seed": "7"})
+        self.assertEqual(nh.CFG["tiebreak_seed"], 7)

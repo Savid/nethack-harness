@@ -417,7 +417,11 @@ class Stepper:
             elif keys:
                 self.note("hook_action", repr(keys)[:80], turn=c["turn"])
                 self.last_try = None
-                self.send(keys)
+                self.key_source = "plugin"
+                try:
+                    self.send(keys)
+                finally:
+                    self.key_source = "loop"
                 return None
         if reason and self.esc(reason, hp=c["hp"], hpmax=c["hpmax"], **info):
             self.pending = (acts, info) if "top" in info else None

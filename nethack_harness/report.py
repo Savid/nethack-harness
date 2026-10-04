@@ -168,7 +168,7 @@ def status(p):
             "kit": p.kit() if p.inv else {},
             "depth_cap": p.depth_cap(p.term.view().st.get("xl", 1), p.term.view().st.get("hpmax", 1),
                                      p.term.view().st.get("ac", 10)) if p.term else None,
-            "milestones": list(p.milestones),
+            "milestones": list(p.milestones), "tiebreak_seed": p.tiebreak,
             "model_errors": p.breaker_trips, "last_model_error": p.last_model_error,
             "recent_ms": [int(x * 1000) for x in p.latencies]}
 

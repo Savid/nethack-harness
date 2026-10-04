@@ -1,9 +1,10 @@
 """Carrying out actions and plan items, with the game's prompts in between."""
+import os
 import re
 
 from . import knowledge as K
 from .level import on_map, travel
-from .base import Act, Hard
+from .base import unescape, Act, Hard
 
 
 class Execution:
@@ -133,6 +134,11 @@ class Execution:
         kind, _, arg = item.partition(":")
         if kind == "keys" and arg:
             return
+        if kind == "replay":
+            path = re.sub(r":\d+$", "", arg)
+            if not path or not os.path.isfile(path):
+                raise ValueError("replay:FILE wants a readable file of key lines (keys --raw prints them)")
+            return
         if kind == "hex":
             bytes.fromhex(arg)
             return
@@ -187,6 +193,35 @@ class Execution:
         self.send("F" + d)
         return True
 
+    def plan_replay(self, v, c, arg):
+        """replay:FILE[:N]: send FILE's key lines (as `keys --raw` prints them) one per step, from line N; stop
+        and escalate when HP falls 15% of max below where the replay began or the screen is not a normal one."""
+        path, _, start = arg.rpartition(":") if re.search(r":\d+$", arg) else (arg, "", "0")
+        try:
+            with open(path) as f:
+                lines = [line.rstrip("\n") for line in f if line.strip()]
+        except OSError as e:
+            self.plan.popleft()
+            raise Hard("plan replay: cannot read %s (%s)" % (path, e.strerror))
+        i = int(start or 0)
+        if i == 0:
+            self.replay_hp = c["hp"]
+        if i >= len(lines):
+            self.plan.popleft()
+            self.note("plan", "replay of %s done (%d sends)" % (path, len(lines)))
+            return False
+        if c["hp"] <= (self.replay_hp or c["hp"]) - 0.15 * c["hpmax"]:
+            self.plan.popleft()
+            raise Hard("plan replay stopped at line %d of %s: HP fell %d -> %d" % (i + 1, path, self.replay_hp,
+                                                                                   c["hp"]))
+        self.plan[0] = "replay:%s:%d" % (path, i + 1)
+        self.key_source = "replay"
+        try:
+            self.send(unescape(lines[i]))
+        finally:
+            self.key_source = "loop"
+        return True
+
     def run_plan(self, v, c):
         """Execute the next queued plan item. Returns True when it acted."""
         item = self.plan[0]
@@ -195,8 +230,14 @@ class Execution:
             self.plan.popleft()
             keys = arg if kind == "keys" else bytes.fromhex(arg)
             self.note("plan", "keys %r" % (arg[:40],))
-            self.send(keys)
+            self.key_source = "plan"
+            try:
+                self.send(keys)
+            finally:
+                self.key_source = "loop"
             return True
+        if kind == "replay":
+            return self.plan_replay(v, c, arg)
         goal, _, param = arg.partition(":")
         lv, hero = c["lv"], c["hero"]
         if goal == "pray":
