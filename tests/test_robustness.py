@@ -728,3 +728,29 @@ class V7Test(Case):
     def test_settings_keep_an_hp_floor(self):
         with self.assertRaises(ValueError):
             nh.apply_settings(None, {"rest_hp": "0.3", "hp_escalate": "0", "crisis_turns": "1000"})
+
+
+class ClosedShopTest(Case):
+    ROWS = [" ------- ", " |.....| ", " |.....+ ", " ------- "]
+
+    def test_the_engraving_marks_the_doors_and_reports_say_do_not_kick(self):
+        p = nh.Pilot(FakeTerm(screen("", self.ROWS + ["         @ "]), (5, 8)), None)
+        v = p.term.view()
+        p.message('Something is written here in the dust.  You read: "Closed for inventory".', v)
+        lv = p.lv[3]
+        self.assertIn((4, 8), lv.shop_doors)               # the door north of the engraved square
+        lv.locked.add((4, 8))
+        c = {"lv": lv, "watch": False, "peace": [], "obst": []}
+        self.assertFalse(p.kickable((4, 8), c))
+        self.assertIn("closed shop, do not kick", p.door_notes(dict(c, hero=(5, 8))))
+
+    def test_kick_reads_the_engraving_first(self):
+        term = FakeTerm(screen('You read: "Closed for inventory".', self.ROWS + ["         @ "]), (5, 8))
+        p = nh.Pilot(term, None)
+        lv = p.level(3)
+        lv.locked.add((4, 8))
+        c = {"lv": lv, "hero": (5, 8), "dl": 3, "turn": 400}
+        p.do(term.view(), c, nh.Act("kick_k", "Kick open the locked door to the north", "\x04k", "kick", 4.0,
+                                    (4, 8)))
+        self.assertNotIn("\x04k", term.sent)
+        self.assertIn((4, 8), lv.shop_doors)

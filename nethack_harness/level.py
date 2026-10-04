@@ -69,6 +69,7 @@ class Level:
         self.gated_since = None                    # turn the depth cap first held the loop on this explored level
         self.hazards = set()                       # never-melee monsters met here (level notes)
         self.imported = {}                         # notes from another copy of this game: "down", "up", "holes"
+        self.closed_shop_spots = set()             # squares where "Closed for inventory" was read
         self.shop_doors = set()                    # doors (and doorways) of shops: never kicked
         self.probed = set()                        # escape-ladder probes already tried here
         self.arrived = None                        # wall-clock time of arrival
