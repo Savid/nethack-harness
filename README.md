@@ -255,7 +255,16 @@ A plugin exception pauses the loop with a `hook error` instead of crashing it.
 | `screen` | Messages, prompts, status, hero, colors |
 | `knowledge` | Monster tables, prompt answers, roles, food |
 | `level` | Per-level memory, paths, frontiers, search spots, bans |
-| `policy` | The inner loop: legal actions, emergencies, escape ladder, plan queue |
+| `policy` | The Pilot: state, clock, escalation routing; composed from the modules below |
+| `perceive` | Screen, pack, character, branch, farlook, depth limits |
+| `messages` | Messages and prompts, prayer timing |
+| `candidates` | Legal actions with rule priorities (combat, doors, stairs, exploring, food, emergencies) |
+| `crisis` | The crisis ladder, retreat, verified Elbereth |
+| `execute` | Carrying out actions and plan items |
+| `modelview` | What the decision model sees and is asked |
+| `stepper` | One decision: bookkeeping, outcomes, escalations, arbitration |
+| `escalation` | Escalation codes, dedupe windows, pause_on |
+| `base` | Act, Hard and shared sentinels |
 | `decide` | Endpoint client, answer normalization, questions |
 | `hooks` | Declarative and plugin hooks |
 | `report` | Escalation reports, briefing, status |
@@ -268,7 +277,10 @@ A plugin exception pauses the loop with a `hook error` instead of crashing it.
 python3 -m unittest discover -s tests
 ```
 
-The tests need no NetHack and no network.
+The tests need no NetHack and no network. `tests/fixtures/screens` holds golden screens: a fresh pilot's
+top actions on each. After an intended rule change, `python3 tools/record_fixtures.py regen
+tests/fixtures/screens` rewrites them; the diff is the behaviour change. `tools/record_fixtures.py record`
+captures new screens from a running game.
 
 `python3 tools/build_pyz.py --commit SHA --out dist/nethack-harness.pyz` builds
 the release zipapp. Pushing a `v*` tag whose version matches `__version__`

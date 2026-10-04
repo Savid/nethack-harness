@@ -165,7 +165,7 @@ def status(p):
             "role": p.role, "race": p.race, "alignment": p.align, "max_dlvl": p.max_dl, "keys": p.keys,
             "decisions": p.decisions, "model_calls": p.calls, "reused_answers": p.reused,
             "plan": list(p.plan), "orders": clip(p.directive, 2000), "prayer": {"last": p.last_prayer, "broken": p.prayer_broken},
-            "kit": p.kit() if p.inv else {}, "known_symbols": len(K.NEVER_MELEE),
+            "kit": p.kit() if p.inv else {},
             "depth_cap": p.depth_cap(p.term.view().st.get("xl", 1), p.term.view().st.get("hpmax", 1),
                                      p.term.view().st.get("ac", 10)) if p.term else None,
             "milestones": list(p.milestones),

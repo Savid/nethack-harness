@@ -1,4 +1,3 @@
-import os
 import unittest
 
 from helpers import Case, nh, screen, view

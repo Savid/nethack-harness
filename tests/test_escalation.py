@@ -18,7 +18,7 @@ class EscalationCodes(Case):
     def test_every_reason_in_the_source_has_a_code(self):
         # every literal that starts an escalation reason: Hard("..."), reason = "...", esc("..."), pause("...")
         found = []
-        for name in ("policy.py", "control.py"):
+        for name in sorted(n for n in os.listdir(SRC) if n.endswith(".py")):
             text = open(os.path.join(SRC, name)).read()
             found += re.findall(r'(?:Hard\(|reason = |self\.esc\(|pause\()\(?"([A-Za-z][^"]{3,})"', text)
         self.assertGreater(len(found), 25)
