@@ -19,6 +19,10 @@ class Hard(Exception):
     """An escalation that budgets and calm windows never suppress."""
 
 
+class Dead(Exception):
+    """The game ended in the middle of something: nothing more may be typed into its end-of-game prompts."""
+
+
 def unescape(keys):
     """Backslash escapes in typed keys: \\r Enter, \\n, \\t, \\e Escape, \\\\ backslash, \\xHH a byte."""
     table = {"r": "\r", "n": "\n", "t": "\t", "e": "\x1b", "\\": "\\"}

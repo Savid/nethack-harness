@@ -16,7 +16,7 @@ from .execute import Execution
 from .modelview import ModelView
 from .stepper import Stepper
 from .arbiter import Arbiter
-from .base import GAME_OVER, RACE_MONSTER, Act, Hard, escape  # noqa: F401  (re-exported)
+from .base import GAME_OVER, RACE_MONSTER, Act, Dead, Hard, escape  # noqa: F401  (re-exported)
 
 
 class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Stepper, Arbiter):
@@ -131,6 +131,8 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.note("reseed", "tie-break seed %d" % seed)
 
     def send(self, keys):
+        if self.term.view().dead:
+            raise Dead()                 # never type into "You die..." or the end-of-game questions
         self.record(keys, self.key_source)
         self.term.send(keys)
         self.keys += 1

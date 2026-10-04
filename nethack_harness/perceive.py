@@ -3,7 +3,7 @@ import re
 import time
 
 from . import knowledge as K
-from .level import cheb, Level, travel
+from .level import pos1, cheb, Level, travel
 from .settings import CFG, val
 
 
@@ -198,6 +198,15 @@ class Perception:
         if key not in self.species:
             self.term.send(travel(v.hero, p, ";"))
             text = self.term.view().msg
+            for _ in range(5):                # the answer can arrive in pieces: read until it stops changing
+                if "(" in text and ")" in text:
+                    break
+                time.sleep(0.04)
+                self.term.poll()
+                again = self.term.view().msg
+                if again == text and text:
+                    break
+                text = again
             for _ in range(3):
                 w = self.term.view()
                 if w.more:
@@ -236,13 +245,11 @@ class Perception:
                 elif d <= 5 and ch != "~":
                     name = self.farlook(v, p)
                     if K.not_a_monster(name):
-                        # farlook named terrain or nothing on a monster glyph: forget the answer and look again
-                        # next time; after one retry an empty answer is a monster we cannot name (a hostile)
+                        # farlook gave nothing usable: forget it (look again next time) and judge the monster by
+                        # its glyph and colour, assuming the most dangerous monster that looks like this
                         self.species = {k: x for k, x in self.species.items() if x != name}
-                        tries = self.farlook_retries[p] = self.farlook_retries.get(p, 0) + 1
-                        empty = (name or "").strip().lower() in ("", "unknown")
-                        name = "unidentified %s (farlook said %r)" % (ch, name[:30]) if not (empty and tries > 1) \
-                            else "unknown %s monster" % ch
+                        self.note("farlook", "no monster named at %s (%r): judged by glyph" % (pos1(p), name[:40]))
+                        name = "likely %s" % K.guess_monster(ch, base, bright)
                     if "tame" in name:
                         continue
                     if "statue" in name:
@@ -253,8 +260,6 @@ class Perception:
                     watch = True
                 m = {"pos": p, "ch": ch, "base": base, "bright": bright, "dist": d, "name": name}
                 never = None if c["hallu"] else K.never_melee(ch, base, bright, name)
-                if name.startswith("unidentified ") and d <= 5:
-                    never = "unconfirmed"
                 m["never"] = never
                 m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name)) or \
                     (not c["hallu"] and K.keep_away(name, self.race, self.role))

@@ -296,3 +296,21 @@ ALARM_HINTS = (
     (r"You stole|stole", "theft: check the pack (send i)"),
     (r"You owe|How dare you|break my door", "a shopkeeper is angry: pay (p) or leave"),
 )
+
+
+def guess_monster(sym, base, bright):
+    """When farlook fails: the most dangerous monster with this glyph and colour (or this glyph)."""
+    from .monsters import MONSTERS
+    same = [(m[5], n) for n, m in MONSTERS.items() if m[0] == sym and (m[1], m[2]) == (base, bright)] or \
+        [(m[5], n) for n, m in MONSTERS.items() if m[0] == sym]
+    return max(same)[1] if same else "%s monster" % sym
+
+
+def max_damage(name, sym=None, base=None, bright=None):
+    """Most damage this monster can deal the hero in one hero turn (melee, ranged), from the monster facts."""
+    from .monsters import MONSTERS
+    key = re.sub(r"^(?:likely |peaceful |tame |the |an? )+", "", name or "").split(" (")[0].strip()
+    m = MONSTERS.get(key)
+    if m is None and sym:
+        m = MONSTERS.get(guess_monster(sym, base, bright))
+    return (m[5], m[6]) if m else (8, 0)

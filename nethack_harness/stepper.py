@@ -7,7 +7,7 @@ from .escalation import BY_CODE, classify
 from .hooks import HookError
 from .level import cheb, compass, pos1
 from .settings import CFG, val
-from .base import Act, Hard
+from .base import GAME_OVER, Act, Dead, Hard
 from .notes import anchor_of
 
 
@@ -109,6 +109,9 @@ class Stepper:
             return self._step()
         except Hard as e:
             return self.esc(str(e))
+        except Dead:
+            self.note("game_over", "the game ended during a multi-key action")
+            return GAME_OVER
 
     def _step(self):
         v = self.view()
@@ -221,7 +224,7 @@ class Stepper:
         if self.last_seen and self.last_seen[0] == c["dl"]:
             c["lv"].turns += max(0, c["turn"] - self.last_seen[1])
         self.last_seen = (c["dl"], c["turn"])
-        c["lv"].hazards.update(h["name"] for h in c["obst"] if not h["name"].startswith("unidentified"))
+        c["lv"].hazards.update(h["name"] for h in c["obst"] if not h["name"].startswith("likely "))
         dl, lv = c["dl"], c["lv"]
         self.judge_outcome(v, c)
         if self.frozen >= 16:
