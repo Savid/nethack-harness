@@ -134,8 +134,9 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
             ("last_prayer", "", "turn of a prayer you made by hand"),
-            ("deadline", "", "wall-clock deadline in epoch seconds (e.g. $(($(date +%s)+1200)) for 20 minutes); 0 = none"),
-            ("endgame_secs", "", "in the last this-many seconds before the deadline the loop lifts depth caps, "
+            ("time_left", "", "seconds of play left from now, counted on this process's monotonic clock; set it at "
+                              "start and again on any resume (a restart or a copied state dir forgets it)"),
+            ("endgame_secs", "", "in the last this-many seconds of time_left the loop lifts depth caps, "
                                  "takes stairs at HP 50% or more and prefers any descent (one 'endgame' pause)"),
             ("tiebreak_seed", "", "reseed the loop's tie-breaking choices, so a copy explores differently while every "
                                   "safety rule stays the same (status shows the seed)")]),
@@ -451,7 +452,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m4" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m5" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():
@@ -523,6 +524,9 @@ def daemon(args):
     if CFG["tiebreak_seed"] >= 0:
         p.reseed(CFG["tiebreak_seed"])
         CFG["tiebreak_seed"] = -1
+    if CFG["time_left"] >= 0:
+        p.set_time_left(CFG["time_left"])
+        CFG["time_left"] = -1
     kept = store.read("hooks.json") or {}
     problems += load_hooks(p.hooks, (kept.get("questions") or []) + cfg.get("questions", []),
                            (kept.get("plugins") or []) + cfg.get("plugins", []), cfg.get("enable"),
@@ -626,6 +630,9 @@ def daemon(args):
             if CFG["tiebreak_seed"] >= 0:
                 p.reseed(CFG["tiebreak_seed"])
                 CFG["tiebreak_seed"] = -1
+            if CFG["time_left"] >= 0:
+                p.set_time_left(CFG["time_left"])
+                CFG["time_left"] = -1
             p.plan.extend(c.get("plan") or [])
             for k in ("notes_out", "notes_in"):
                 if c.get(k):

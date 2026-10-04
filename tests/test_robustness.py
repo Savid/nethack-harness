@@ -626,18 +626,30 @@ class NotesTest(Case):
 
 
 class EndgameTest(Case):
-    def test_deadline_lifts_caps_and_prefers_descent(self):
+    def test_time_left_lifts_caps_and_prefers_descent(self):
         p = nh.Pilot(FakeTerm(), None)
         p.role = "Tourist"
+        self.assertIsNone(p.seconds_left())
         self.assertEqual(p.depth_cap(1, 10, 9), 2)
         self.assertEqual(p.mines_policy(), "avoid")
-        nh.apply_settings(None, {"deadline": str(int(time.time()) + 100), "endgame_secs": "180"})
+        nh.apply_settings(None, {"time_left": "100", "endgame_secs": "180"})
+        p.set_time_left(nh.CFG["time_left"])
         self.assertTrue(p.endgame())
         self.assertEqual(p.depth_cap(1, 10, 9), 99)
         self.assertEqual(p.mines_policy(), "allow")
         c = {"lv": p.level(3), "xl": 1, "hpmax": 10, "ac": 9, "dl": 6, "hpf": 0.55}
         self.assertTrue(p.descend_ok(c))
-        nh.apply_settings(None, {"deadline": str(int(time.time()) + 1000)})
+        p.set_time_left(1000)                     # more time: no endgame, the caps return
         self.assertFalse(p.endgame())
         self.assertFalse(p.descend_ok(c))
-        self.assertEqual(nh.escalation.classify("endgame: 170 s to the deadline"), "endgame")
+        self.assertEqual(nh.escalation.classify("endgame: 170 s left"), "endgame")
+        self.assertRaises(ValueError, nh.apply_settings, None, {"deadline": "1"})
+
+    def test_time_left_is_unknown_in_another_process(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.set_time_left(500)
+        self.assertGreater(p.seconds_left(), 490)
+        p.time_budget = (500.0, p.time_budget[1], "another-boot/1")   # what a copied or restarted state holds
+        self.assertIsNone(p.seconds_left())
+        self.assertFalse(p.endgame())
+        self.assertIn("unknown", nh.report.time_left_text(p))

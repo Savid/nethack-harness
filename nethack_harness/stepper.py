@@ -216,8 +216,8 @@ class Stepper:
             self.endgame_noted = False
         elif not self.endgame_noted:
             self.endgame_noted = True
-            left = int(CFG["deadline"] - time.time())
-            raise Hard("endgame: %d s to the deadline: depth caps lifted, stairs at HP 50%% or more, any descent "
+            left = int(self.seconds_left() or 0)
+            raise Hard("endgame: %d s left: depth caps lifted, stairs at HP 50%% or more, any descent "
                        "preferred (the Mines included)" % max(0, left))
         if self.anchor is None and c["dl"] == 1 and c["turn"] <= 1:
             self.anchor = anchor_of(v)                 # the game's identity for level notes

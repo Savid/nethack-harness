@@ -83,6 +83,7 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.replay_hp = None              # HP when a plan replay began
         self.anchor = None                 # fingerprint of this game's first screen (level notes)
         self.endgame_noted = False         # the endgame escalation was given
+        self.time_budget = None            # (seconds left, monotonic reference, process identity): time_left
         self.last_seen = None              # (dlvl, turn) at the last look, for turns spent per level
         self.log = None
         self.hooks = Hooks()
