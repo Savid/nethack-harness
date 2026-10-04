@@ -75,7 +75,8 @@ class Level:
         self.probed = set()                        # escape-ladder probes already tried here
         self.arrived = None                        # wall-clock time of arrival
         self.now = 0                               # the pilot's decision counter, for expiring exclusions
-        self.no_step = {}                          # (from, to) -> decision: a step the game refused at no cost
+        self.no_step = {}
+        self.stuck_boulders = set()                # boulders that would not move: break them to pass                          # (from, to) -> decision: a step the game refused at no cost
 
     def observe(self, v):
         for r in range(1, 22):

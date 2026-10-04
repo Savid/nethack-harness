@@ -926,3 +926,41 @@ class SoftBlockerTest(Case):
         self.assertNotIn("attack_l", [a.key for a in p.ladder_actions(p.term.view(), c)])
         c["hp"], c["obst"][0]["name"] = 30, "gas spore"
         self.assertNotIn("attack_l", [a.key for a in p.ladder_actions(p.term.view(), c)])
+
+
+class LineUpTest(Case):
+    def test_the_hero_walks_into_line_to_throw_at_a_gas_spore(self):
+        rows = [" ------------ ", " |..........| ", " |.@........| ", " |..........| ", " |.....e....| ",
+                " |..........| ", " ------------ "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 3)), None)
+        p.lookup = lambda pos: "gas spore" if pos == (5, 7) else None
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        p.inv = {"b": ("2 +0 daggers", "Weapons")}
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        c["frontier"] = []
+        line = p.line_up(v, c)
+        self.assertIsNotNone(line)
+        q = line.target
+        dr, dc = 5 - q[0], 7 - q[1]
+        self.assertTrue(dr == 0 or dc == 0 or abs(dr) == abs(dc))
+        self.assertGreaterEqual(max(abs(dr), abs(dc)), 2)
+
+
+class StuckBoulderTest(Case):
+    def test_a_stuck_boulder_is_broken_with_a_wand_of_striking(self):
+        rows = [" ---------- ", " |........| ", " |...@0...| ", " |........| ", " ---------- "]
+        p = nh.Pilot(FakeTerm(screen("", rows), (3, 5)), None)
+        p.lookup = lambda pos: None
+        p.options = p.briefed = True
+        p.inv_turn = 10 ** 9
+        p.inv = {"f": ("a wand of striking (0:5)", "Wands")}
+        v = p.term.view()
+        p.view()
+        c = p.context(v)
+        c["lv"].stuck_boulders.add((3, 6))
+        acts = p.ladder_actions(v, c)
+        brk = [a for a in acts if a.key == "break_l"]
+        self.assertTrue(brk and brk[0].keys == "zfl", [a.key for a in acts])

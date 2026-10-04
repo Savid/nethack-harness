@@ -89,6 +89,8 @@ class Messages:
                 lv.shop_doors.update([v.hero] + [q for _, q in nbrs(v.hero)])
         if K.BOULDER_FAIL.search(text) and self.last_try and self.last_try["kind"] == "push":
             lv.ban(self.last_try["hero"], self.last_try["key"])
+            if self.last_try.get("target"):
+                lv.stuck_boulders.add(self.last_try["target"])     # a force bolt or striking can break it
         if K.BOULDER_BUSY.search(text) and self.last_try and self.last_try["kind"] == "push":
             lv.ban(self.last_try["hero"], self.last_try["key"], self.decisions + 10)
         m = K.SWAP_REFUSED.search(text)

@@ -108,6 +108,11 @@ class Candidates:
                     acts.append(Act("throw_" + k, "Throw %s at the %s %s (it must not be meleed)" % (
                         spare[1], h["name"], K.DN[k]), "t" + spare[0] + k, "throw", 3.0, h["pos"]))
                     break
+        if (quiver or spare or bolt) and c["obst"] and not adjacent and not fr and \
+                not any(a.kind in ("fire", "throw", "zap") or a.key.startswith("back_") for a in acts):
+            line = self.line_up(v, c)
+            if line:
+                acts.append(line)
         self.door_commitment(v, c, acts)
         ok = self.descend_ok(c)
         policy = self.mines_policy()
@@ -271,6 +276,28 @@ class Candidates:
             act.door = dp[1]
             acts.append(act)
 
+    def line_up(self, v, c):
+        """A blocker that must not be meleed, not in a straight line from the hero: walk to the nearest square
+        that has it in line at a safe range with a clear flight, so it can be shot, thrown at or bolted."""
+        hero, dist = c["hero"], c["dist"]
+        best = None
+        for h in sorted(c["obst"], key=lambda h: h["dist"])[:3]:
+            lo = self.min_range(h)
+            for (dr, dc) in K.DIRS.values():
+                for n in range(lo, 5):
+                    q = (h["pos"][0] - dr * n, h["pos"][1] - dc * n)
+                    if q not in dist or q == hero:
+                        continue
+                    path = [(h["pos"][0] - dr * i, h["pos"][1] - dc * i) for i in range(1, n)]
+                    if all(passable(v.ch(*x), v.fg(*x)) and v.ch(*x) not in K.MON for x in path):
+                        if best is None or dist[q] < best[0]:
+                            best = (dist[q], q, h)
+        if not best:
+            return None
+        _, q, h = best
+        return Act("line_up", "Line up a shot at the %s %s (it must not be meleed)" % (h["name"], compass(hero, h["pos"])),
+                   travel(hero, q), "travel", 3.4, q)
+
     def through_doors(self, v, c, acts):
         """The game's travel command stops at closed doors. Rewrite each travel whose known route crosses one:
         travel to the square before the first door, then open it (or kick it when locked)."""
@@ -347,6 +374,23 @@ class Candidates:
                           travel(hero, spot), "travel", 3.5, spot)
                 act.door = q
                 acts.append(act)
+                break
+        # a boulder that would not move walls the way: break it with force bolt or a wand of striking
+        bolt = self.spell("attack", v)
+        wand = self.items(r"\bwand of (?:striking|digging)\b")
+        for q in sorted((q for q in lv.stuck_boulders if v.ch(*q) in K.BOULDERS), key=lambda q: cheb(q, hero)):
+            if not (bolt or wand):
+                break
+            if cheb(q, hero) == 1:
+                k = next(k for k, n in nbrs(hero) if n == q)
+                keys = "Z%s%s" % (bolt[0], k) if bolt else "z%s%s" % (wand[0][0], k)
+                acts.append(Act("break_" + k, "Break the stuck boulder %s with %s" % (
+                    K.DN[k], bolt[1] if bolt else wand[0][1]), keys, "zap", 4.3, q))
+                break
+            spot = min((n for _, n in nbrs(q) if n in dist), key=dist.get, default=None)
+            if spot is not None:
+                acts.append(Act("goto_boulder", "Go next to the stuck boulder %s to break it" % compass(hero, q),
+                                travel(hero, spot), "travel", 3.95, spot))
                 break
         # walled in by a blocker with a mild passive and nothing to throw at it: hit it rather than starve
         if not self.spare_missile() and not any(h["dist"] <= 3 for h in c["hostiles"]):

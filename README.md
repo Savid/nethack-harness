@@ -240,7 +240,11 @@ Spells cost nutrition, so trivial adjacent monsters are meleed, not bolted.
   fired at, bolted or hit with thrown missiles, spare weapons, gems or fruit,
   never wielded weapons or launchers. A gas spore is killed from 2 squares
   away; the loop steps back first. The game's travel command stops at such a
-  monster, so near one the loop steps around it along its own route.
+  monster, so near one the loop steps around it along its own route. When the
+  blocker is not in a straight line, the loop walks to the nearest square that
+  lines up a clear shot.
+- **Stuck boulders.** A boulder that would not move is broken with force bolt
+  or a wand of striking or digging when the way is otherwise closed.
 - **Mimics.** After "That boulder is a mimic!" every other boulder on the
   level is suspect: the loop does not push one, and steps around them by hand.
   It walks away from slow monsters it keeps away from and never waits for them.
