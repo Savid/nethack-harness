@@ -698,11 +698,11 @@ class V7Test(Case):
         self.assertTrue(c["hostiles"][0]["name"].startswith("likely "))
 
     def test_deadly_incoming_damage_reorders_the_ladder(self):
-        p = self.pilot([" -------- ", " |......| ", " |..@G..| ", " |......| ", " -------- "], (3, 4),
-                       {(3, 5): "gnome king"})
+        p = self.pilot([" -------- ", " |......| ", " |..@a..| ", " |......| ", " -------- "], (3, 4),
+                       {(3, 5): "soldier ant"})
         v = p.term.view()
         c = p.context(v)
-        self.assertGreaterEqual(c["incoming"], 20)
+        self.assertGreaterEqual(c["incoming"], 30)
         c["hp"], c["can_pray"] = 6, False
         p.crisis = {"until": 999, "dl": 3, "hp": 12, "tried": [], "why": "test"}
         acts = p.actions(v, c)

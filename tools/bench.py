@@ -108,8 +108,7 @@ def play(harn, sock, state, secs, outer, decide, extra):
         else:
             code, out = harness(harn, state, ["wait", "--timeout", str(int(left))])
     final = code
-    if final not in (3,):
-        harness(harn, state, ["stop"])
+    harness(harn, state, ["stop"])             # an ended loop lingers otherwise
     return role, reasons, final
 
 

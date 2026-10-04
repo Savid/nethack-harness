@@ -209,15 +209,17 @@ class Perception:
         if key not in self.species:
             self.term.send(travel(v.hero, p, ";"))
             text = self.term.view().msg
-            for _ in range(5):                # the answer can arrive in pieces: read until it stops changing
+            for _ in range(20):               # the answer can arrive late or in pieces: wait up to about a second
                 if "(" in text and ")" in text:
                     break
-                time.sleep(0.04)
+                time.sleep(0.05)
                 self.term.poll()
                 again = self.term.view().msg
                 if again == text and text:
                     break
                 text = again
+            if not text:
+                self.note("farlook", "empty answer at %s; screen top: %r" % (pos1(p), self.term.view().rows[0][:80]))
             for _ in range(3):
                 w = self.term.view()
                 if w.more:
@@ -275,7 +277,9 @@ class Perception:
                 m["avoid"] = bool(CFG["avoid"] and re.search(CFG["avoid"], name)) or \
                     (not c["hallu"] and K.keep_away(name, self.race, self.role))
                 m["threat"] = 99 if m["avoid"] else 0 if c["hallu"] else K.threat_xl(ch, base, bright, name)
-                m["dmg"], m["rdmg"], m["speed"] = K.monster_power(name, ch, base, bright)
+                m["dmg"], m["rdmg"], m["speed"], level = K.monster_power(name, ch, base, bright)
+                if not c["hallu"] and m["speed"] < 12 and level >= xl + 3 and "peaceful" not in name:
+                    m["avoid"] = True        # far stronger but slower than the hero: walk away, never melee
                 (obst if never else peace if "peaceful" in name else hostile).append(m)
         for p, desc in list(lv.traps.items()):   # identify nearby traps once: trap doors are free descents
             if desc is None and v.ch(*p) == "^" and cheb(p, hero) <= 7 and not c["hallu"]:

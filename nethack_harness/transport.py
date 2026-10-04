@@ -153,8 +153,10 @@ class Term:
         data = keys.encode() if isinstance(keys, str) else keys
         self.poll(data)
         self.settle(before, multi=bool(MULTI_TURN.match(data)))
+        lines = self.vt.lines()
         if (COUNTED.match(data) or self.after_run) and self.ready() and 1 <= self.vt.y <= 21 and \
-                not any("--More--" in r for r in self.vt.lines()):
+                not lines[0].strip() and not any("--More--" in r for r in lines):
+            # (never over a message: a redraw clears the top line, and with it a farlook answer or a warning)
             # After travel or a run the game stops redrawing T: until a later command (and counted commands can
             # leave it stale too), though the turn counter itself moves on. ^R takes no game time and fixes it.
             self.poll(b"\x12")
