@@ -4,6 +4,7 @@ import re
 import time
 
 from . import knowledge as K
+from .food import RESERVE_FOOD
 from .level import pos1, cheb, Level, travel
 from .settings import CFG, val
 
@@ -177,10 +178,12 @@ class Perception:
         return 2 if K.EXPLODERS.search(h["name"]) else 1
 
     def spare_missile(self):
-        """(letter, name) of something safe to throw: missiles and rocks first, then plain fruit."""
+        """(letter, name) of something safe to throw: missiles and rocks first, then plain fruit, but only fruit
+        the hero can spare (the rest of the pack's food still holds RESERVE_FOOD nutrition)."""
         for rx in (K.SPARE_MISSILES, K.SPARE_FOOD):
             for k, t in self.items(rx):
-                if not K.item_state(t) and not re.search(r"\bcursed|loadstone", t):
+                if not K.item_state(t) and not re.search(r"\bcursed|loadstone", t) and \
+                        (rx == K.SPARE_MISSILES or self.pack_nutrition(skip=k) >= RESERVE_FOOD):
                     return k, t
         return None
 
@@ -278,6 +281,7 @@ class Perception:
                     (not c["hallu"] and K.keep_away(name, self.race, self.role))
                 m["threat"] = 99 if m["avoid"] else 0 if c["hallu"] else K.threat_xl(ch, base, bright, name)
                 m["dmg"], m["rdmg"], m["speed"], level = K.monster_power(name, ch, base, bright)
+                m["level"] = level
                 if not c["hallu"] and m["speed"] < 12 and level >= xl + 3 and "peaceful" not in name:
                     m["avoid"] = True        # far stronger but slower than the hero: walk away, never melee
                 (obst if never else peace if "peaceful" in name else hostile).append(m)

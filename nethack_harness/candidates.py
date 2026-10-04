@@ -4,7 +4,7 @@ import re
 from . import knowledge as K
 from .level import cheb, compass, door, nbrs, passable, travel
 from .settings import CFG, val
-from .base import Act, RACE_MONSTER
+from .base import Act
 
 
 class Candidates:
@@ -70,7 +70,9 @@ class Candidates:
             for h in hs + c["obst"]:     # force bolt: a dangerous foe, or a blocker that must not be meleed
                 dr, dc = h["pos"][0] - hero[0], h["pos"][1] - hero[1]
                 straight = dr == 0 or dc == 0 or abs(dr) == abs(dc)
-                worth = h in c["obst"] or c["xl"] < h["threat"] or hurt or h["dist"] == 1
+                # a spell costs Pw (and nutrition, unless a clever Wizard casts it): adjacent trivial monsters are
+                # meleed instead
+                worth = h in c["obst"] or c["xl"] < h["threat"] or hurt or (h["dist"] == 1 and not self.trivial(h, c))
                 if straight and self.min_range(h) <= h["dist"] <= 6 and worth and not h.get("peaceful"):
                     k = next(k for k, d in K.DIRS.items() if d == ((dr > 0) - (dr < 0), (dc > 0) - (dc < 0)))
                     acts.append(Act("zap_" + k, "Cast %s at the %s %s" % (bolt[1], h["name"], K.DN[k]),
@@ -318,40 +320,20 @@ class Candidates:
             acts.append(Act("search", "Search here 15 turns for hidden passages", "15s", "search", 1))
         return acts
 
-    def food_actions(self, v, c, acts):
-        hero, dl, hungry = c["hero"], c["dl"], c["hungry"]
-        cs = self.corpse
-        if hungry and cs and cs[0] == dl and c["turn"] - cs[3] <= 50 and cs[2].endswith(K.SAFE_CORPSES) \
-                and not K.UNSAFE_CORPSE.search(cs[2]) and not c["threats"] \
-                and not (self.race and RACE_MONSTER.get(self.race, "?") in cs[2]):
-            if hero == cs[1]:
-                acts.append(Act("eat_corpse", "Eat the fresh %s corpse here (you are %s)" % (cs[2], hungry), "e",
-                                "eat_corpse", 5))
-            elif c["dist"].get(cs[1], 99) <= 4:
-                acts.append(Act("goto_corpse", "Step to the fresh %s corpse to eat it" % cs[2],
-                                travel(hero, cs[1]), "travel", 4.5, cs[1]))
-        if hungry and c["turn"] >= self.food_off_until:
-            food = self.food_letters()
-            if food or self.inv_turn < 0:
-                acts.append(Act("eat", "Eat %s (you are %s)" % (food[0][1] if food else "food", hungry), "e", "eat",
-                                (0 if c["threats"] else 3.5) + 3 * (hungry != "Hungry")))
-
-    def food_letters(self):
-        out = []
-        for k, (t, sec) in self.inv.items():
-            if "corpse" in t and not re.search(r"lichen|lizard", t):
-                continue
-            i = K.food_index(t)
-            if sec == "Comestibles" or i is not None:
-                out.append((50 if i is None else i, t, k))
-        return [(k, t) for _, t, k in sorted(out)]
+    @staticmethod
+    def trivial(h, c):
+        """A monster to melee rather than spend a spell on: no stronger than the hero, and its best turn takes at
+        most a quarter of the hero's HP."""
+        return h.get("level", 0) <= c["xl"] and h["dmg"] * 4 <= c["hp"] and not h["avoid"]
 
     def emergency_actions(self, v, c, acts):
         hpf, th = c["hpf"], c["threats"]
-        if c["can_pray"] and c["trouble"]:
-            acts.append(Act("pray", "Pray (in serious trouble and the prayer timeout looks safe)", "", "pray", 9))
         low = hpf < 1 / 3 or c["hp"] < 8
         heal = self.items(K.HEALING.pattern)
+        if c["can_pray"] and c["trouble"]:
+            # Hungry with no food: the prayer is the next meal, so a healing potion goes first when there is one
+            pr = 8.4 if CFG["potions"] and heal and low and self.prayer_is_food(c) else 9
+            acts.append(Act("pray", "Pray (in serious trouble and the prayer timeout looks safe)", "", "pray", pr))
         if low and CFG["potions"] and heal and (th or c["hit"] or hpf < 0.2):
             acts.append(Act("quaff", "Quaff the %s" % heal[0][1], "q" + heal[0][0], "quaff", 8.5))
         heal_spell = self.spell("heal", v)

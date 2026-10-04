@@ -302,6 +302,7 @@ class Stepper:
         dl, lv, hpf = c["dl"], c["lv"], c["hpf"]
         near = [h for h in c["hostiles"] if h["dist"] <= 3]
         reason = None
+        hunger = self.hunger_reason(c, acts)
         drop = max([hp for t, hp in self.hp_hist if c["turn"] - t <= 5] or [c["hp"]]) - c["hp"]
         adjacent = [h for h in c["hostiles"] if h["dist"] == 1]
         osc = self.oscillation(dl)
@@ -366,15 +367,8 @@ class Stepper:
                     self.prayer_band(c["turn"], c["trouble"]),
                     " (crisis ladder tried: %s)" % (", ".join(self.crisis["tried"]) or "nothing applied")
                     if self.crisis else "")
-        elif c["hungry"] in ("Weak", "Fainting") and not any(a.kind in ("eat", "eat_corpse", "pray") for a in acts) \
-                and self.hunger_noted != (c["hungry"], c["turn"] // 100):
-            self.hunger_noted = (c["hungry"], c["turn"] // 100)    # again at Fainting, or 100 turns later
-            reason = "%s from hunger, no food, no safe prayer" % c["hungry"]
-        elif c["hungry"] == "Hungry" and self.inv_complete and not self.food_letters() and not c["can_pray"] and \
-                self.low_noted != ("hungry", c["turn"] // 300):
-            self.low_noted = ("hungry", c["turn"] // 300)
-            reason = "Hungry with no food in the pack and prayer not safe yet: plan food (corpses, shops, prayer at T%s)" % (
-                (self.last_prayer or 0) + 900)
+        elif hunger:
+            self.hunger_noted, reason = hunger
         elif self.decisions - self.progress > CFG["stall"] or c["turn"] - self.progress_turn > CFG["stall_turns"] \
                 or self.clock() - self.progress_time > CFG["stall_secs"]:
             self.progress, self.progress_turn, self.progress_time = self.decisions, c["turn"], self.clock()

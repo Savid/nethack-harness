@@ -209,6 +209,30 @@ forward pass, and its cost grows with input tokens and the number of
 questions. So effort controls only how often and how much the harness asks.
 Switch it at runtime, for example `--set effort=high` in a dangerous spot.
 
+### Hunger
+
+The loop feeds the hero itself:
+- **Corpses.** It remembers what it kills and eats a fresh corpse (under 40
+  turns old) when Hungry, or when the pack holds under 1500 nutrition. It
+  never eats while Satiated or in a shop, nor with a hostile in view unless
+  Weak. It never eats cockatrices, were-creatures, polymorphers, bats,
+  mimics, the undead's corpses, acidic corpses, or cannibal and pet corpses,
+  and eats poisonous ones only when resistant. A Monk eats no meat. Each
+  floor prompt is answered by its own corpse.
+- **The pack, at Hungry.** It eats the cheapest food first and keeps lembas
+  wafers and C- and K-rations while other food lasts. Eggs, unpaid food and
+  corpses of unknown age are never eaten. Tins and cures (wolfsbane,
+  eucalyptus, a lizard) are eaten only when Weak with no safe prayer. Fruit
+  is thrown at blockers only while 1000 nutrition of other food remains.
+- **Prayer.** With no food, it prays at Weak once the prayer is safe. When
+  Fainting, it prays 500 or more turns after the last prayer, or at any time
+  once starvation is under 60 turns away, because starving is certain.
+- **The `hunger` escalation** comes only when no food, no corpse and no safe
+  prayer is available before Fainting. It comes once per hunger state, and
+  at Hungry when possible.
+
+Spells cost nutrition, so trivial adjacent monsters are meleed, not bolted.
+
 ## Terminal socket protocol
 
 ```
@@ -290,12 +314,13 @@ sliming, theft, an angry shopkeeper).
 | `term` | VT100/xterm screen emulator |
 | `transport` | Terminal-socket client, settling, local pty server |
 | `screen` | Messages, prompts, status, hero, colors |
-| `knowledge` | Monster tables, prompt answers, roles, food |
+| `knowledge` | Monster tables, prompt answers, roles, food worth picking up |
+| `food` | Safe corpses and the corpses the hero made, pack food order, eating, hunger prayer and escalation |
 | `level` | Per-level memory, paths, frontiers, search spots, bans |
 | `policy` | The Pilot: state, clock, escalation routing; composed from the modules below |
 | `perceive` | Screen, pack, character, branch, farlook, depth limits |
 | `messages` | Messages and prompts, prayer timing |
-| `candidates` | Legal actions with rule priorities (combat, doors, stairs, exploring, food, emergencies) |
+| `candidates` | Legal actions with rule priorities (combat, doors, stairs, exploring, emergencies) |
 | `crisis` | The crisis ladder, retreat, verified Elbereth |
 | `execute` | Carrying out actions and plan items |
 | `modelview` | What the decision model sees and is asked |

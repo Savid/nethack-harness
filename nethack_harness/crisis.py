@@ -46,9 +46,11 @@ class Crisis:
         retreat, then fight. Returns the ladder steps plus the fighting moves; empty means the ladder is done."""
         hero, th = c["hero"], c["threats"]
         ladder = []
-        if c["can_pray"] and c["trouble"]:
-            ladder.append(Act("pray", "Pray (in serious trouble and the prayer timeout looks safe)", "", "pray", 9.6))
         heal = self.items(K.HEALING.pattern)
+        if c["can_pray"] and c["trouble"]:
+            # Hungry with no food: the prayer is the next meal, so a healing potion goes first when there is one
+            pr = 9.35 if CFG["potions"] and heal and c["hpf"] < 0.5 and self.prayer_is_food(c) else 9.6
+            ladder.append(Act("pray", "Pray (in serious trouble and the prayer timeout looks safe)", "", "pray", pr))
         if CFG["potions"] and heal and c["hpf"] < 0.5:
             ladder.append(Act("quaff", "Quaff the %s" % heal[0][1], "q" + heal[0][0], "quaff", 9.4))
         heal_spell = self.spell("heal", v)

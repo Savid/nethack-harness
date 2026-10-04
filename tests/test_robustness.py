@@ -467,7 +467,9 @@ class CodeReviewTest(Case):
         p.inv = {"a": ("a +1 dwarvish spear (weapon in right hand)", "Weapons"),
                  "b": ("a +0 dagger (alternate weapon; not wielded)", "Weapons"),
                  "c": ("2 apples", "Comestibles")}
-        self.assertEqual(p.spare_missile()[0], "c")
+        self.assertIsNone(p.spare_missile())          # the only food is never thrown
+        p.inv["d"] = ("2 food rations", "Comestibles")
+        self.assertEqual(p.spare_missile()[0], "c")   # spare fruit is
         self.assertEqual(nh.Pilot.min_range({"name": "gas spore"}), 2)
 
 

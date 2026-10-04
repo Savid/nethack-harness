@@ -49,7 +49,8 @@ SWAP_REFUSED = re.compile(r"You stop\.\s+(.+?) doesn't want to swap places|You s
 ELBERETH_IGNORERS = ("@", "A")
 
 # Prompt answers, first match wins. Answers: keys to send, or one of the tokens below.
-#   ESC, ESCALATE, GAME_OVER, PRAY (y only when the loop chose to pray), CORPSE (y only when eating a corpse)
+#   ESC, ESCALATE, GAME_OVER, PRAY (y only when the loop chose to pray), CORPSE (y only for a safe, fresh corpse
+#   while eating one), TIN (y only for a tin of something safe)
 PROMPTS = [
     (r"Really attack ", "ESC"),                                        # peacefuls: never
     (r"Really \w+ (?:onto|into) that (?:trap door|hole)\?", "y"),      # a free descent
@@ -58,6 +59,7 @@ PROMPTS = [
     (r"no return!.*Still climb\?|Still climb\?", "n"),                  # leaving the dungeon ends the game
     (r"Are you sure you want to pray\?", "PRAY"),
     (r"here; eat (?:it|one)\?", "CORPSE"),
+    (r"(?:^|\s)Eat it\? \[", "TIN"),                                   # after "It smells like ..."
     (r"Continue eating\?", "n"),
     (r"Stop eating\?", "y"),
     (r"Do you want to add to the current engraving\?", "n"),
@@ -143,17 +145,11 @@ def threat_xl(sym, base, bright, name=""):
     return lookup(THREAT, sym, base, bright) or 0
 
 
-# Food and corpses. Names match whole words only (a pear is not inside a spear): see food_index().
+# Food worth picking up. Names match whole words only (a pear is not inside a spear): see food_index().
+# What is safe to eat, and in which order, is in food.py.
 FOODS = ("food ration", "cram ration", "lembas wafer", "fortune cookie", "apple", "carrot", "orange", "pear",
          "melon", "banana", "cream pie", "candy bar", "pancake", "egg", "kelp", "slime mold", "meatball",
          "C-ration", "K-ration", "tortilla", "tin", "eucalyptus leaf", "sprig of wolfsbane", "clove of garlic")
-SAFE_CORPSES = ("newt", "jackal", "coyote", "fox", "sewer rat", "giant rat", "iguana", "lichen", "gnome lord",
-                "gnome", "hill orc", "hobbit", "gecko", "giant ant", "rothe", "pony", "goblin", "wolf", "lizard",
-                "dingo", "jaguar", "hill giant", "Mordor orc", "Uruk-hai", "dwarf")
-UNSAFE_CORPSE = re.compile(r"kobold|were|cockatrice|chickatrice|Medusa|chameleon|doppelganger|disenchanter|"
-                           r"violet fungus|yellow mold|bat\b|dog|cat\b|kitten|mimic|zombie|mummy|green slime|"
-                           r"acid|lichen corpse \(rotten\)")
-
 # Roles.
 ROLE_TITLES = {"Digger": "Archeologist", "Plunderer": "Barbarian", "Plunderess": "Barbarian",
                "Troglodyte": "Caveman", "Troglodytess": "Caveman", "Rhizotomist": "Healer", "Gallant": "Knight",

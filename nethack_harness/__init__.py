@@ -1,5 +1,5 @@
 """nethack-harness: a fast NetHack inner loop for an outer-loop agent (standard library only)."""
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .term import VT  # noqa: E402,F401
 from .screen import View  # noqa: E402,F401

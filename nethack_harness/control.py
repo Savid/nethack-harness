@@ -200,7 +200,9 @@ CRISIS ITEMS (one call each instead of hand-typed keys mid-fight)
       (send 15s); kick locked doors (send --hex '04 6c'); push boulders; --set dig=1 with a pick-axe; read a
       magic mapping scroll
   Gnomish Mines: gnome or dwarf heroes and strong fighters: --set mines=allow; others mines=avoid
-  hunger with no food: pray if the last prayer was 900+ turns ago (never after a failed prayer)
+  hunger: the loop eats pack food (cheapest first, rations kept), fresh safe corpses it made, and prays when
+      Weak and safe; it pauses only with no food and no safe prayer before Fainting: find food (a shop, kills),
+      or pray if the last prayer was 500+ turns ago (about 7 in 8 work; never after a failed prayer)
   unknown prompt or alarming message: answer or react (stoning: pray, or eat a lizard or acidic corpse)
   hook:KEY: a hook you loaded fired; --disable KEY to stop it""",
 }

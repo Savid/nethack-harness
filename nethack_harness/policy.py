@@ -11,6 +11,7 @@ from .settings import CFG
 from .perceive import Perception
 from .messages import Messages
 from .candidates import Candidates
+from .food import Food
 from .crisis import Crisis
 from .execute import Execution
 from .modelview import ModelView
@@ -19,7 +20,7 @@ from .arbiter import Arbiter
 from .base import GAME_OVER, RACE_MONSTER, Act, Dead, Hard, escape  # noqa: F401  (re-exported)
 
 
-class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Stepper, Arbiter):
+class Pilot(Perception, Messages, Food, Candidates, Crisis, Execution, ModelView, Stepper, Arbiter):
     def __init__(self, term, decide):
         self.term, self.decide = term, decide
         self.paused_total, self.paused_at = 0.0, None     # the play clock stops while the outer loop has it
@@ -31,6 +32,11 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.options = self.briefed = False
         self.last_prayer, self.prayer_broken, self.praying, self.eating_corpse = None, False, False, False
         self.food_off_until, self.eat_fail = -1, 0
+        self.kills = []                  # (dlvl, pos, monster, turn or None if it never rots): corpses we made
+        self.poison_res = False          # "You feel healthy": poisonous corpses become safe
+        self.tin_smell = None            # what the last opened tin smelled like
+        self.eating_at = None            # the square of the corpse being eaten
+        self.fainting_since = None       # turn the current Fainting began: the starvation clock
         self.hist, self.msgs = collections.deque(maxlen=80), collections.deque(maxlen=12)
         self.msg_log = collections.deque(maxlen=20)      # longer message memory, for the postmortem
         self.sent = collections.deque(maxlen=30)         # the last keys sent, for the postmortem
@@ -47,7 +53,7 @@ class Pilot(Perception, Messages, Candidates, Crisis, Execution, ModelView, Step
         self.mtime, self.t0, self.mark, self.progress, self.progress_turn = 0.0, time.time(), None, 0, 0
         self.directive, self.max_dl, self.prev_dl = "", 0, None
         self.obst, self.hostiles, self.pending, self.last_act, self.last_try = [], [], None, None, None
-        self.corpse, self.low_noted, self.turn, self.bad_screens, self.hit_turn = None, None, None, 0, -99
+        self.low_noted, self.turn, self.bad_screens, self.hit_turn = None, None, 0, -99
         self.calm_until, self.hook_answers, self.seen_levels = 0, {}, set()
         self.visits, self.outcomes = collections.deque(maxlen=10), collections.deque(maxlen=10)
         self.move_ban_until = self.boost_until = self.frozen = self.engulf_sends = 0

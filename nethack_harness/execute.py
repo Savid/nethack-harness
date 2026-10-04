@@ -42,30 +42,10 @@ class Execution:
             self.send("ms")
             return
         if a.kind == "eat_corpse":
-            self.eating_corpse = True
-            try:
-                self.flow("e", until=6)
-            finally:
-                self.eating_corpse = False
-            self.corpse = None
+            self.eat_floor(c)
             return
         if a.kind == "eat":
-            self.send("e")
-            for _ in range(5):
-                w = self.term.view()
-                if w.yn:
-                    self.answer(w)
-                    continue
-                if w.obj is not None:
-                    letters = re.sub(r"[^a-zA-Z]", "", w.obj.split(" or ")[0])
-                    pick = next((k for k, _ in self.food_letters() if k in letters), None)
-                    if pick is None and self.inv_turn < 0:
-                        pick = letters[:1] or None
-                    self.send(pick or "\x1b")
-                    if pick is None:
-                        self.food_off_until = c["turn"] + 300
-                    self.inv_turn = -2 if pick else self.inv_turn     # re-read the pack later
-                break
+            self.eat_pack(c)
             return
         if a.kind in ("quaff", "read"):
             want = K.HEALING if a.kind == "quaff" else K.MAPPING

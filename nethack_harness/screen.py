@@ -36,7 +36,7 @@ class View:
         self.st = {}
         for key, rx in (("dlvl", r"Dlvl:(\d+)"), ("gold", r"\$:(\d+)"), ("hp", r"HP:(-?\d+)\((\d+)\)"),
                         ("pw", r"Pw:(\d+)\((\d+)\)"), ("ac", r"AC:(-?\d+)"), ("xl", r"(?:Xp|XL|Exp):(\d+)"),
-                        ("turn", r"T:(\d+)")):
+                        ("turn", r"T:(\d+)"), ("con", r"Co:(\d+)"), ("int", r"In:(\d+)")):
             m = re.search(rx, status)
             if m:
                 self.st[key] = int(m.group(1))

@@ -37,9 +37,7 @@ class Messages:
         if K.PRAY_BAD.search(text):
             self.prayer_broken = True
             self.note("prayer", "prayer failed: no more prayers this game")
-        m = re.search(r"You (?:kill|destroy) (?:the |an? )?([a-z -]+?)!", text)
-        if m and self.last_act and self.last_act.kind == "attack":
-            self.corpse = (dl, self.last_act.target, m.group(1), v.st.get("turn", 0))
+        self.food_message(text, v)
         if "This door is locked" in text and self.last_act and self.last_act.kind == "door":
             lv.locked.add(self.last_act.target)
         if re.search(r"The door opens|crashes open|shatters to pieces|You break open the lock|"
@@ -81,8 +79,6 @@ class Messages:
                 and not lv.shop and "keys:," not in self.plan:
             self.plan.appendleft("keys:,")
             self.inv_turn = -2
-        if "You don't have anything to eat" in text:
-            self.food_off_until = v.st.get("turn", 0) + 300
         if K.STONING.search(text):
             if self.prayer_safe(v.st.get("turn", 0)):
                 self.plan.appendleft("goal:pray")
@@ -119,8 +115,11 @@ class Messages:
             if seen is not None and turn - seen <= 50:
                 raise Hard("unknown prompt seen twice: " + v.msg[:160])
             return None
-        keys = {"ESC": "\x1b", "PRAY": "y" if self.praying else "n",
-                "CORPSE": "y" if self.eating_corpse else "n"}.get(ans, ans)
+        keys = {"ESC": "\x1b", "PRAY": "y" if self.praying else "n"}.get(ans, ans)
+        if ans == "CORPSE":
+            keys = self.floor_food_answer(v.msg)
+        elif ans == "TIN":
+            keys = self.tin_answer(v.msg)
         self.note("prompt", v.msg[:100], answer=keys)
         self.send(keys)
         return None
