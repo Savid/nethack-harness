@@ -90,6 +90,64 @@ def hooks_line(p):
 
 
 def summary(p, reason):
+    """The escalation report: compact by default (report=compact), or with everything (report=full)."""
+    if reason != "briefing" and CFG["report"] == "compact":
+        return compact(p, reason)
+    return full(p, reason)
+
+
+def crop(v, rows=11, cols=21):
+    """The map around the hero, with its top-left corner as 1-based ROW,COL."""
+    hr, hc = v.hero or (11, 40)
+    top = min(max(1, hr - rows // 2), 22 - rows)
+    left = min(max(0, hc - cols // 2), 80 - cols)
+    lines = [v.rows[r][left:left + cols].rstrip() for r in range(top, top + rows)]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+        top += 1
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return top, left, lines
+
+
+def compact(p, reason):
+    v = p.term.view()
+    st = v.st if v.st.get("dlvl") is not None else p.last_st
+    out = ["ESCALATION [%s]: %s" % (classify(reason), reason),
+           "Dlvl %s HP %s/%s AC %s XL %s T %s%s | prayer: %s%s" % (
+               st.get("dlvl"), st.get("hp"), st.get("hpmax"), st.get("ac"), st.get("xl"), st.get("turn"),
+               (" " + " ".join(v.cond)) if v.cond else "", p.prayer_band(st.get("turn") or 0),
+               " | time left %s" % time_left_text(p) if p.time_budget else "")]
+    near = sorted(p.hostiles + p.obst, key=lambda h: h["dist"])[:5]
+    if near:
+        out.append("near: " + "; ".join("%s%s %d %s at %s" % (
+            h["name"], " [never melee]" if h in p.obst else "", h["dist"], compass(v.hero or h["pos"], h["pos"]),
+            pos1(h["pos"])) for h in near))
+    msgs = [m for _, m in list(p.msg_log)[-4:]]
+    if msgs:
+        out.append("messages: " + " | ".join(m[:100] for m in msgs))
+    if p.pending:
+        acts, i = p.pending
+        out.append("model: %s (danger %.2f)" % (", ".join("%s %.2f" % kv for kv in i["top"][:3]), i["danger"]))
+    top, left, lines = crop(v)
+    if lines:
+        out.append("map from %d,%d (@ = you):" % (top + 1, left + 1))
+        out += lines
+    lv = p.lv.get(st.get("dlvl") if p.branch == "main" else (p.branch, st.get("dlvl")))
+    food = p.food_letters()
+    extra = ["food: %s" % (", ".join(t for _, t in food[:2]) or ("none" if p.inv_complete else "unknown"))]
+    if lv and lv.downs:
+        extra.append("stairs down: " + ", ".join(pos1(q) + ("" if k == "main" else " (Mines)")
+                                                 for q, k in lv.downs.items()))
+    if p.plan:
+        extra.append("plan: " + " | ".join(p.plan))
+    out.append(" | ".join(extra))
+    out.append("next: resume [--plan ITEM] [--set k=v] [--directive TEXT]; screen for the full screen; "
+               "help brief")
+    return "\n".join(out)
+
+
+def full(p, reason):
     v = p.term.view()
     if reason == "briefing":
         return briefing(p) + "\n" + footer(p) + "\n--- screen ---\n" + v.text_screen()

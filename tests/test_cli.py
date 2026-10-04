@@ -16,7 +16,7 @@ class CliTest(Case):
         d = tempfile.mkdtemp()
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(nh.main(["--dir", os.path.join(d, "state"), "help"]), 0)
+            self.assertEqual(nh.main(["--dir", os.path.join(d, "state"), "help", "all"]), 0)
         text = out.getvalue()
         for word in ("PROTOCOL", "COMMANDS", "SETTINGS", "EFFORT", "PLAN QUEUE", "HOOKS", "PLUGINS", "PLAYBOOK"):
             self.assertIn(word, text)

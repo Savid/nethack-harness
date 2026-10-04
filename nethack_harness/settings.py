@@ -56,7 +56,8 @@ DEFAULTS = {
     "endgame_secs": 180,    # in the last this-many seconds of time_left: no depth cap, descend at HP >= 50%
     "tiebreak_seed": -1,    # reseed the loop's tie-breaking choices (a copy then explores differently)
     "auto": 0,              # 1: log escalations and play on without pausing (benchmarks only)
-    "pause_on": "all",      # which escalation codes pause: all | code,code | all,-code (help escalations)
+    "report": "compact",    # compact (status, near monsters, messages, a map crop) | full (everything + screen)
+    "pause_on": "all,-branch_point,-oscillating",   # benign notices the loop handles itself do not pause      # which escalation codes pause: all | code,code | all,-code (help escalations)
 }
 RISK = {
     "low": {"descend_hp": 0.85, "rest_hp": 0.85, "hp_escalate": 0.5, "elbereth_hp": 0.5, "lead": -1},
@@ -116,7 +117,7 @@ def finite(x):
 
 # Allowed values, by key: discrete choices, on/off flags, fractions and signed numbers. Everything else numeric
 # must be zero or more.
-CHOICES = {"mines": ("auto", "allow", "avoid", "escalate"), "milestone": ("off", "depth", "xl", "both"),
+CHOICES = {"report": ("compact", "full"), "mines": ("auto", "allow", "avoid", "escalate"), "milestone": ("off", "depth", "xl", "both"),
            "fight_handoff": ("ladder", "escalate"), "mapping": (0, 1, 2)}
 FLAGS = ("fight_question", "dig", "potions", "spells", "elbereth", "trapdoors", "probe", "briefing", "branch_points", "pickup_food",
          "ranged", "auto")

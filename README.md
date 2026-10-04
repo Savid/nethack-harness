@@ -86,6 +86,20 @@ level, plan item, hook type and plugin function, with examples.
 `help TOPIC` prints one section. Its topics are `protocol`, `commands`,
 `settings`, `modes`, `effort`, `plan`, `hooks`, `plugins` and `playbook`.
 
+`help` (or `help brief`) prints a short map (about 2 KB): exit codes, commands,
+plan items and the settings used most. `help all` prints everything.
+
+Reports are compact by default (about 150 tokens): the reason with its code,
+HP, Dlvl, XL, turn, conditions and the prayer band, the monsters near the hero
+with positions, the last messages, an 11×21 map crop around the hero, food and
+known stairs. `--set report=full` restores the long report with the whole
+screen, and `screen` shows the whole screen at any time. While the loop runs,
+`wait` and `resume` print one short line.
+
+By default the loop does not pause for notices it handles itself (`branch_point`,
+`oscillating`): `pause_on` is `all,-branch_point,-oscillating`. Every safety pause
+stays.
+
 `start`, `wait` and `resume` block until an escalation, game over or the
 `--timeout`:
 

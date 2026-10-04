@@ -653,3 +653,26 @@ class EndgameTest(Case):
         self.assertIsNone(p.seconds_left())
         self.assertFalse(p.endgame())
         self.assertIn("unknown", nh.report.time_left_text(p))
+
+
+class CompactOutputTest(Case):
+    def test_compact_report_is_small_and_help_brief_fits(self):
+        import random as random_
+        import fixturefmt
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "screens")
+        for name in sorted(os.listdir(d))[:15]:
+            args, lookups, _ = fixturefmt.load(open(os.path.join(d, name)).read())
+            term = fixturefmt.ScreenTerm(nh.View, args)
+            p = nh.Pilot(term, None)
+            p.options = p.briefed = True
+            p.inv_turn, p.rng, p.lookup = 10 ** 9, random_.Random(0), (lambda pos, lk=lookups: lk.get(pos))
+            v = term.view()
+            if not v.normal:
+                continue
+            p.branch_dl = v.st.get("dlvl")
+            p.view()
+            p.actions(v, p.context(v))
+            text = nh.report.summary(p, "low HP 4/16 with jackal near and no safe prayer, potion or Elbereth")
+            self.assertLess(len(text), 1200, name)
+            self.assertIn("ESCALATION [low_hp]", text)
+        self.assertLessEqual(len(nh.control.help_text("brief").encode()), 2500)

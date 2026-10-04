@@ -23,57 +23,7 @@ from .settings import CFG, DEFAULTS, EFFORT, MODE_KEYS, MODES, RISK, apply_setti
 from .knowledge import ALARM as K_ALARM, MON
 from .transport import Closed, Held, Term, serve_local
 
-HELP = {
-    "protocol": """PROTOCOL
-You are the outer loop; this program is the inner loop. It plays routine NetHack fast and stops when judgment
-is needed. Every blocking command (start, wait, resume) returns at an escalation, at game over or at --timeout:
-  exit 0  paused: an ESCALATION (or BRIEFING) report follows; the keyboard is yours until you resume
-  exit 2  timeout, still playing: call wait again (the line names decision-model trouble, if any)
-  exit 3  game over (or the terminal socket closed)
-  exit 1  no loop in --dir, not running, a setup error, or stuck (no heartbeat for 15s: stop, then start);
-          start again keeps memory unless --fresh; see daemon.log
-  exit 64 a usage error (unknown flag, bad --set value, send without keys): nothing happened
-The first stop is a BRIEFING: role, race, kit, capabilities, settings and suggestions. Set your plan, then resume.
-WHILE PAUSED (the keyboard is yours until you resume):
-  screen                     look; status shows settings, effort, plan, hooks, counters and kit
-  send 'keys' | send --hex 1b  play a few keys; a pending --More-- is dismissed first and reported
-  repeat 'Fh' --times 6      a guarded batch: stops at HP loss, a new monster, --More-- or a prompt
-  log 40                     what the loop did and why (oscillation, bans, failed targets)
-  resume [options]           hand it back, with new settings, orders, plan items or hooks
-Never send keys while it runs (pause first). Prayers made through the terminal are noticed on resume;
---set last_prayer=T records one explicitly.
-Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --timeout 300""",
-    "commands": """COMMANDS (all take --dir DIR; state lives there)
-  start --socket S --decide URL [--model M --key-env VAR] [resume options]  launch; blocks until it needs you
-  wait [--timeout S]                      block until the next escalation
-  resume [options] [--timeout S]          continue after an escalation (options below; all optional)
-  pause | stop                            pause at the next step (prints the situation) | stop the loop
-  status                                  JSON: state, settings, effort, hooks, plan, counters, kit
-  log [N]                                 recent inner-loop events
-  screen                                  the screen as the loop sees it        e.g. screen
-  send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
-                                          KEYS take escapes: \\r Enter, \\e Escape, \\xHH   e.g. send '#pray\\r'
-  notes                                   one line per level: stairs seen or imported, holes, hazards
-  --notes-out FILE / --notes-in FILE      (start or resume) keep FILE up to date with this game's level notes /
-                                          use another copy's notes: travel toward stairs it saw, avoid its
-                                          Mines staircase (only for the same game: the first screen must match)
-  mark NAME | keys [--since NAME|T] [--raw]  name a moment | print every key sent since (source-tagged);
-                                          --raw lines replay with --plan replay:FILE
-  postmortem                              the death (or last crisis) in one block, also saved at game over
-                                          as postmortem.txt: killer, HP trail, ladder steps, escalations
-  repeat KEYS --times N [--stop-hp F] [--stop-on REGEX] [--allow-hp-loss]
-                                          while paused: KEYS up to N times (1-50), stopping on HP loss, HP below
-                                          F (0.5), a new monster in view, --More--/prompt, a level change, an
-                                          alarming or matching message      e.g. repeat Fh --times 6
-  probe --socket S --decide URL           one decision on the current screen (look-ups only)
-  serve-local --socket S --nethack BIN    run nethack in a pty behind a terminal socket (testing)
-  help [TOPIC]                            this map; topics: protocol commands settings modes effort plan hooks
-                                          plugins escalations playbook
-  --version                               print the version
-Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions FILE  --plugin FILE
-                --enable KEY  --disable KEY""",
-    "settings": "SETTINGS (--set k=v at start or resume; status shows them)\n" + "\n".join(
-        "  %-14s %-9s %s" % (k, DEFAULTS[k], doc) for k, _, doc in [
+SETTING_DOCS = [
             ("mode", "", "descend | explore | careful (a mode sets only the keys it owns; others are kept)"),
             ("risk", "", "low | normal | high: HP gates and depth lead (e.g. --set risk=high to dive)"),
             ("effort", "", "decision effort: off | low | medium | high (see help effort)"),
@@ -129,6 +79,8 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("pickup_food", "", "1 = pick up known-safe food the hero steps on"),
             ("ranged", "", "1 = fire quivered missiles at hostiles approaching in a line"),
             ("auto", "", "1 = log escalations and play on without pausing (benchmarks only)"),
+            ("report", "", "compact (reason, status, nearby monsters, last messages, an 11x21 map crop) | full "
+                           "(everything and the whole screen); screen shows the whole screen any time"),
             ("pause_on", "", "which escalation codes pause: all | code,code | all,-code,-code "
                              "(help escalations)"),
             ("quiet", "", "seconds of terminal silence that end a key send"),
@@ -139,7 +91,59 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("endgame_secs", "", "in the last this-many seconds of time_left the loop lifts depth caps, "
                                  "takes stairs at HP 50% or more and prefers any descent (one 'endgame' pause)"),
             ("tiebreak_seed", "", "reseed the loop's tie-breaking choices, so a copy explores differently while every "
-                                  "safety rule stays the same (status shows the seed)")]),
+                                  "safety rule stays the same (status shows the seed)")]
+
+HELP = {
+    "protocol": """PROTOCOL
+You are the outer loop; this program is the inner loop. It plays routine NetHack fast and stops when judgment
+is needed. Every blocking command (start, wait, resume) returns at an escalation, at game over or at --timeout:
+  exit 0  paused: an ESCALATION (or BRIEFING) report follows; the keyboard is yours until you resume
+  exit 2  timeout, still playing: call wait again (the line names decision-model trouble, if any)
+  exit 3  game over (or the terminal socket closed)
+  exit 1  no loop in --dir, not running, a setup error, or stuck (no heartbeat for 15s: stop, then start);
+          start again keeps memory unless --fresh; see daemon.log
+  exit 64 a usage error (unknown flag, bad --set value, send without keys): nothing happened
+The first stop is a BRIEFING: role, race, kit, capabilities, settings and suggestions. Set your plan, then resume.
+WHILE PAUSED (the keyboard is yours until you resume):
+  screen                     look; status shows settings, effort, plan, hooks, counters and kit
+  send 'keys' | send --hex 1b  play a few keys; a pending --More-- is dismissed first and reported
+  repeat 'Fh' --times 6      a guarded batch: stops at HP loss, a new monster, --More-- or a prompt
+  log 40                     what the loop did and why (oscillation, bans, failed targets)
+  resume [options]           hand it back, with new settings, orders, plan items or hooks
+Never send keys while it runs (pause first). Prayers made through the terminal are noticed on resume;
+--set last_prayer=T records one explicitly.
+Example turn:  resume --set risk=low --directive "avoid melee with the dwarf" --timeout 300""",
+    "commands": """COMMANDS (all take --dir DIR; state lives there)
+  start --socket S --decide URL [--model M --key-env VAR] [resume options]  launch; blocks until it needs you
+  wait [--timeout S]                      block until the next escalation
+  resume [options] [--timeout S]          continue after an escalation (options below; all optional)
+  pause | stop                            pause at the next step (prints the situation) | stop the loop
+  status                                  JSON: state, settings, effort, hooks, plan, counters, kit
+  log [N]                                 recent inner-loop events
+  screen                                  the screen as the loop sees it        e.g. screen
+  send KEYS | send --hex HEX              keys while paused; prints the screen    e.g. send --hex '04 6c' (kick east)
+                                          KEYS take escapes: \\r Enter, \\e Escape, \\xHH   e.g. send '#pray\\r'
+  notes                                   one line per level: stairs seen or imported, holes, hazards
+  --notes-out FILE / --notes-in FILE      (start or resume) keep FILE up to date with this game's level notes /
+                                          use another copy's notes: travel toward stairs it saw, avoid its
+                                          Mines staircase (only for the same game: the first screen must match)
+  mark NAME | keys [--since NAME|T] [--raw]  name a moment | print every key sent since (source-tagged);
+                                          --raw lines replay with --plan replay:FILE
+  postmortem                              the death (or last crisis) in one block, also saved at game over
+                                          as postmortem.txt: killer, HP trail, ladder steps, escalations
+  repeat KEYS --times N [--stop-hp F] [--stop-on REGEX] [--allow-hp-loss]
+                                          while paused: KEYS up to N times (1-50), stopping on HP loss, HP below
+                                          F (0.5), a new monster in view, --More--/prompt, a level change, an
+                                          alarming or matching message      e.g. repeat Fh --times 6
+  probe --socket S --decide URL           one decision on the current screen (look-ups only)
+  serve-local --socket S --nethack BIN    run nethack in a pty behind a terminal socket (testing)
+  help [TOPIC]                            this map; topics: protocol commands settings modes effort plan hooks
+                                          plugins escalations playbook
+  --version                               print the version
+Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions FILE  --plugin FILE
+                --enable KEY  --disable KEY""",
+    "settings": "SETTINGS (--set k=v at start or resume; status shows them)\n" + "\n".join(
+        "  %-14s %-9s %s" % (k, DEFAULTS[k], doc) for k, _, doc in SETTING_DOCS),
     "modes": "MODES (--mode M resets the mode-owned keys (%s) to defaults, then applies the mode; other settings "
              "such as mines, avoid, dig and effort are kept; --set after --mode wins)\n" % ", ".join(MODE_KEYS) + "\n".join(
         "  %-8s %s" % (m, " ".join("%s=%s" % kv for kv in v.items())) for m, v in MODES.items()) +
@@ -203,14 +207,41 @@ CRISIS ITEMS (one call each instead of hand-typed keys mid-fight)
 HELP["escalations"] = escalation_help()
 
 
+BRIEF_SETTINGS = ("risk", "effort", "mines", "dig", "avoid", "fight_handoff", "milestone", "pause_on", "time_left",
+                  "report")
+
+
+def brief():
+    """The short map an outer loop reads once: protocol, exit codes, commands, the settings used most."""
+    rows = ["nethack-harness %s: a fast NetHack inner loop; you are the outer loop." % __version__,
+            "Every blocking command (start, wait, resume) returns at a pause, at game over or at --timeout:",
+            "  0 paused: a report follows, the keyboard is yours until resume | 2 still playing: wait again",
+            "  3 game over (postmortem tells why) | 1 not running or stuck: stop, then start | 64 usage error",
+            "Commands (all take --dir DIR):",
+            "  start --socket S --decide URL|none [resume options]   wait [--timeout S]   pause   stop   status",
+            "  resume [--set k=v] [--plan ITEM] [--directive TEXT] [--mode M] [--timeout S]",
+            "  screen | send KEYS (\\r Enter, \\e Esc) | repeat KEYS --times N (stops at trouble) | postmortem",
+            "  notes | mark NAME | keys --since NAME | help TOPIC",
+            "Plan items: goal:stairs goal:up goal:rest[:F] goal:search[:N] goal:pray goal:elbereth goal:quaff[:L]",
+            "  goal:retreat goal:fight:DIR[:N] goal:travel:R,C goal:explore[:N] goal:dig keys:TEXT replay:FILE",
+            "Settings used most (now):"]
+    for k in BRIEF_SETTINGS:
+        doc = next((d for name, _, d in SETTING_DOCS if name == k), "")
+        rows.append("  %-14s %-10s %s" % (k, CFG[k], doc if len(doc) <= 72 else doc[:70].rsplit(" ", 1)[0] + " ..."))
+    rows.append("Topics: " + " ".join(HELP) + " | help all: everything")
+    return "\n".join(rows)
+
+
 def help_text(topic=None):
-    if topic:
-        if topic not in HELP:
-            return "unknown topic %s; topics: %s" % (topic, " ".join(HELP))
-        return HELP[topic]
-    return ("nethack-harness %s: a fast NetHack inner loop for an outer-loop agent.\n\n" % __version__ +
-            "\n\n".join(HELP[t] for t in ("protocol", "commands", "settings", "effort", "modes", "plan", "hooks",
-                                           "plugins", "escalations", "playbook")))
+    if topic == "brief" or not topic:
+        return brief()
+    if topic == "all":
+        return ("nethack-harness %s: a fast NetHack inner loop for an outer-loop agent.\n\n" % __version__ +
+                "\n\n".join(HELP[t] for t in ("protocol", "commands", "settings", "effort", "modes", "plan",
+                                               "hooks", "plugins", "escalations", "playbook")))
+    if topic not in HELP:
+        return "unknown topic %s; topics: brief all %s" % (topic, " ".join(HELP))
+    return HELP[topic]
 
 
 class Store:
@@ -884,10 +915,7 @@ def wait(store, timeout, since):
     recent = d.get("recent_ms") or []
     if recent and sorted(recent)[len(recent) // 2] > 1000:
         health += "; slow decision calls (recent ms: %s)" % ",".join(str(x) for x in recent)
-    print("still running%s, call wait again: %s keys, %s decisions, %s model calls (%s ms), max Dlvl %s, "
-          "effort %s, last: %s%s" % (" fine" if not health else "", st.get("keys"), st.get("decisions"),
-                                     st.get("model_calls"), st.get("model_ms"), st.get("max_dlvl"),
-                                     (st.get("settings") or {}).get("effort"), st.get("last"), health))
+    print("running: max Dlvl %s, %s decisions%s; wait again" % (st.get("max_dlvl"), st.get("decisions"), health))
     return 2
 
 
