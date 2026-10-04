@@ -52,6 +52,8 @@ DEFAULTS = {
     "multi_quiet": 0.12,    # seconds of silence that end a multi-turn command (count, travel, run)
     "quiet": 0.06,          # seconds of terminal silence that end a key send
     "last_prayer": -1,      # set to the turn of a prayer made by hand
+    "deadline": 0,          # wall-clock deadline (epoch seconds) set by the outer loop; 0 = none
+    "endgame_secs": 180,    # in the last this-many seconds before the deadline: no depth cap, descend at HP >= 50%
     "tiebreak_seed": -1,    # reseed the loop's tie-breaking choices (a copy then explores differently)
     "auto": 0,              # 1: log escalations and play on without pausing (benchmarks only)
     "pause_on": "all",      # which escalation codes pause: all | code,code | all,-code (help escalations)

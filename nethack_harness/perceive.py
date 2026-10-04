@@ -1,5 +1,6 @@
 """What the loop knows: the screen, the pack, the character, the level's branch, farlook, depth limits."""
 import re
+import time
 
 from . import knowledge as K
 from .level import cheb, Level, travel
@@ -173,6 +174,8 @@ class Perception:
         return None
 
     def mines_policy(self):
+        if self.endgame():
+            return "allow"                 # in the endgame any descent counts
         m = CFG["mines"]
         if m == "auto":
             return "allow" if self.race in ("dwarvish", "gnomish") else "avoid"
@@ -316,14 +319,21 @@ class Perception:
         return xl + pace, "pace", how
 
     def depth_cap(self, xl, hpmax, ac):
-        return self.depth_limits(xl, hpmax, ac)[0]
+        return 99 if self.endgame() else self.depth_limits(xl, hpmax, ac)[0]
+
+    @staticmethod
+    def endgame():
+        """The final endgame_secs before the outer loop's wall-clock deadline: depth caps are lifted, the HP
+        gate for stairs is 0.5 at most, and any descent (the Mines included) is preferred."""
+        return CFG["deadline"] > 0 and time.time() >= CFG["deadline"] - CFG["endgame_secs"]
 
     def descend_ok(self, c):
         lv = c["lv"]
         cap = self.depth_cap(c["xl"], c["hpmax"], c.get("ac", 10))
         lift = self.clock() - (lv.arrived or self.clock()) > CFG["cap_lift"] and \
             (c["xl"] >= 3 or not self.fragile(c["hpmax"], c.get("ac", 10), c["xl"]))
-        return (c["dl"] < cap or lift) and c["hpf"] >= val("descend_hp")
+        hp_gate = min(val("descend_hp"), 0.5) if self.endgame() else val("descend_hp")
+        return (c["dl"] < cap or lift) and c["hpf"] >= hp_gate
 
     def read_engraving(self):
         """What is engraved under the hero, read with ':' (takes no game time); '' when nothing is."""

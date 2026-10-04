@@ -93,6 +93,8 @@ class Candidates:
             branch = lv.downs.get(hero) == "branch"
             escape = th and hpf >= 0.4 and dl < self.depth_cap(c["xl"], c["hpmax"], c["ac"])   # never past the cap
             pr = 7 if escape else 6 if ok else -3
+            if ok and self.endgame():
+                pr = 8
             if branch and policy == "avoid":
                 pr = 0.2
             acts.append(Act("descend", "Go down here to Dlvl %d%s" % (dl + 1, " (Gnomish Mines)" * branch), ">",
@@ -109,6 +111,8 @@ class Candidates:
             label = {"branch": " (Gnomish Mines)", "trapdoor": " (trap door: free descent)"}.get(kind, "")
             keys = travel(hero, p) + (">" if ok else "")      # travel and descend in one send
             pr = (1.5 if th else 5.5 if kind == "trapdoor" else 5) if ok else -2
+            if ok and self.endgame():
+                pr = 7.5           # the clock is nearly out: any descent beats everything but emergencies
             if CFG["mode"] == "explore" and fr and pr > 1.5:
                 pr = 1.5          # explore mode: see the level first
             acts.append(Act("goto_stairs", "Travel to the down stairs %d squares %s%s" % (d, compass(hero, p), label),

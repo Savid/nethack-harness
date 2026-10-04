@@ -22,6 +22,8 @@ REGISTRY = [
          "branch point: two down staircases on Dlvl 4"),
     Spec("depth_jump", r"^depth jump: ", "fell or jumped two or more levels, or well below XL",
          "depth jump: Dlvl 3 -> 6 at XL 2"),
+    Spec("endgame", r"^endgame: ", "the last endgame_secs before the deadline: depth caps lifted",
+         "endgame: 170 s to the deadline: depth caps lifted ..."),
     Spec("depth_gate", r"^depth gate: ", "explored level, depth cap holds", "depth gate: Dlvl 2 is explored ..."),
     Spec("losing_fast", r"^losing fast: (?!the crisis|HP still)", "HP dropping fast (fight_handoff=escalate)",
          "losing fast: HP 7/16, down 6 in 5 turns (jackal)", silenceable=False),

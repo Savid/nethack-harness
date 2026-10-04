@@ -209,6 +209,13 @@ class Stepper:
     def bookkeep(self, v, c):
         """After each look: outcome of the last action, frozen turns, level arrivals, milestones, blindness and
         branch points (the last raise Hard: they always reach the outer loop)."""
+        if not self.endgame():
+            self.endgame_noted = False
+        elif not self.endgame_noted:
+            self.endgame_noted = True
+            left = int(CFG["deadline"] - time.time())
+            raise Hard("endgame: %d s to the deadline: depth caps lifted, stairs at HP 50%% or more, any descent "
+                       "preferred (the Mines included)" % max(0, left))
         if self.anchor is None and c["dl"] == 1 and c["turn"] <= 1:
             self.anchor = anchor_of(v)                 # the game's identity for level notes
         if self.last_seen and self.last_seen[0] == c["dl"]:
@@ -234,8 +241,10 @@ class Stepper:
                         if c["under"] == "?" and not any(K.FELL.search(m) for m in list(self.msgs)[-3:]):
                             lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # came down the stairs
                             c["under"], lv.up = "<", c["hero"]
-                    if dl - self.prev_dl >= 2 or dl > c["xl"] + 3:
-                        branch_reason = "depth jump: Dlvl %d -> %d at XL %d" % (self.prev_dl, dl, c["xl"])
+                    cap = self.depth_cap(c["xl"], c["hpmax"], c["ac"])
+                    if dl - self.prev_dl >= 2 or (dl > cap and self.prev_dl <= cap):
+                        branch_reason = "depth jump: Dlvl %d -> %d at XL %d (depth cap Dlvl %d)" % (
+                            self.prev_dl, dl, c["xl"], cap)
             self.prev_dl = dl
         if c["under"] == "?" and c["turn"] <= 1:
             lv.terr[c["hero"]], lv.tfg[c["hero"]] = "<", "default"   # the game starts on the up stairs

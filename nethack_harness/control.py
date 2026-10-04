@@ -134,6 +134,9 @@ Resume options: --directive TEXT  --mode M  --set k=v  --plan ITEM  --questions 
             ("quiet", "", "seconds of terminal silence that end a key send"),
             ("multi_quiet", "", "seconds of silence that end a count, travel or run (they redraw on the way)"),
             ("last_prayer", "", "turn of a prayer you made by hand"),
+            ("deadline", "", "wall-clock deadline in epoch seconds (e.g. $(($(date +%s)+1200)) for 20 minutes); 0 = none"),
+            ("endgame_secs", "", "in the last this-many seconds before the deadline the loop lifts depth caps, "
+                                 "takes stairs at HP 50% or more and prefers any descent (one 'endgame' pause)"),
             ("tiebreak_seed", "", "reseed the loop's tie-breaking choices, so a copy explores differently while every "
                                   "safety rule stays the same (status shows the seed)")]),
     "modes": "MODES (--mode M resets the mode-owned keys (%s) to defaults, then applies the mode; other settings "
@@ -448,7 +451,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m3" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m4" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():

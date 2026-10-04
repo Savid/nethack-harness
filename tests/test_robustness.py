@@ -623,3 +623,21 @@ class NotesTest(Case):
         self.assertEqual((lb.imported["down"], lb.up, lb.downs.get((3, 3)), lb.traps.get((7, 29))),
                          ([(11, 44)], (4, 9), "branch", "trap door"))
         self.assertIn("down 12,45 [imported]", nh.notes.lines(b))
+
+
+class EndgameTest(Case):
+    def test_deadline_lifts_caps_and_prefers_descent(self):
+        p = nh.Pilot(FakeTerm(), None)
+        p.role = "Tourist"
+        self.assertEqual(p.depth_cap(1, 10, 9), 2)
+        self.assertEqual(p.mines_policy(), "avoid")
+        nh.apply_settings(None, {"deadline": str(int(time.time()) + 100), "endgame_secs": "180"})
+        self.assertTrue(p.endgame())
+        self.assertEqual(p.depth_cap(1, 10, 9), 99)
+        self.assertEqual(p.mines_policy(), "allow")
+        c = {"lv": p.level(3), "xl": 1, "hpmax": 10, "ac": 9, "dl": 6, "hpf": 0.55}
+        self.assertTrue(p.descend_ok(c))
+        nh.apply_settings(None, {"deadline": str(int(time.time()) + 1000)})
+        self.assertFalse(p.endgame())
+        self.assertFalse(p.descend_ok(c))
+        self.assertEqual(nh.escalation.classify("endgame: 170 s to the deadline"), "endgame")
