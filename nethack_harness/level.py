@@ -66,6 +66,7 @@ class Level:
         self.extra_budget = 0                      # search turns granted after an "exhausted" report
         self.stair_ban_until = 0                   # decision index until which this level's stairs are not taken
         self.turns = 0                             # game turns spent here
+        self.gated_since = None                    # turn the depth cap first held the loop on this explored level
         self.hazards = set()                       # never-melee monsters met here (level notes)
         self.imported = {}                         # notes from another copy of this game: "down", "up", "holes"
         self.shop_doors = set()                    # doors (and doorways) of shops: never kicked

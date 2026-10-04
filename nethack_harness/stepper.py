@@ -88,6 +88,10 @@ class Stepper:
                 levels[-2] == levels[-4] and self.max_dl <= max(levels):
             self.level_trail.clear()
             deep, shallow = max(levels[-2:]), min(levels[-2:])
+            if not self.fled_from.get(deep):
+                self.level(shallow).stair_ban_until = self.decisions + 40
+                return "oscillating: Dlvl %d <-> %d %d times; going down is on hold for a while" % (
+                    shallow, deep, len(levels))
             # keep every staircase usable for escape; only hold off going back down for a while
             self.level(shallow).stair_ban_until = self.decisions + 40
             campers = self.fled_from.get(deep) or []
@@ -375,6 +379,8 @@ class Stepper:
                 self.lv_downs_usable(c) and not self.descend_ok(c) and c["hpf"] >= val("descend_hp"):
             cap, _, how = self.depth_limits(c["xl"], c["hpmax"], c["ac"])
             acts.insert(0, self.linger_act(v, c, cap))
+            if lv.gated_since is None:
+                lv.gated_since = c["turn"]
             if self.gate_noted != (dl, c["xl"]):
                 self.gate_noted = (dl, c["xl"])
                 where = "already %d below the cap; it holds here" % (dl - cap) if dl > cap else \

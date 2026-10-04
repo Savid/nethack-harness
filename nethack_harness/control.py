@@ -51,6 +51,8 @@ SETTING_DOCS = [
             ("fragile_lead", "", "pace: descend no deeper than XL + this (+1 at risk=high); the cap is the "
                                  "shallower of this pace and XL + lead"),
             ("pace_xl", "", "from this XL a sturdy hero's pace is XL + fragile_lead + 1"),
+            ("gate_patience", "", "turns held by the depth cap on an explored level before one level more is "
+                                  "allowed (0 = wait for experience)"),
             ("cap_lift", "", "seconds on a level after which the depth lead stops blocking descent "
                              "(never before XL 3 for a fragile hero)"),
             ("potions", "", "1 = quaff known healing potions in emergencies"),

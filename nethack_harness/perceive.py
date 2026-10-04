@@ -372,6 +372,10 @@ class Perception:
         cap = self.depth_cap(c["xl"], c["hpmax"], c.get("ac", 10))
         lift = self.clock() - (lv.arrived or self.clock()) > CFG["cap_lift"] and \
             (c["xl"] >= 3 or not self.fragile(c["hpmax"], c.get("ac", 10), c["xl"]))
+        # patience: gated on an explored level for gate_patience turns allows one level more (never two)
+        if CFG["gate_patience"] and lv.gated_since is not None and c["turn"] - lv.gated_since >= \
+                CFG["gate_patience"] and c["dl"] < cap + 1:
+            lift = True
         hp_gate = min(val("descend_hp"), 0.5) if self.endgame() else val("descend_hp")
         return (c["dl"] < cap or lift) and c["hpf"] >= hp_gate
 
