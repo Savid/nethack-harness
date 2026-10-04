@@ -194,17 +194,24 @@ class Stepper:
     def door_notes(self, c):
         """Locked doors the loop gave up on, and banned actions here: named, with the keys to try by hand."""
         lv, notes = c["lv"], []
-        for q in sorted(lv.locked):
+        hint = False
+        for q in sorted(lv.locked | (lv.shop_doors & set(lv.terr))):
+            if q in lv.shop_doors:
+                if lv.terr.get(q) in ("+", "|", "-") or q in lv.locked:
+                    notes.append("door at %s: closed shop, do not kick (the shopkeeper inside kills)" % pos1(q))
+                continue
             why = "%d kicks failed" % lv.kicks[q] if lv.kicks[q] >= K.KICK_TRIES else \
-                "not kicked (shop or watch)" if not self.kickable(q, c) else "%d kicks so far" % lv.kicks[q]
+                "not kicked (watch)" if not self.kickable(q, c) else "%d kicks so far" % lv.kicks[q]
             notes.append("locked door at %s: %s" % (pos1(q), why))
+            hint = hint or self.kickable(q, c)
         bans = sorted({key for (pos, key), until in lv.bans.items() if pos == c["hero"] and
                        (until == -1 or until > self.decisions)})
         if bans:
             notes.append("banned here: " + ", ".join(bans))
         if not notes:
             return ""
-        return "; " + "; ".join(notes) + " (kick a door by hand: stand beside it, send --hex '04' then the direction)"
+        return "; " + "; ".join(notes) + (" (kick a locked door by hand: stand beside it, send --hex '04' then the "
+                                           "direction; never a closed shop's)" if hint else "")
 
     def bookkeep(self, v, c):
         """After each look: outcome of the last action, frozen turns, level arrivals, milestones, blindness and

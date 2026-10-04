@@ -55,7 +55,7 @@ class Messages:
             if "no shape" in text:
                 lv.no_kick = True
         if re.search(r"[Cc]losed for inventory", text) and v.hero:
-            lv.shop_doors.update(q for _, q in nbrs(v.hero))       # the engraving lies before a shop door
+            self.mark_closed_shop(lv, v.hero)          # the engraving lies before a closed shop's door
         text = re.sub(r'You read: ".*?"|"[^"]*"', "", text)    # engravings and epitaphs are not events
         if K.SHOP_SOUND.search(text):
             lv.has_shop = True                         # a level-wide sound: says nothing about where we stand
@@ -94,6 +94,14 @@ class Messages:
             return self.esc("alarming message: " + text[:160] + (" (%s; prayer: %s)" % (
                 hint, self.prayer_band(v.st.get("turn", 0))) if hint else ""))
         return None
+
+    def mark_closed_shop(self, lv, spot):
+        """'Closed for inventory' is engraved in front of a closed shop's door: every door beside that square is
+        a shop door (kicking it in makes the shopkeeper inside kill the hero)."""
+        lv.closed_shop_spots.add(spot)
+        lv.shop_doors.update(q for _, q in nbrs(spot))
+        lv.has_shop = True
+        self.note("shop", "closed shop: the doors beside %d,%d are never kicked" % (spot[0] + 1, spot[1] + 1))
 
     def answer(self, v):
         """Answer a yes/no prompt from the fixed table; the model never answers prompts."""

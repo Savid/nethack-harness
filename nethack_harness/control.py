@@ -452,7 +452,7 @@ def load_hooks(hooks, questions=(), plugins=(), enable=(), disable=()):
     return problems
 
 
-MEMORY = "%s/m5" % __version__      # bump the suffix when the pickled pilot changes shape
+MEMORY = "%s/m1" % __version__      # bump the suffix when the pickled pilot changes shape
 
 
 def commit():

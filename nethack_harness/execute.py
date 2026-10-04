@@ -102,6 +102,10 @@ class Execution:
         if a.kind == "search":
             lv.credit_search(c["hero"], 15)
         if a.kind == "kick":
+            # read the engraving underfoot first (no game time): a closed shop announces itself there
+            if re.search(r"[Cc]losed for inventory", self.read_engraving()):
+                self.mark_closed_shop(lv, c["hero"])
+                return
             lv.kicks[a.target] += 1
         self.send(a.keys)
         if a.kind in ("explore", "travel"):
