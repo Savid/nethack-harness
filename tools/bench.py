@@ -92,8 +92,9 @@ def play(harn, sock, state, secs, outer, decide, extra):
         m = re.search(r"you are an? (?:\S+ )?(\S+) (\S+) \(", first)
         if m and not role:
             role = m.group(2)
-        if code == 0 and first.startswith("ESCALATION:"):
-            reasons.append(first[len("ESCALATION: "):])
+        m = re.match(r"ESCALATION(?: \[\w+\])?: (.*)", first)
+        if code == 0 and m:
+            reasons.append(m.group(1))
         if code == 3 or code == 1 or time.time() >= end:
             break
         left = max(5, min(60, end - time.time()))
@@ -269,6 +270,8 @@ def summary(results):
         "median turns": med([r["turns"] for r in results]),
         "median turn reaching Dlvl": {dl: (med(v), len(v)) for dl, v in sorted(by_dl.items())},
         "median stuck turns (>=500 without a new deepest level)": med([r["stuck_turns"] for r in results]),
+        "median stuck share of turns": med([round(r["stuck_turns"] / max(1, r["turns"]), 2) for r in results]),
+        "deaths before turn 1000": sum(r["died"] and r["turns"] < 1000 for r in results),
         "median gated turns": med([r["gated_turns"] for r in results]),
         "escalations per game": {k: round(v / n, 1) for k, v in esc.most_common()},
         "median decisions": med([r["decisions"] for r in results]),
