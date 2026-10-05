@@ -1,22 +1,26 @@
 """Transactional session state, command queue and decision records."""
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
 import sqlite3
 import time
 
+INTENT_SCHEMA = 1
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS commands (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS replies (id INTEGER PRIMARY KEY, created REAL NOT NULL, body TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL NOT NULL, source TEXT NOT NULL,
-    request TEXT NOT NULL, response TEXT, choice TEXT, latency REAL, outcome TEXT, after_state TEXT
+CREATE TABLE IF NOT EXISTS records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL NOT NULL, type TEXT NOT NULL, source TEXT NOT NULL,
+    request TEXT, response TEXT, choice TEXT, latency REAL, outcome TEXT, after_state TEXT, intent TEXT,
+    CHECK ((type = 'decision' AND request IS NOT NULL) OR (type = 'intent' AND intent IS NOT NULL))
 );
 CREATE TABLE IF NOT EXISTS inputs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    decision_id INTEGER NOT NULL REFERENCES decisions(id),
+    decision_id INTEGER NOT NULL REFERENCES records(id),
     keys TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS inputs_decision ON inputs(decision_id);
@@ -86,12 +90,21 @@ class Store:
 
     def begin(self, source, request):
         with self.db:
-            return self.db.execute("INSERT INTO decisions(created,source,request) VALUES (?,?,?)",
+            return self.db.execute("INSERT INTO records(created,type,source,request) VALUES (?,'decision',?,?)",
                                    (time.time(), source, encode(request))).lastrowid
+
+    def intent(self, record):
+        """Append a caller intent record; the harness stores it verbatim and never interprets it."""
+        now = time.time()
+        body = dict(record, schema=INTENT_SCHEMA,
+                    recorded_at=datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z"))
+        with self.db:
+            return self.db.execute("INSERT INTO records(created,type,source,intent) VALUES (?,'intent','caller',?)",
+                                   (now, encode(body))).lastrowid
 
     def choice(self, number, choice, response, latency):
         with self.db:
-            self.db.execute("UPDATE decisions SET choice=?,response=?,latency=? WHERE id=?",
+            self.db.execute("UPDATE records SET choice=?,response=?,latency=? WHERE id=?",
                             (choice, encode(response), latency, number))
 
     def input(self, number, keys, source):
@@ -105,13 +118,20 @@ class Store:
 
     def finish(self, number, outcome, after):
         with self.db:
-            self.db.execute("UPDATE decisions SET outcome=?,after_state=? WHERE id=?",
+            self.db.execute("UPDATE records SET outcome=?,after_state=? WHERE id=?",
                             (encode(outcome), encode(after), number))
 
     def records(self, after=0):
-        fields = ("id", "created", "source", "request", "response", "choice", "latency", "outcome", "after")
-        for row in self.db.execute("SELECT * FROM decisions WHERE id>? ORDER BY id", (after,)):
+        """Decision and caller intent records in their shared sequence."""
+        fields = ("id", "created", "type", "source", "request", "response", "choice", "latency", "outcome", "after",
+                  "intent")
+        for row in self.db.execute("SELECT * FROM records WHERE id>? ORDER BY id", (after,)):
             record = dict(zip(fields, row))
+            if record["type"] == "intent":
+                yield dict({key: record[key] for key in ("id", "created", "type", "source")},
+                           intent=json.loads(record["intent"]))
+                continue
+            del record["intent"]
             for key in ("request", "response", "outcome", "after"):
                 if record[key] is not None:
                     record[key] = json.loads(record[key])

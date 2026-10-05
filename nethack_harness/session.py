@@ -54,10 +54,12 @@ class Session:
             return "game_over"
         actions = self.offered()
         supplied = manual or protocol
+        if not supplied and before["phase"] == "play" and self.settings.tools:
+            actions = [action for action in actions if action.tool in self.settings.tools or action.kind == "pause"]
         if supplied and supplied.kind in ("manual", "redraw"):
             actions.append(supplied)
         source = "manual" if manual else "protocol" if protocol or before["phase"] == "more" else "engine"
-        if source != "protocol" and self.objective_progress.exhausted(self.settings.max_action_attempts):
+        if source == "engine" and self.objective_progress.exhausted(self.settings.max_action_attempts):
             self.pending_tool = None
             self.store.write("observation", before)
             return "action_budget"
@@ -79,7 +81,7 @@ class Session:
 
         def record_send(keys, src):
             nonlocal attempt
-            if src == "action" and attempt is None:
+            if src == "action" and attempt is None and source == "engine":
                 if self.objective_progress.exhausted(self.settings.max_action_attempts):
                     raise Boundary("action_budget")
             input_number = self.store.input(number, keys, src)
@@ -172,7 +174,7 @@ class Session:
         normal_boundary = outcome["reason"] in ("completed", "observation_changed", "step_limit", "tool_selected",
                                                 "exploration_boundary", "branch_discovered", "feature_discovered", "prompt",
                                                 "movement_interrupted", "route_changed", "no_observed_effect")
-        if (source != "protocol" and self.objective_progress.exhausted(self.settings.max_action_attempts)
+        if (source == "engine" and self.objective_progress.exhausted(self.settings.max_action_attempts)
                 and normal_boundary):
             outcome["execution_reason"] = outcome["reason"]
             outcome["reason"] = "action_budget"

@@ -41,11 +41,11 @@ class SupervisorBridgeTest(TestCase):
                 board.activate("destination", observation)
                 execution = board.begin(observation, 0)["context"]["execution"]
                 records = [
-                    {"id": 1, "source": "engine", "request": {"state": {"caller_context": {
+                    {"id": 1, "type": "decision", "source": "engine", "request": {"state": {"caller_context": {
                         "execution": {"id": execution["id"]}}}},
                      "inputs": [{"source": "action", "status": "completed", "keys": "l"}],
                      "outcome": {"reason": "action_budget"}},
-                    {"id": 2, "source": "engine", "request": {"state": {"caller_context": context}},
+                    {"id": 2, "type": "decision", "source": "engine", "request": {"state": {"caller_context": context}},
                      "inputs": [{"source": "action", "status": "completed", "keys": "h"}],
                      "outcome": {"reason": "action_budget"}}]
 
@@ -65,7 +65,7 @@ class SupervisorBridgeTest(TestCase):
 
                 document = {"board": board.snapshot()}
                 client = Client()
-                result = step(document, client, lambda _: None, recover=True)
+                result, _ = step(document, client, lambda _: None, recover=True)
                 recovered = GoalBoard(document["board"])
                 self.assertEqual(result["reason"], "review")
                 self.assertEqual(result["outcome"]["foreign_decisions"], [2])
@@ -85,14 +85,12 @@ class SupervisorIntegrationTest(TestCase):
         self.game = FakeGame([frame(column, 10 + column - 22) for column in range(22, 26)])
 
         def choose(request):
-            if not request["state"]["caller_context"]:
-                choice = "pause"
-            else:
-                choice = "move" if request["state"]["decision"]["stage"] == "tool" else "move:l"
+            choice = "move" if request["state"]["decision"]["stage"] == "tool" else "move:l"
             return {"answers": {"action": {"choice": choice}}}
 
         self.endpoint = Endpoint(choose)
-        self.harness("start", "--socket", self.game.path, "--decide", self.endpoint.url, "--timeout", "5", "--quiet", "0.02")
+        self.harness("start", "--paused", "--socket", self.game.path, "--decide", self.endpoint.url, "--timeout", "5",
+                     "--quiet", "0.02")
         self.supervise("init", "--session", self.session)
 
     def tearDown(self):
@@ -135,7 +133,7 @@ class SupervisorIntegrationTest(TestCase):
         self.assertEqual(state["goals"]["right"]["status"], "completed")
         self.assertEqual(state["goals"]["parent"]["status"], "pending")
         self.assertEqual(self.game.inputs, [b"\x12", b"l"])
-        requests = self.endpoint.requests[1:]
+        requests = self.endpoint.requests
         self.assertEqual([r["state"]["decision"]["stage"] for r in requests], ["tool", "arguments"])
         for request in requests:
             context = request["state"]["caller_context"]
@@ -145,6 +143,16 @@ class SupervisorIntegrationTest(TestCase):
         self.supervise("add", "--file", "-", payload=spec("already_there", 23))
         self.assertEqual(self.supervise("activate", "already_there")["reason"], "completed")
         self.assertEqual(self.game.inputs, [b"\x12", b"l"])
+        exported = subprocess.run([sys.executable, str(ROOT / "nethack_harness.py"), "--dir", self.session, "export"],
+                                  capture_output=True, text=True, timeout=40).stdout.splitlines()
+        goals = [record["intent"] for record in map(json.loads, exported)
+                 if record["type"] == "intent" and record["intent"]["goal_id"]]
+        self.assertEqual([(g["goal_id"], g["transition"]) for g in goals], [
+            ("parent", "added"), ("left", "added"), ("left", "activated"), ("right", "added"),
+            ("left", "suspended"), ("right", "activated"), ("right", "completed"),
+            ("already_there", "added"), ("already_there", "activated"), ("already_there", "completed")])
+        self.assertEqual(goals[1]["parent_id"], "parent")
+        self.assertEqual(goals[-1]["reason"], "observation_conditions")
 
     def test_budget_review_then_llm_revision_keeps_progress_across_cli_invocations(self):
         self.supervise("add", "--file", "-", payload=spec("destination", 25, attempts=1))

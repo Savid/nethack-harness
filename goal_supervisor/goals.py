@@ -1,4 +1,5 @@
 """Editable caller-owned goals, explicit activation, and evidence-based outcomes."""
+from collections import Counter
 from copy import deepcopy
 import json
 from uuid import uuid4
@@ -8,33 +9,96 @@ from .conditions import check, validate
 
 CONDITIONS = ("success", "activate_when", "valid_while", "review_when")
 TERMINAL = ("completed", "removed")
-LIMITS = {"action_attempts": 8, "decision_calls_per_action": 8, "steps_per_action": 1}
-SPEC_FIELDS = {"id", "objective", "parent_id", "limits", "metadata", "review_on", *CONDITIONS}
+LIMITS = {"action_attempts": 8, "decision_calls_per_action": 8, "steps_per_action": 1, "idle_attempts": 4}
+SPEC_FIELDS = {"id", "objective", "parent_id", "limits", "metadata", "review_on", "tools", *CONDITIONS}
+WINDOWS = 16
+ATTEMPTS_SHOWN = 12
 
 
 def point(observation):
     return {"fingerprint": observation.get("fingerprint"), "phase": observation.get("phase"),
             "position": observation.get("hero", {}).get("position"),
-            "turn": observation.get("hero", {}).get("turn"), "level": observation.get("level", {}).get("id")}
+            "turn": observation.get("hero", {}).get("turn"), "level": (observation.get("level") or {}).get("id")}
 
 
-def goal_context(goal):
-    context = deepcopy(goal)
-    context["recent_attempts"] = []
-    for window in context.pop("recent_windows"):
-        outcome = window["outcome"]
-        if not outcome["attempts"]:
+def attempt(window):
+    outcome = window["outcome"]
+    result = outcome.get("result", {})
+    action = result.get("action") or {}
+    entry = {"action": action.get("id"), "from": window["before"]["position"], "to": window["after"]["position"],
+             "result": outcome.get("execution_reason") or outcome.get("boundary")}
+    if window["before"]["level"] != window["after"]["level"]:
+        entry["level"] = [window["before"]["level"], window["after"]["level"]]
+    if isinstance(result.get("elapsed_turns"), int):
+        entry["turns"] = result["elapsed_turns"]
+    for key, name in (("changed_fields", "changed"), ("new_terrain", "new_terrain")):
+        if result.get(key):
+            entry[name] = result[key]
+    if outcome.get("uncertain"):
+        entry["uncertain"] = True
+    return entry, action.get("target")
+
+
+def idle(window):
+    """The attempt left position, level and turn as they were (an unknown turn cannot show progress)."""
+    before, after = window["before"], window["after"]
+    return (before["position"] == after["position"] and before["level"] == after["level"] and
+            (before["turn"] == after["turn"] or before["turn"] is None or after["turn"] is None))
+
+
+def idle_streak(goal):
+    """Consecutive idle attempts since the goal was last activated."""
+    count = 0
+    for window in reversed(goal["recent_windows"]):
+        if window["sequence"] <= goal["activated_after_window"]:
+            break
+        if not window["outcome"]["attempts"]:
             continue
-        result = outcome.get("result", {})
-        # Historical pause envelopes describe old windows, not the current authorization.
-        context["recent_attempts"].append({
-            "execution_id": window["id"], "revision": window["revision"],
-            "before": window["before"], "after": window["after"],
-            "attempts": outcome["attempts"], "uncertain": outcome.get("uncertain", False),
-            "execution_reason": outcome.get("execution_reason"),
-            **{key: result[key] for key in ("action", "keys", "steps", "elapsed_turns", "frames",
-                                           "changed_fields", "new_terrain") if key in result}})
-    return context
+        if not idle(window):
+            break
+        count += 1
+    return count
+
+
+def history(goal):
+    """Recent attempts under this goal and actions it selected more than once, with what they achieved."""
+    attempts = [attempt(window) for window in goal["recent_windows"] if window["outcome"]["attempts"]]
+    tries = Counter(entry["action"] for entry, _ in attempts)
+    repeated = [{"action": action, "tries": count,
+                 "moved": sum(entry["from"] != entry["to"] for entry, _ in attempts if entry["action"] == action),
+                 "reached_target": sum(entry["to"] == target for entry, target in attempts
+                                       if entry["action"] == action and target is not None)}
+                for action, count in tries.items() if count > 1]
+    shown = [entry for entry, _ in attempts[-ATTEMPTS_SHOWN:]]
+    return {"recent_attempts": shown, "omitted_attempts": goal["attempts_used"] - len(shown),
+            "repeated_actions": repeated, "idle_streak": idle_streak(goal),
+            "idle_meaning": "consecutive attempts that changed neither position, level nor turn"}
+
+
+def completion(goal, observation):
+    if not goal["success"]:
+        return {"matches": None, "reason": "caller_confirmation_required"}
+    checked = check(goal["success"], observation)
+    return {"matches": checked["matches"], "unmet": [
+        dict(item["condition"], observed=item["observed"]) for item in checked["evidence"] if item["matches"] is not True]}
+
+
+def summary(goal):
+    keys = ("id", "objective", "success", "valid_while", "review_when", "attempts_used")
+    result = {key: deepcopy(goal[key]) for key in keys}
+    result["attempts_remaining"] = goal["limits"]["action_attempts"] - goal["attempts_used"]
+    for key in ("metadata", "tools"):
+        if goal[key]:
+            result[key] = deepcopy(goal[key])
+    return result
+
+
+def stored_outcome(outcome):
+    """Window outcome retained in goal state, without per-key frames and terrain listings."""
+    result = {key: value for key, value in outcome.get("result", {}).items() if key not in ("frames", "keys")}
+    if isinstance(result.get("new_terrain"), list):
+        result["new_terrain"] = len(result["new_terrain"])
+    return dict(outcome, result=result)
 
 
 class GoalBoard:
@@ -99,6 +163,10 @@ class GoalBoard:
                 raise ValueError("goal limits must be positive integers; steps_per_action cannot exceed 64")
         if not isinstance(spec.setdefault("metadata", {}), dict):
             raise ValueError("goal metadata must be an object")
+        tools = spec.setdefault("tools", [])
+        if not isinstance(tools, list) or not all(isinstance(tool, str) and tool.strip() and "," not in tool
+                                                  for tool in tools):
+            raise ValueError("tools must be a list of tool names")
         try:
             json.dumps(spec, allow_nan=False)
         except (TypeError, ValueError):
@@ -110,7 +178,8 @@ class GoalBoard:
         spec = self.spec(spec)
         if spec["id"] in self.state["goals"]:
             raise ValueError("goal id already exists; update or replace it explicitly")
-        goal = dict(spec, revision=1, status="pending", attempts_used=0, windows_used=0, recent_windows=[])
+        goal = dict(spec, revision=1, status="pending", attempts_used=0, windows_used=0, recent_windows=[],
+                    activated_after_window=0)
         self.state["goals"][goal["id"]] = goal
         self.event("added", goal, spec=spec)
         if self.state["active"] == goal["parent_id"] and goal["parent_id"] is not None:
@@ -222,6 +291,7 @@ class GoalBoard:
             self.suspend(self.state["active"], "caller_switched")
         goal = self.goal(identifier)
         goal["status"], self.state["active"] = "active", identifier
+        goal["activated_after_window"] = goal["windows_used"]
         self.event("activated", goal, observation=point(observation))
         return self.assess(observation)
 
@@ -256,6 +326,9 @@ class GoalBoard:
         if goal["attempts_used"] >= goal["limits"]["action_attempts"]:
             self.suspend(goal["id"], "goal_budget_exhausted")
             return dict(result, reason="review", boundary="goal_budget_exhausted")
+        if idle_streak(goal) >= goal["limits"]["idle_attempts"]:
+            self.suspend(goal["id"], "idle_attempts")
+            return dict(result, reason="review", boundary="idle_attempts")
         return dict(result, reason="ready")
 
     def begin(self, observation, after_decision):
@@ -264,20 +337,37 @@ class GoalBoard:
             return assessment
         goal = self.goal(self.state["active"])
         execution = {"id": uuid4().hex, "goal_id": goal["id"], "revision": goal["revision"],
-                     "after_decision": after_decision, "before": point(observation),
-                     "meaning": "This is a newly authorized action window for the active goal. Earlier window"
-                                " boundaries are historical and do not complete the goal. Use the current"
-                                " completion assessment and current observation."}
-        completion = check(goal["success"], observation) if goal["success"] else {
-            "matches": None, "evidence": [], "reason": "caller_confirmation_required"}
-        context = {"goal": goal_context(goal),
-                   "assessment": {"completion": completion,
-                                  "attempts_remaining": goal["limits"]["action_attempts"] - goal["attempts_used"]},
-                   "parents": [{key: deepcopy(parent[key]) for key in SPEC_FIELDS | {"revision"}}
-                               for parent in self.chain(goal["id"])[:-1]], "execution": execution}
+                     "after_decision": after_decision, "before": point(observation)}
+        context = {"goal": summary(goal), "completion": completion(goal, observation), "history": history(goal),
+                   "execution": {"id": execution["id"]}}
+        parents = self.chain(goal["id"])[:-1]
+        if parents:
+            context["parents"] = [{key: deepcopy(parent[key]) for key in
+                                   ("id", "objective", "valid_while", "review_when", "metadata")} for parent in parents]
         self.state["inflight"] = deepcopy(execution)
         self.event("execution_started", goal, execution=execution)
-        return {"reason": "execute", "context": context}
+        return {"reason": "execute", "context": context, "objective": goal["objective"],
+                "limits": deepcopy(goal["limits"]), "tools": list(goal["tools"])}
+
+    def reject(self, execution_id, error):
+        """The harness refused the window before any input, so nothing was attempted."""
+        execution = self.state["inflight"]
+        if not execution or execution["id"] != execution_id:
+            raise ValueError("result does not match the pending execution")
+        goal = self.goal(execution["goal_id"])
+        self.state["inflight"] = None
+        self.event("execution_rejected", goal, execution_id=execution_id, error=error)
+        self.suspend(goal["id"], "harness_rejected", {"error": error})
+        return {"reason": "review", "goal_id": goal["id"], "boundary": "harness_rejected", "error": error}
+
+    def latest(self):
+        """The goal most recently activated, executed, suspended or completed."""
+        for event in reversed(self.state["events"]):
+            if event["kind"] in ("activated", "execution_finished", "suspended", "completed"):
+                goal = self.state["goals"][event["goal_id"]]
+                return {key: deepcopy(goal[key]) for key in
+                        ("id", "status", "objective", "attempts_used", "limits", "tools")}
+        return None
 
     def finish(self, execution_id, observation, outcome, recovered=False):
         execution = self.state["inflight"]
@@ -291,8 +381,9 @@ class GoalBoard:
             raise ValueError("execution result needs a nonnegative attempt count")
         goal["attempts_used"] += attempts
         goal["windows_used"] += 1
-        window = dict(execution, outcome=deepcopy(outcome), after=point(observation))
-        goal["recent_windows"] = (goal["recent_windows"] + [window])[-8:]
+        window = dict(execution, outcome=stored_outcome(outcome), after=point(observation),
+                      sequence=goal["windows_used"])
+        goal["recent_windows"] = (goal["recent_windows"] + [window])[-WINDOWS:]
         self.event("execution_finished", goal, result=window, recovered=recovered)
         self.state["inflight"] = None
         if recovered or outcome.get("uncertain"):

@@ -122,8 +122,10 @@ def run(store):
         if name == "resume":
             if status["state"] != "paused":
                 raise ValueError("resume requires a paused session")
-            if command.get("objective") is not None:
+            if command.get("objective") is not None and command["objective"] != session.settings.objective:
                 session.settings = replace(session.settings, objective=command["objective"])
+                store.intent({"record": "goal", "transition": "set", "objective": command["objective"],
+                              "goal_id": None, "parent_id": None, "reason": None})
             if command.get("review_after_calls") is not None:
                 session.settings = replace(session.settings, review_after_calls=command["review_after_calls"])
             if command.get("max_action_attempts") is not None:
@@ -132,6 +134,8 @@ def run(store):
                 session.settings = replace(session.settings, max_action_steps=command["max_action_steps"])
             if command.get("caller_context") is not None:
                 session.settings = replace(session.settings, caller_context=command["caller_context"])
+            if command.get("tools") is not None:
+                session.settings = replace(session.settings, tools=tuple(command["tools"]))
             session.resume()
             synchronize()
             return "resumed"
@@ -161,8 +165,22 @@ def run(store):
             return {"result": session.last, "observation": session.observe()}
         raise ValueError("unknown command")
 
+    store.intent({"record": "goal", "transition": "set", "objective": settings.objective,
+                  "goal_id": None, "parent_id": None, "reason": None})
     publish()
     synchronize()
+    if config.get("paused") and status["state"] == "running":
+        # Display pages need no decision; the caller receives the first playable observation.
+        for _ in range(32):
+            if session.observe()["phase"] != "more":
+                break
+            reason = session.step()
+            if reason:
+                pause(reason)
+                break
+        if status["state"] == "running":
+            store.write("observation", session.observe())
+            pause("caller_pause")
     try:
         while not stopping:
             for sequence, command in store.pending():

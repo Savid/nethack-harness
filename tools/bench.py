@@ -63,7 +63,7 @@ def run_game(args, seed):
                 store = Store(state)
                 try:
                     status = store.read("status", {})
-                    records = list(store.records())
+                    records = [record for record in store.records() if record["type"] == "decision"]
                 finally:
                     store.close()
                 latencies = [r["latency"] for r in records if r["source"] == "engine" and r["latency"] is not None]

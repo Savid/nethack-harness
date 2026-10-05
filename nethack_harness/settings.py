@@ -3,6 +3,8 @@ import math
 import json
 from dataclasses import dataclass, asdict, field
 
+from .tools import TOOL_NAMES
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -13,6 +15,7 @@ class Settings:
     review_after_calls: int = 0
     max_action_attempts: int = 0
     caller_context: dict = field(default_factory=dict)
+    tools: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.objective, str) or not self.objective.strip():
@@ -27,6 +30,12 @@ class Settings:
             raise ValueError("review_after_calls must be a nonnegative integer (0 disables the budget)")
         if type(self.max_action_attempts) is not int or self.max_action_attempts < 0:
             raise ValueError("max_action_attempts must be a nonnegative integer (0 disables the budget)")
+        if not isinstance(self.tools, (list, tuple)) or not all(isinstance(t, str) for t in self.tools):
+            raise ValueError("tools must be a list of tool names")
+        unknown = sorted(set(self.tools) - TOOL_NAMES)
+        if unknown:
+            raise ValueError("unknown tools: %s; choose from %s" % (", ".join(unknown), ", ".join(sorted(TOOL_NAMES))))
+        object.__setattr__(self, "tools", tuple(dict.fromkeys(self.tools)))
         if not isinstance(self.caller_context, dict):
             raise ValueError("caller_context must be a JSON object")
         try:

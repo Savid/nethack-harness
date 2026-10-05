@@ -25,13 +25,46 @@ def print_value(value):
     print(value if isinstance(value, str) else json.dumps(value, indent=2))
 
 
-def wait(store, timeout):
+TRANSITIONS = ("set", "added", "activated", "updated", "suspended", "completed", "removed", "replaced")
+
+
+def read_text(text):
+    return sys.stdin.read() if text == "-" else text
+
+
+def goal_records(value):
+    """Validate caller goal transitions: one object or a list of them."""
+    items = value if isinstance(value, list) else [value]
+    records = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) - {"transition", "objective", "goal_id", "parent_id", "reason"}:
+            raise ValueError("goal records accept transition, objective, goal_id, parent_id and reason")
+        if item.get("transition") not in TRANSITIONS:
+            raise ValueError("transition must be one of " + ", ".join(TRANSITIONS))
+        if not isinstance(item.get("objective"), str) or not item["objective"].strip():
+            raise ValueError("goal records need objective text")
+        for key in ("goal_id", "parent_id", "reason"):
+            if item.get(key) is not None and not isinstance(item[key], str):
+                raise ValueError(key + " must be text")
+        records.append({"record": "goal", "transition": item["transition"], "objective": item["objective"],
+                        "goal_id": item.get("goal_id"), "parent_id": item.get("parent_id"), "reason": item.get("reason")})
+    return records
+
+
+def tool_list(text):
+    return [] if text == "all" else [name for name in text.split(",") if name]
+
+
+def wait(store, timeout, records_after=None):
     end = time.monotonic() + timeout
     while True:
         status = store.read("status", {})
         state = status.get("state")
         if state in ("paused", "ended"):
-            print_value({"status": status, "observation": store.read("observation")})
+            result = {"status": dict(status, alive=alive(status)), "observation": store.read("observation")}
+            if records_after is not None:
+                result["records"] = list(store.records(records_after))
+            print_value(result)
             return 3 if state == "ended" else 0
         if state == "stopped" or (status and not alive(status)):
             print("session is not running; inspect daemon.log")
@@ -72,6 +105,8 @@ def parser():
     start.add_argument("--model")
     start.add_argument("--key-env", help="environment variable containing the endpoint bearer key")
     start.add_argument("--objective", default="Play NetHack.")
+    start.add_argument("--paused", action="store_true", help="pause before the first decision request")
+    start.add_argument("--tools", type=tool_list, default=[], help="comma-separated tools the engine may choose; all removes the limit")
     start.add_argument("--context-file", help="JSON object to pass through as caller context; - reads stdin")
     start.add_argument("--decision-timeout", type=float, default=10)
     start.add_argument("--quiet", type=float, default=0.06)
@@ -85,6 +120,8 @@ def parser():
     resume.add_argument("--max-action-steps", type=int, help="replace the selected action step bound")
     resume.add_argument("--review-after-calls", type=int, help="replace the caller review budget; 0 disables")
     resume.add_argument("--max-action-attempts", type=int, help="replace the action attempt budget; 0 disables")
+    resume.add_argument("--tools", type=tool_list, help="replace the tools the engine may choose; all removes the limit")
+    resume.add_argument("--records-after", type=int, help="once paused, also print decision records after this ID")
     resume.add_argument("--timeout", type=float, default=30)
     sub.add_parser("wait", help="wait for a pause or game over").add_argument("--timeout", type=float, default=30)
     for name, description in (("pause", "return control at the next action boundary"),
@@ -97,6 +134,15 @@ def parser():
     export = sub.add_parser("export", help="export decision records as JSONL")
     export.add_argument("--out", help="output file; defaults to stdout")
     export.add_argument("--after", type=int, default=0, help="export only decision IDs greater than this ID")
+    note = sub.add_parser("note", help="record a caller note verbatim, such as a plan or lesson")
+    note.add_argument("--kind", required=True, help="caller label, for example plan, lesson, hypothesis or observation")
+    note.add_argument("--text", required=True, help="note text; - reads stdin")
+    purpose = sub.add_parser("purpose", help="record why this session exists")
+    purpose.add_argument("--kind", required=True, help="caller label, for example main, checkpoint, trial or scout")
+    purpose.add_argument("--about", help="what this session is for")
+    purpose.add_argument("--parent", help="the session or record this one derives from")
+    goal = sub.add_parser("goal", help="record caller goal transitions from a JSON object or list")
+    goal.add_argument("--file", required=True, help="JSON file; - reads stdin")
     sub.add_parser("help", help="show the command interface")
     local = sub.add_parser("serve-local", help="serve a local NetHack terminal over a Unix socket")
     local.add_argument("--socket", required=True)
@@ -130,7 +176,7 @@ def main(argv=None):
             Settings(caller_context=caller_context)
         if args.command == "start":
             settings = Settings(args.objective, args.decision_timeout, args.quiet, args.max_action_steps,
-                                args.review_after_calls, args.max_action_attempts, caller_context or {})
+                                args.review_after_calls, args.max_action_attempts, caller_context or {}, args.tools)
             Engine(args.decide)
             if args.key_env and not os.environ.get(args.key_env):
                 raise ValueError("the endpoint key environment variable is empty")
@@ -142,6 +188,20 @@ def main(argv=None):
             Settings(max_action_attempts=args.max_action_attempts)
         if args.command == "resume" and args.max_action_steps is not None:
             Settings(max_action_steps=args.max_action_steps)
+        if args.command == "resume" and args.tools is not None:
+            Settings(tools=args.tools)
+        if args.command == "resume" and args.records_after is not None and args.records_after < 0:
+            raise ValueError("--records-after must be nonnegative")
+        intents = None
+        if args.command == "note":
+            intents = [{"record": "note", "kind": args.kind, "text": read_text(args.text)}]
+        elif args.command == "purpose":
+            intents = [{"record": "purpose", "kind": args.kind, "about": args.about, "parent": args.parent}]
+        elif args.command == "goal":
+            intents = goal_records(json.load(sys.stdin) if args.file == "-" else json.load(open(args.file)))
+        if intents and not all(isinstance(value, str) and value.strip() for value in
+                               (item.get("kind", "goal") for item in intents)):
+            raise ValueError("kind must be nonempty text")
         if args.command == "export" and args.after < 0:
             raise ValueError("--after must be nonnegative")
         if args.command == "send":
@@ -152,8 +212,14 @@ def main(argv=None):
             raise ValueError("timeout must be between 0 and 86400 seconds")
     except (ValueError, OSError) as e:
         p.error(str(e))
+    if intents is not None and not os.path.exists(os.path.join(args.dir, "session.sqlite3")):
+        print("no session in this directory", file=sys.stderr)
+        return 1
     store = Store(args.dir)
     try:
+        if intents is not None:
+            print_value({"records": [store.intent(item) for item in intents]})
+            return 0
         if args.command == "start":
             with open(store.path("daemon.lock"), "a") as lock:
                 try:
@@ -163,7 +229,7 @@ def main(argv=None):
                 if store.read("config") is not None:
                     raise ValueError("this directory contains a session; choose a new --dir")
                 store.write("config", {"socket": args.socket, "endpoint": args.decide, "model": args.model,
-                                       "key_env": args.key_env, "settings": settings.as_dict()})
+                                       "key_env": args.key_env, "paused": args.paused, "settings": settings.as_dict()})
                 spawn(store, lock)
             for _ in range(150):
                 if store.read("status"):
@@ -190,8 +256,8 @@ def main(argv=None):
         elif args.command == "resume":
             send_command(store, "resume", objective=args.objective, review_after_calls=args.review_after_calls,
                          max_action_attempts=args.max_action_attempts, max_action_steps=args.max_action_steps,
-                         caller_context=caller_context)
-            return wait(store, args.timeout)
+                         caller_context=caller_context, tools=args.tools)
+            return wait(store, args.timeout, args.records_after)
         else:
             values = {"action": args.action} if args.command == "act" else {"keys": args.keys} if args.command == "send" else {}
             print_value(send_command(store, args.command, **values))

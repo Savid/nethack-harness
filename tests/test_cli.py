@@ -186,6 +186,66 @@ class DaemonTest(TestCase):
         self.assertEqual(state["status"]["reason"], "review_budget")
         self.assertIsNone(state["observation"]["objective_progress"]["attempts_remaining"])
 
+    def test_paused_start_waits_for_caller_and_resume_limits_tools_and_reports_its_records(self):
+        self.endpoint.close()
+
+        def choose(request):
+            stage = request["state"]["decision"]["stage"]
+            return {"answers": {"action": {"choice": "search" if stage == "tool" else "search:1"}}}
+
+        self.endpoint = Endpoint(choose)
+        state = json.loads(self.start("--paused").stdout)
+        self.assertEqual((state["status"]["reason"], state["observation"]["phase"]), ("caller_pause", "play"))
+        self.assertEqual(self.endpoint.requests, [])
+        result = cli(self.state, "resume", "--tools", "search,wait", "--max-action-attempts", "1",
+                     "--records-after", "0", "--timeout", "5")
+        state = json.loads(result.stdout)
+        self.assertEqual(state["status"]["reason"], "action_budget")
+        self.assertEqual(set(self.endpoint.requests[0]["questions"]["action"]["criteria"]), {"search", "wait", "pause"})
+        engine = [record for record in state["records"] if record["source"] == "engine"]
+        self.assertEqual([record["choice"] for record in engine], ["search", "search:1"])
+        self.assertEqual(state["records"], [json.loads(line) for line in cli(self.state, "export").stdout.splitlines()])
+        cli(self.state, "resume", "--tools", "all", "--max-action-attempts", "1", "--timeout", "5")
+        self.assertIn("move", self.endpoint.requests[2]["questions"]["action"]["criteria"])
+        result = cli(self.state, "resume", "--tools", "search,flarp")
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("unknown tools: flarp", result.stderr)
+
+    def test_caller_intent_records_share_the_decision_sequence_and_survive_a_copied_session(self):
+        self.start("--paused", "--objective", "Find the stairs.")
+        note = cli(self.state, "note", "--kind", "lesson", "--text", "Kick locked doors.\nThen look.")
+        self.assertEqual(note.returncode, 0, note.stderr)
+        cli(self.state, "resume", "--max-action-attempts", "1", "--timeout", "5")
+        goal = subprocess.run([sys.executable, str(ROOT / "nethack_harness.py"), "--dir", self.state, "goal", "--file", "-"],
+                              input=json.dumps([{"transition": "added", "objective": "Go down.", "goal_id": "g1"},
+                                                {"transition": "activated", "objective": "Go down.", "goal_id": "g1"}]),
+                              capture_output=True, text=True, timeout=40)
+        self.assertEqual(goal.returncode, 0, goal.stderr)
+        records = [json.loads(line) for line in cli(self.state, "export").stdout.splitlines()]
+        self.assertEqual([record["id"] for record in records], sorted(record["id"] for record in records))
+        intents = [record["intent"] for record in records if record["type"] == "intent"]
+        self.assertEqual([(i["record"], i.get("transition") or i.get("kind")) for i in intents],
+                         [("goal", "set"), ("note", "lesson"), ("goal", "added"), ("goal", "activated")])
+        self.assertEqual(intents[1]["text"], "Kick locked doors.\nThen look.")
+        self.assertTrue(all(i["schema"] == 1 and i["recorded_at"].endswith("Z") for i in intents))
+        note_id = next(r["id"] for r in records if r["type"] == "intent" and r["intent"]["record"] == "note")
+        later = [json.loads(line) for line in cli(self.state, "export", "--after", str(note_id)).stdout.splitlines()]
+        self.assertEqual(later, [r for r in records if r["id"] > note_id])
+        self.assertEqual(cli(self.state, "goal", "--file", "/dev/null").returncode, 64)
+        cli(self.state, "stop")
+        copy = os.path.join(self.directory.name, "copy")
+        os.makedirs(copy)
+        for name in ("session.sqlite3", "session.sqlite3-wal"):
+            if os.path.exists(os.path.join(self.state, name)):
+                with open(os.path.join(self.state, name), "rb") as source, open(os.path.join(copy, name), "wb") as target:
+                    target.write(source.read())
+        self.assertEqual(cli(copy, "purpose", "--kind", "trial", "--about", "Try the east door.").returncode, 0)
+        copied = [json.loads(line) for line in cli(copy, "export").stdout.splitlines()]
+        self.assertEqual(copied[:-1], records)
+        self.assertEqual(copied[-1]["intent"]["kind"], "trial")
+        self.assertEqual(cli(os.path.join(self.directory.name, "absent"), "note", "--kind", "plan", "--text", "x").returncode, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "absent")))
+
     def test_pause_manual_action_resume_export_and_stop(self):
         result = self.start()
         self.assertEqual(json.loads(result.stdout)["status"]["reason"], "requested_pause")
@@ -197,8 +257,11 @@ class DaemonTest(TestCase):
         self.assertEqual(self.endpoint.requests[-1]["state"]["objective"], "Explore the dungeon")
         result = cli(self.state, "export")
         records = [json.loads(line) for line in result.stdout.splitlines()]
-        self.assertEqual([row["source"] for row in records], ["protocol", "engine", "manual", "engine"])
-        self.assertEqual(records[0]["inputs"], [{"keys": "\x12", "source": "protocol", "status": "completed"}])
+        self.assertEqual([(row["type"], row["source"]) for row in records], [
+            ("intent", "caller"), ("decision", "protocol"), ("decision", "engine"), ("decision", "manual"),
+            ("intent", "caller"), ("decision", "engine")])
+        self.assertEqual([records[i]["intent"]["objective"] for i in (0, 4)], ["Play NetHack.", "Explore the dungeon"])
+        self.assertEqual(records[1]["inputs"], [{"keys": "\x12", "source": "protocol", "status": "completed"}])
         self.assertEqual(cli(self.state, "stop").returncode, 0)
         store = Store(self.state)
         try:

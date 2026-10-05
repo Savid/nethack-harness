@@ -293,6 +293,18 @@ class SessionTest(TestCase):
         self.assertEqual(record["choice"], "manual")
         self.assertEqual(record["inputs"][0]["keys"], "s")
 
+    def test_caller_input_is_not_refused_by_the_engine_attempt_budget(self):
+        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
+                                        "search" if request["state"]["decision"]["stage"] == "tool" else "search:1"}}})
+        session.settings = replace(session.settings, max_action_attempts=1)
+        self.assertEqual(session.step(), None)
+        self.assertEqual(session.step(), "action_budget")
+        session.step(manual=Action("manual", "Caller input", "manual", "\x04l"))
+        self.assertEqual(session.term.sent, ["s", "\x04l"])
+        self.assertEqual(session.last["source"], "manual")
+        self.assertEqual(session.step(), "action_budget")
+        self.assertEqual(len(endpoint.requests), 2)
+
     def test_manual_catalogue_action_is_revalidated_after_polling(self):
         session, endpoint = self.session(lambda _: {})
         session.observe()

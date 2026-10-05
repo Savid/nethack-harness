@@ -3,6 +3,7 @@ from copy import deepcopy
 
 from goal_supervisor.conditions import check
 from goal_supervisor.goals import GoalBoard
+from goal_supervisor.harness import Rejected
 from goal_supervisor.runner import step
 
 
@@ -119,7 +120,7 @@ class GoalTest(TestCase):
         self.assertEqual(board.goal("destination")["attempts_used"], 2)
         board.activate("destination", observed(6))
         context = board.begin(observed(6), 4)["context"]
-        self.assertEqual(context["goal"]["revision"], 2)
+        self.assertEqual(context["goal"]["attempts_remaining"], 1)
         result = board.finish(context["execution"]["id"], observed(7), {"boundary": "action_budget", "attempts": 1})
         self.assertEqual(result["reason"], "completed")
         self.assertEqual(board.goal("destination")["attempts_used"], 3)
@@ -135,35 +136,70 @@ class GoalTest(TestCase):
         self.assertEqual(board.state["events"][-1]["source"], "observation_conditions")
         self.assertEqual(board.begin(observed(5), 0)["reason"], "no_active_goal")
 
-    def test_new_window_reports_unfinished_goal_and_prior_action_without_old_stop_envelope(self):
+    def test_new_window_reports_unfinished_goal_and_prior_actions_without_old_stop_envelopes(self):
         board = GoalBoard()
-        board.add(destination(column=7))
+        board.add(destination(column=9, attempts=8))
         board.activate("destination", observed())
-        first = board.begin(observed(), 0)["context"]
-        outcome = {"boundary": "action_budget", "execution_reason": "completed", "attempts": 1,
-                   "result": {"reason": "action_budget", "review": {"limit_attempts": 1},
-                              "action": {"id": "move:l"}, "keys": [{"keys": "l", "source": "action"}],
-                              "frames": [{"message": "Observed result"}]}}
-        board.finish(first["execution"]["id"], observed(5), outcome)
-        second = board.begin(observed(5), 2)["context"]
-        self.assertFalse(second["assessment"]["completion"]["matches"])
-        self.assertEqual(second["assessment"]["attempts_remaining"], 2)
-        prior = second["goal"]["recent_attempts"][0]
-        self.assertEqual(prior["after"]["position"], [3, 5])
-        self.assertEqual(prior["action"]["id"], "move:l")
-        self.assertEqual(prior["frames"], outcome["result"]["frames"])
-        self.assertEqual(prior["execution_reason"], "completed")
-        self.assertNotIn("review", prior)
-        self.assertNotIn("recent_windows", second["goal"])
-        self.assertEqual(board.goal("destination")["recent_windows"][0]["outcome"], outcome)
-        self.assertEqual(first["goal"]["recent_attempts"], [])
+        column = 4
+        for target, moved in ((7, True), (7, False), (5, True)):
+            context = board.begin(observed(column), 0)["context"]
+            if column == 4:
+                self.assertEqual(context["history"]["recent_attempts"], [])
+            outcome = {"boundary": "action_budget", "execution_reason": "observation_changed", "attempts": 1,
+                       "result": {"reason": "action_budget", "review": {"limit_attempts": 1}, "elapsed_turns": 1,
+                                  "action": {"id": "travel:3,%d" % target, "target": [3, target]},
+                                  "keys": [{"keys": "ml", "source": "action"}], "frames": [{"message": "Observed"}],
+                                  "changed_fields": ["entities"]}}
+            column += moved
+            board.finish(context["execution"]["id"], observed(column), outcome)
+        current = board.begin(observed(column), 2)["context"]
+        self.assertFalse(current["completion"]["matches"])
+        self.assertEqual(current["completion"]["unmet"],
+                         [dict(equals(["hero", "position"], [3, 9]), observed=[3, column])])
+        self.assertEqual(current["goal"]["attempts_remaining"], 5)
+        prior = current["history"]["recent_attempts"]
+        self.assertEqual(prior[0], {"action": "travel:3,7", "from": [3, 4], "to": [3, 5],
+                                    "result": "observation_changed", "turns": 1, "changed": ["entities"]})
+        self.assertEqual(current["history"]["repeated_actions"],
+                         [{"action": "travel:3,7", "tries": 2, "moved": 1, "reached_target": 0}])
+        self.assertNotIn("frames", board.goal("destination")["recent_windows"][0]["outcome"]["result"])
+        self.assertEqual(set(current), {"goal", "completion", "history", "execution"})
 
         unverified = GoalBoard()
         unverified.add({"id": "inspect", "objective": "Inspect the area."})
         unverified.activate("inspect", observed())
-        current = unverified.begin(observed(), 0)["context"]["assessment"]["completion"]
-        self.assertIsNone(current["matches"])
-        self.assertEqual(current["reason"], "caller_confirmation_required")
+        current = unverified.begin(observed(), 0)["context"]["completion"]
+        self.assertEqual(current, {"matches": None, "reason": "caller_confirmation_required"})
+
+    def test_idle_attempts_hand_back_until_the_caller_reactivates(self):
+        board = GoalBoard()
+        board.add(dict(destination(column=9, attempts=20), limits={"action_attempts": 20, "idle_attempts": 2}))
+        board.activate("destination", observed())
+
+        def window(after):
+            context = board.begin(observed(), 0)["context"]
+            return board.finish(context["execution"]["id"], after,
+                                {"boundary": "action_budget", "attempts": 1, "result": {"action": {"id": "move:k"}}})
+
+        self.assertEqual(window(observed())["reason"], "ready")
+        self.assertEqual(window(dict(observed(), fingerprint="message changed"))["boundary"], "idle_attempts")
+        self.assertEqual(board.goal("destination")["status"], "suspended")
+        self.assertEqual(board.activate("destination", observed())["reason"], "ready")
+        waited = observed()
+        waited["hero"] = dict(waited["hero"], turn=waited["hero"]["turn"] + 1)
+        self.assertEqual(window(waited)["reason"], "ready")
+        self.assertEqual(board.begin(observed(), 0)["context"]["history"]["idle_streak"], 0)
+
+    def test_latest_names_the_goal_most_recently_worked(self):
+        board = GoalBoard()
+        self.assertIsNone(board.latest())
+        board.add(destination("first", column=9))
+        board.add(destination("second", column=9))
+        board.activate("first", observed())
+        board.add(destination("third", column=9))
+        self.assertEqual(board.latest()["id"], "first")
+        board.activate("second", observed())
+        self.assertEqual(board.latest()["id"], "second")
 
     def test_caller_completion_is_attributed_and_never_inferred_from_missing_predicates(self):
         board = GoalBoard()
@@ -226,18 +262,15 @@ class RunnerTest(TestCase):
         class Client:
             executions = 0
 
-            def paused(self):
-                return {"state": "paused", "last": {"decision": 10}}
+            def snapshot(self):
+                return {"state": "paused", "last": {"decision": 10}}, observed()
 
-            def observe(self):
-                return observed()
-
-            def execute(self, context):
+            def execute(self, preparation):
                 self.executions += 1
                 raise OSError("response lost after input")
 
             def recover(self, execution):
-                return observed(), {"boundary": "caller_pause", "attempts": 1, "uncertain": True}
+                return {"state": "paused"}, observed(), {"boundary": "caller_pause", "attempts": 1, "uncertain": True}
 
         client = Client()
 
@@ -253,7 +286,7 @@ class RunnerTest(TestCase):
                           lambda: step(deepcopy(disk), client, save)):
             with self.assertRaises(ValueError):
                 operation()
-        result = step(deepcopy(disk), client, save, recover=True)
+        result, _ = step(deepcopy(disk), client, save, recover=True)
         self.assertEqual(result["reason"], "review")
         self.assertEqual(client.executions, 1)
         recovered = GoalBoard(disk["board"])
@@ -268,14 +301,34 @@ class RunnerTest(TestCase):
         board.activate("destination", observed())
 
         class Client:
-            def paused(self):
-                return {"state": "paused"}
+            def snapshot(self):
+                return {"state": "paused"}, observed(5)
 
-            def observe(self):
-                return observed(5)
-
-            def execute(self, context):
+            def execute(self, preparation):
                 raise AssertionError("goal was already satisfied")
 
-        result = step({"board": board.snapshot()}, Client(), lambda document: None)
+        result, _ = step({"board": board.snapshot()}, Client(), lambda document: None)
         self.assertEqual(result["reason"], "completed")
+
+    def test_rejected_window_sends_nothing_and_hands_back_without_recovery(self):
+        board = GoalBoard()
+        board.add(dict(destination(), tools=["flarp"]))
+        board.activate("destination", observed())
+        disk = {"board": board.snapshot()}
+
+        class Client:
+            def snapshot(self):
+                return {"state": "paused", "last": {"decision": 3}}, observed()
+
+            def execute(self, preparation):
+                self.tools = preparation["tools"]
+                raise Rejected("unknown tools: flarp")
+
+        client = Client()
+        result, _ = step(disk, client, lambda document: None)
+        self.assertEqual((result["reason"], result["boundary"]), ("review", "harness_rejected"))
+        self.assertEqual(client.tools, ["flarp"])
+        rejected = GoalBoard(disk["board"])
+        self.assertIsNone(rejected.state["inflight"])
+        self.assertEqual(rejected.goal("destination")["attempts_used"], 0)
+        rejected.update("destination", {"tools": ["travel"]})

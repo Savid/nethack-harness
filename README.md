@@ -73,7 +73,9 @@ python3 nethack_harness.py --dir /tmp/game-session start \
 
 For a hosted endpoint, add `--model NAME --key-env ENVIRONMENT_VARIABLE`.
 The bearer key stays in the environment and is not recorded in session data.
-Use a new session directory for each `start`.
+Use a new session directory for each `start`. `start --paused` dismisses display
+pages, publishes the first observation and pauses before any decision request, so a
+caller can attach and set the first objective with `resume`.
 
 The daemon runs independently of the shell command. `start`, `wait` and `resume`
 wait for a pause, game over, or `--timeout` (30 seconds by default).
@@ -115,6 +117,12 @@ flag preserves the limit; 0 disables it, and is the default. Errors and terminal
 outcomes retain their more specific reasons. Exhaustion does not declare the
 objective achieved or failed.
 
+`--tools LIST` on `start` or `resume` limits the tools the engine may choose during
+normal play to a comma-separated list such as `travel,explore,move,open,kick,search`;
+`pause` stays available and game prompts still offer all of their answers. Resume
+without the flag preserves the list; `--tools all` removes the limit. Unknown names
+are rejected. `actions`, `act` and `send` are not limited.
+
 `--context-file FILE` on `start` or `resume` supplies an arbitrary JSON object
 as `state.caller_context` on every decision request, including prompt and argument
 selection. `-` reads stdin. The adapter passes this caller-owned context through
@@ -122,6 +130,8 @@ without interpreting goals or conditions. Resume preserves it when omitted;
 an empty object clears it. `resume --max-action-steps N` changes the per-action
 step bound for subsequent choices. `export --after ID` exports only newer
 decision records, allowing a caller to reconcile a specific execution window.
+`resume --records-after ID` adds those records to the status and observation it
+prints once paused, so one command can run and report a bounded window.
 
 The terminal should use an 80×24 TTY with standard keyboard bindings, letter
 movement, standard menu selection markers, colour, the turn counter and pet
@@ -134,10 +144,15 @@ playground must be supplied separately.
 Normal-play choices include individual moves and attacks, opening or kicking a
 door, using items, casting, engraving, praying, inspecting game information,
 bounded searching/waiting and travel toward explicit known map targets.
-Travel destinations include squares beside closed doors; a destination remains
-offered for the final step of its route.
+Travel destinations include squares beside closed doors, reachable objects, and
+the edge of known terrain: a known square next to one that has never shown a
+glyph. A square seen under a monster or object is not unknown, and a square the
+hero has stood on is not an edge, because standing there shows all of its
+neighbours. Routes may cross squares seen only under objects. A destination
+remains offered for the final step of its route.
 Corridors expose endpoints and junctions as destinations. Interior corridor
 tiles remain part of routes without each becoming another destination choice.
+Corridor squares connect cardinally, and diagonally where no cardinal path joins them.
 Move commands can bump into or attack occupants according to game mechanics.
 Travel uses movement without attacks along an unweighted known route. Both can
 fail or reveal new information; the result is returned to the engine.
@@ -148,17 +163,22 @@ commands remain available for the engine to choose.
 `explore:row,column` selects a known corridor frontier. It follows the route to
 that square, then follows newly revealed corridor tiles within the same command
 budget. Ordinary corridor and wall discoveries do not interrupt this action.
-It returns on a newly discovered room or feature, changed entities or hero
-state, messages, prompts, a blocked move, or caller interruption. At a branch
-it returns without choosing a branch. Continuation uses cardinal corridor
-connections and does not revisit terrain known before the action. If there is
+It returns on a newly discovered room or feature, an arriving monster, changed
+hero state, messages, prompts, a blocked move, or caller interruption. At a branch
+it returns without choosing a branch. Continuation follows corridor connections,
+cardinal ones first, and does not revisit terrain known before the action. If there is
 no newly revealed continuation, it reports an exploration boundary. Results
 include the stopping position and newly observed terrain. Room-wide exploration
 is not currently an action.
 
 Attacks are one command. Travel, search and wait can execute several commands up
-to the selected bound. They stop early on changed hero stats, conditions,
-visible entities, known terrain, level, messages, prompts, movement failure or caller interruption.
+to the selected bound. They stop early on changed hero stats, conditions, level,
+messages, prompts, movement failure or caller interruption, and when a monster
+arrives: one more of a glyph and colour is in view, or adjacent to the hero, than
+when the action began. Monsters already in view moving about, such as a following
+pet, and objects they cover or uncover do not stop them. Search and wait also stop
+on any terrain change; travel stops on newly seen features, doors and structural
+obstacles but not on ordinary floor, wall or corridor discoveries.
 Atomic game commands can themselves consume multiple turns; actual elapsed turns
 are recorded separately from command count.
 
@@ -237,10 +257,14 @@ attributes: the terminal provides no stable monster identity. Prayer requests
 remain recorded throughout the session, without assuming they succeeded.
 
 Retaining information is separate from including it in every request. Every
-decision receives the current level's detailed memory and a compact landmark
-and connection index for all known levels. Other levels' full terrain stays in
-the observer until revisited. Recent messages and actions are bounded; the full
-decision trace is written to SQLite. Starting a fresh harness session resets
+decision receives the current screen map, which shows remembered terrain, the
+current level's inspections, searches and structural obstacles, and a compact
+landmark and connection index for all known levels. The remembered terrain grid,
+visit counts and inferred-floor list stay in `observe` and the decision log;
+requests carry visit counts on each navigation destination instead. Other levels'
+full terrain stays in the observer until revisited. Requests carry the last eight
+messages and omit inventory, spell, attribute and overview snapshots that were
+never queried. The full decision trace is written to SQLite. Starting a fresh harness session resets
 the observer; memory is not carried between games or restored from old traces.
 
 The last eight executed actions include their
@@ -258,6 +282,8 @@ decision. The complete decision log is stored separately.
 
 Level identity is inferred from status labels
 and traversed staircase connections; the terminal does not provide a level UUID.
+`observation.level` is always present: at prompts and menus it holds the current
+level's `id` and `label`, and it is null before any map has been seen.
 Quest floors and elemental planes have distinct recognized status labels.
 Same-depth branch transitions and portal connections can remain ambiguous;
 queried dungeon overview rows preserve branch headings and their order for the
@@ -266,15 +292,17 @@ The adapter exposes observations and mechanical capabilities. Game reference
 knowledge, species statistics, tactical advice and strategy belong to the caller
 or decision engine. Unknown glyphs remain unidentified until inspected in-game.
 
-Decision requests expose navigation destinations before tool selection, with
-their descriptions, coordinates, known path lengths, next squares and execution
-bounds. These are the offered routes through remembered terrain, not a ranking
+Tool-selection requests expose navigation destinations with their kind,
+coordinates, known path lengths, next squares, execution bounds, how often the
+hero has stood on them, and whether they are a frontier: not yet stood on and
+next to a square that never showed a glyph. These are the offered routes through remembered terrain, not a ranking
 or guarantee of passage. The observation also identifies remembered terrain
 underfoot. The engine chooses the destination; the executor follows that route
 and returns when its bound or an observed boundary is reached.
-Argument requests also include `argument_facts` for every offered choice, with
-its target, bound and modifier. Directional actions include their direction,
-origin, coordinate delta and matching adjacent-square observation. The target
+Argument requests include `argument_facts` for every offered choice, with its
+target, bound, modifier when it has one, and the destination facts above for
+travel and exploration. Directional actions include their direction, origin,
+coordinate delta and the target square's glyph, colour and remembered terrain. The target
 is the square addressed by the command, not a guaranteed resulting position.
 These facts supplement the complete observation and unchanged choice descriptions.
 `navigation_obstacles` preserves destinations excluded because occupied squares
@@ -314,8 +342,11 @@ available through `export`.
 This scope starts fresh on every explicit resume, even with identical objective
 text, and on an objective change. It is supplied during tool, argument and prompt
 selection. It records execution evidence; it does not infer objective completion.
-`pause` is available at both tool and argument selection, with instructions to
-request caller review when evidence or choices are insufficient for the objective.
+`pause` is available at tool, argument and prompt selection as "Return control to
+the caller". The instructions ask the engine to decide from the supplied state and
+to prefer a choice that has not already failed to make progress. They do not
+elaborate on pausing: in endpoint trials, pause guidance in the instructions or a
+longer pause description made engines pause between several workable choices.
 Confidence and all response metadata remain in the trace for the caller
 to assess; the adapter does not apply a universal confidence threshold or call
 a second model itself.
@@ -336,14 +367,23 @@ The harness supplies facts and executable options; the model returns an offered
 choice rather than free-form text, reasoning or generated code. Endpoint URL and
 model name are configurable.
 
+`state` holds `decision` (stage and selected tool), `objective`, `caller_context`,
+then `navigation` (tool stage) or `argument_facts` (argument stage), then the
+`observation`. The stage-specific members are compact; the observation is the
+largest member. Requests in early levels are typically 3 to 7 thousand tokens.
+An endpoint that serializes keys in sorted order and truncates long input keeps
+these members ahead of the observation's later keys.
+
 During normal play the first request selects a tool:
 
 ```json
 {
   "state": {
+    "decision": {"stage": "tool", "tool": null},
     "objective": "Explore the dungeon and survive.",
-    "observation": {"phase": "play", "hero": {"hp": 12}},
-    "decision": {"stage": "tool", "tool": null}
+    "caller_context": {},
+    "navigation": {"destinations": []},
+    "observation": {"phase": "play", "hero": {"hp": 12}}
   },
   "questions": {
     "action": {
@@ -397,6 +437,8 @@ harness send '\e'
 harness resume --objective 'Find the downstairs.' --timeout 30
 harness status
 harness export --out /tmp/decisions.jsonl
+harness note --kind lesson --text 'Locked doors here open with kicks.'
+harness purpose --kind trial --about 'Try the east corridor first.'
 harness stop
 ```
 
@@ -405,13 +447,36 @@ Manual input requires a paused session and is attributed separately in records.
 with `\e`, `\r`, `\n`, `\t`, `\\` and `\xHH` escapes. It is an explicit caller
 intervention; arbitrary key sequences are not engine-generated actions.
 
+## Caller intent records
+
+The session record stream also holds what the caller intended, in the same
+sequence as decision records and returned by `export` (including `--after`):
+
+- Objective and goal transitions: `start` and a `resume --objective` that changes
+  the objective record `set`. `goal --file FILE` records caller transitions from a
+  JSON object or list with `transition` (`set`, `added`, `activated`, `updated`,
+  `suspended`, `completed`, `removed` or `replaced`), `objective`, and optional
+  `goal_id`, `parent_id` and `reason`. The goal supervisor records its transitions
+  this way.
+- `note --kind KIND --text TEXT` (`--text -` reads stdin): a caller note stored
+  verbatim, such as a plan, lesson, hypothesis or observation.
+- `purpose --kind KIND [--about TEXT] [--parent ID]`: why this session exists, for
+  example `main`, `checkpoint`, `trial` or `scout`. A copied session directory keeps
+  the earlier records and appends its own; the latest purpose is the current one.
+
+These commands write to the session database directly, without the daemon. Kinds
+are caller labels. Each record carries `schema` 1 and a UTC `recorded_at`. The
+adapter does not interpret intent records or add them to decision requests; pass
+anything the engine should see through `--context-file`.
+
 ## Storage and training data
 
 Each session has a fresh SQLite database, `session.sqlite3`, plus `daemon.log`,
 a process lock and a schema-initialization lock. SQLite transactions serialize caller commands and record decisions.
 Completed commands are removed. The session retains its decision history for export.
 
-An exported JSONL row includes:
+An exported JSONL row has a `type`: `intent` rows carry `id`, `created`,
+`source` (`caller`) and the `intent` record above. A `decision` row includes:
 
 - `id`, `created`, `source` (`engine`, `manual` or `protocol`).
 - The exact `request`, including the observation and offered choices.

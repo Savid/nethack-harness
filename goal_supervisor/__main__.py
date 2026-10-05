@@ -6,6 +6,8 @@ import subprocess
 import sys
 
 from .goals import GoalBoard
+
+LIFECYCLE = ("added", "activated", "updated", "suspended", "completed", "removed", "replaced")
 from .harness import HarnessClient
 from .runner import step
 from .storage import Repository
@@ -46,7 +48,8 @@ def parser():
     return parser
 
 
-def invoke(repository, args):
+def invoke(repository, args, current=None):
+    """Return the command result and, for execution windows, the harness state the window ended with."""
     with repository.locked():
         if args.command == "init":
             if (repository.directory / "state.json").exists():
@@ -58,38 +61,66 @@ def invoke(repository, args):
             HarnessClient(**config).paused()
             document = {"harness": config, "board": GoalBoard().snapshot()}
             repository.save(document)
-            return {"reason": "initialized"}
+            return {"reason": "initialized"}, None
         document = repository.load()
-        board = GoalBoard(document["board"])
         client = HarnessClient(**document["harness"])
-        name = args.command
-        if name == "status":
-            return {key: value for key, value in board.snapshot().items() if key != "events"}
-        if name == "events":
-            return board.state["events"]
-        if name in ("step", "run", "recover"):
-            return step(document, client, repository.save, recover=name == "recover")
-        board.editable()
-        if name == "add":
-            result = board.add(read_json(args.file))
-        elif name in ("update", "replace"):
-            result = getattr(board, name)(args.id, read_json(args.file))
-        elif name in ("suspend", "remove"):
-            result = getattr(board, name)(args.id)
+        seen = len(document["board"]["events"])
+        result, current = operate(args, repository, document, client, current)
+        changes = transitions(document["board"], seen)
+        if changes:
+            client.record_goals(changes)
+        return result, current
+
+
+def transitions(state, seen):
+    """Goal lifecycle events after `seen`, as harness goal intent records."""
+    records = []
+    for event in state["events"][seen:]:
+        if event["kind"] not in LIFECYCLE:
+            continue
+        goal = state["goals"][event["goal_id"]]
+        reason = event.get("reason")
+        if event["kind"] == "completed":
+            evidence = event.get("evidence")
+            reason = event["source"] + (": " + evidence if isinstance(evidence, str) else "")
+        elif event["kind"] == "replaced":
+            reason = "replaced by " + event["replacement_id"]
+        records.append({"transition": event["kind"], "objective": goal["objective"], "goal_id": goal["id"],
+                        "parent_id": goal["parent_id"], "reason": reason})
+    return records
+
+
+def operate(args, repository, document, client, current):
+    board = GoalBoard(document["board"])
+    name = args.command
+    if name == "status":
+        return dict({key: value for key, value in board.snapshot().items() if key != "events"},
+                    latest=board.latest()), None
+    if name == "events":
+        return board.state["events"], None
+    if name in ("step", "run", "recover"):
+        return step(document, client, repository.save, recover=name == "recover", current=current)
+    board.editable()
+    if name == "add":
+        result = board.add(read_json(args.file))
+    elif name in ("update", "replace"):
+        result = getattr(board, name)(args.id, read_json(args.file))
+    elif name in ("suspend", "remove"):
+        result = getattr(board, name)(args.id)
+    else:
+        client.paused()
+        observation = client.observe()
+        if name == "activate":
+            result = board.activate(args.id, observation)
+        elif name == "complete":
+            result = board.complete(args.id, observation, args.evidence)
         else:
-            client.paused()
-            observation = client.observe()
-            if name == "activate":
-                result = board.activate(args.id, observation)
-            elif name == "complete":
-                result = board.complete(args.id, observation, args.evidence)
-            else:
-                assessment = board.assess(observation)
-                result = {"active": assessment, "goals": {identifier: board.eligibility(identifier, observation)
-                                                           for identifier in board.state["goals"]}}
-        document["board"] = board.snapshot()
-        repository.save(document)
-        return result
+            assessment = board.assess(observation)
+            result = {"active": assessment, "goals": {identifier: board.eligibility(identifier, observation)
+                                                       for identifier in board.state["goals"]}}
+    document["board"] = board.snapshot()
+    repository.save(document)
+    return result, None
 
 
 def main(argv=None):
@@ -99,8 +130,9 @@ def main(argv=None):
     repository = Repository(arguments.dir)
     try:
         windows = arguments.max_windows if arguments.command == "run" else 1
+        current = None
         for _ in range(windows):
-            result = invoke(repository, arguments)
+            result, current = invoke(repository, arguments, current)
             if arguments.command != "run" or result.get("reason") != "ready":
                 break
         else:

@@ -33,11 +33,14 @@ requests and usage when comparing against direct LLM control.
 
 ## Start and edit goals
 
-Use an existing, paused harness session. Run these commands from the source
-checkout; `--harness` can optionally name a harness script or zipapp elsewhere.
-The supervisor state directory must differ from the harness session directory.
+Use an existing, paused harness session, such as one started with
+`start --paused`. Run these commands from the source checkout; `--harness` can
+optionally name a harness script or zipapp elsewhere. The supervisor state
+directory must differ from the harness session directory.
 
 ```sh
+python3 nethack_harness.py --dir /tmp/game-session start --paused --socket /tmp/game.sock \
+  --decide http://localhost:8000/v1/systemone
 python3 -m goal_supervisor --dir /tmp/goals init --session /tmp/game-session
 python3 -m goal_supervisor --dir /tmp/goals add --file goal.json
 python3 -m goal_supervisor --dir /tmp/goals activate reach-location
@@ -59,10 +62,12 @@ Example `goal.json` (the caller supplies the actual level ID and destination):
     {"path": ["level", "id"], "op": "eq", "value": "level-1"}
   ],
   "review_on": ["no_observed_effect", "movement_interrupted", "route_changed"],
+  "tools": ["travel", "move", "open"],
   "limits": {
     "action_attempts": 6,
     "decision_calls_per_action": 8,
-    "steps_per_action": 1
+    "steps_per_action": 1,
+    "idle_attempts": 4
   },
   "metadata": {"reason": "Caller-selected milestone"}
 }
@@ -84,6 +89,18 @@ All JSON file arguments also accept `--file -` for stdin. Outputs are JSON.
 | `run --max-windows N` | Repeat up to N windows, stopping on completion or review |
 | `recover` | Pause and reconcile an unresolved execution; never retry it |
 | `status`, `events` | Inspect current state or retained history without game input |
+
+Goal lifecycle changes (added, activated, updated, suspended, completed, removed,
+replaced) are also appended to the attached harness session as caller intent
+records, with the goal ID, parent, objective and reason, so the session's export
+shows the caller's goals in order with its decisions.
+
+`status` also names the `latest` goal: the one most recently activated, executed,
+suspended or completed, with its status, objective, attempts and limits.
+
+`tools` optionally limits the harness tools the engine may choose for this goal
+(the harness `--tools` list); an empty list allows all. A list the harness rejects
+returns `harness_rejected` for review without sending input or needing `recover`.
 
 `parent_id` links a goal to an existing unfinished parent. Only leaves without
 unfinished children can activate. Adding a child to an active parent suspends
@@ -115,7 +132,12 @@ freshness matters. The supervisor does not infer whether a remembered fact is
 sufficient for a particular goal.
 
 Validity and review conditions take precedence over success. Verified success
-takes precedence over an exhausted goal budget. A bounded action finishing does
+takes precedence over an exhausted goal budget and idle attempts. `idle_attempts`
+(default 4) returns `idle_attempts` for review after that many consecutive
+attempts since the goal's latest activation changed neither the hero's position,
+level nor turn, such as bumping into rock or a locked door, or repeated
+inspection. When the turn counter is not displayed, attempts that leave position
+and level unchanged count as idle. A bounded action finishing does
 not establish goal completion. Budget exhaustion suspends a goal for review;
 it does not declare success or failure. Increase its budget explicitly if more
 attempts are warranted. Native harness handoffs, such as endpoint errors,
@@ -132,23 +154,35 @@ rooms, threats, or suitable combat tactics in this package.
 
 ## Execution and interruption
 
-Each window sends the goal, parent intent/conditions, revision, cumulative
-progress and execution ID through `caller_context` on every stateless decision
-request. It includes a current completion assessment and remaining goal budget.
-Recent attempted actions retain their inputs and observed results; historical
-window-stop envelopes stay in the audit history rather than the decision context.
-Goals without success predicates explicitly require caller confirmation.
+Each window sends `caller_context` on every stateless decision request:
+
+- `goal`: ID, objective, success, validity and review conditions, attempts used
+  and remaining, and `metadata` and `tools` when set.
+- `completion`: whether success holds now, with each unmet condition and its
+  observed value; goals without success predicates require caller confirmation.
+- `history`: up to 12 recent attempts under this goal (action, start and end
+  positions, execution reason, elapsed turns, changed fields, new terrain), actions
+  selected more than once with how often they moved the hero or reached their
+  target, and the current idle streak.
+- `parents`: ancestor objectives and conditions, when the goal has a parent.
+- `execution`: the window ID that attributes decision records to this window.
+
+Historical window-stop envelopes stay in the audit history rather than the decision context.
 It resumes the harness with one action attempt, a default one-step
 action bound and a default eight-call selection budget. A goal's default total
 budget is eight attempts. These limits are configurable by the caller.
 Multiple game turns may still elapse inside one atomic command.
 
 Every window explicitly resumes the harness, resetting its per-resume attempt
-and navigation-cycle evidence. The goal's cumulative attempts and recent action
-results persist across windows. The default one-step bound can require many
-decision requests for a longer route; increase `steps_per_action` when several
-steps between supervisor checks are appropriate. Persistent cross-window loops
-may still require caller review or reach the goal's total attempt budget.
+and navigation-cycle evidence. A window is one harness command (`resume
+--records-after`) that returns the status, observation and the window's decision
+records; within one `run`, the next window starts from that result. The goal's
+cumulative attempts and recent action results persist across windows. The default
+one-step bound can require many decision requests for a longer route; increase
+`steps_per_action` when several steps between supervisor checks are appropriate.
+Idle attempts hand back for review; other persistent cross-window loops, such as
+travelling between the same destinations, are visible in `history` and may still
+reach the goal's total attempt budget.
 
 Conditions are checked before and after each action window, not between keys
 inside a command. Raising `steps_per_action` permits several movement or search
