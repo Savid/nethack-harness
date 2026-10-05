@@ -363,8 +363,8 @@ resume, and up to 32 recent attempts with omitted-count metadata.
 Each attempt records the selected action, source, attempted inputs and delivery
 status, before/after observations, and execution result. Unknown coordinates or
 turns remain null; a pending input has an uncertain result. Requests carry the
-latest 8 attempts, naming each action by its ID, without screen fingerprints or
-record numbers; `observe` keeps the rest. Full records remain available through `export`.
+latest 8 attempts, without screen fingerprints or record numbers; `observe`
+keeps the rest. Full records remain available through `export`.
 This scope starts fresh on every resume, even with identical objective text,
 unless the resume passes `--continue-scope`, and always on an objective change.
 It is supplied during tool, argument and prompt

@@ -75,7 +75,6 @@ def point_summary(point):
 
 def attempt_summary(attempt):
     out = {key: value for key, value in attempt.items() if key != "decision"}
-    out["action"] = attempt["action"]["id"]
     for key in ("before", "after"):
         if key in out:
             out[key] = point_summary(out[key])
@@ -83,7 +82,7 @@ def attempt_summary(attempt):
 
 
 def progress_summary(progress):
-    """Recent scoped attempts without screen hashes, record numbers or the action descriptions the choices repeat."""
+    """Recent scoped attempts without screen hashes or record numbers."""
     attempts = progress["recent_attempts"][-REQUEST_ATTEMPTS:]
     return dict(progress, start=point_summary(progress["start"]),
                 recent_attempts=[attempt_summary(attempt) for attempt in attempts],

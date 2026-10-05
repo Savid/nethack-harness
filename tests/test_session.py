@@ -107,7 +107,7 @@ class SessionTest(TestCase):
             self.assertEqual(progress["id"], first["id"])
             self.assertEqual(progress["attempts_used"], 1)
             event, = progress["recent_attempts"]
-            self.assertEqual(event["action"], "move:l")
+            self.assertEqual(event["action"]["id"], "move:l")
             self.assertEqual(event["after"]["position"], [3, 5])
             self.assertEqual(event["after"]["turn"], 401)
         session.resume()

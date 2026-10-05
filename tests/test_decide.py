@@ -59,7 +59,7 @@ class EngineTest(TestCase):
         self.assertNotIn("navigation", arguments)
         self.assertEqual(arguments["argument_facts"]["travel:3,7"]["visits"], 2)
 
-    def test_requests_carry_recent_attempts_without_screen_hashes_or_repeated_descriptions(self):
+    def test_requests_carry_recent_attempts_without_screen_hashes(self):
         point = {"fingerprint": "f" * 64, "phase": "play", "position": [3, 4], "turn": 9, "level": "level-1"}
         attempts = [{"attempt": n, "decision": 100 + n, "source": "engine", "before": point, "after": point,
                      "action": {"id": "move:l", "description": "Move east " * 20, "kind": "move"},
@@ -75,7 +75,7 @@ class EngineTest(TestCase):
         progress, navigation = sent["objective_progress"], sent["navigation_progress"]
         self.assertEqual([a["attempt"] for a in progress["recent_attempts"]], list(range(13, 21)))
         self.assertEqual(progress["omitted_attempts"], 22)
-        self.assertEqual(progress["recent_attempts"][-1]["action"], "move:l")
+        self.assertEqual(progress["recent_attempts"][-1]["action"]["id"], "move:l")
         self.assertEqual(progress["recent_attempts"][-1]["after"]["position"], [3, 4])
         self.assertNotIn("fingerprint", json.dumps(sent))
         self.assertNotIn("decision", json.dumps(sent))
