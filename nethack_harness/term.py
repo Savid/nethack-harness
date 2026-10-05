@@ -44,7 +44,6 @@ class VT:
     def lines(self):
         return ["".join(row) for row in self.chars]
 
-    # -- internals
     def _put(self, ch):
         if self.dec:
             ch = DEC_GRAPHICS.get(ch, ch)

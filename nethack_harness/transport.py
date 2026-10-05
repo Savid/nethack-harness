@@ -10,8 +10,7 @@ import sys
 import time
 import urllib.parse
 
-from .settings import CFG
-from .screen import View
+from .screen import PromptContext, View
 from .term import VT
 
 
@@ -62,14 +61,14 @@ class Link:
 class Term:
     """VT screen kept in sync with the game through a Link."""
 
-    def __init__(self, where):
+    def __init__(self, where, quiet=0.06):
+        self.quiet = quiet
         self.link = Link(where)
         self.vt = VT()
-        self.seen = ""                 # recent decoded output (prayers typed by hand are spotted in it)
-        self.after_run = False         # the last command was travel or a run (T: may be stale next)
+        self.prompts = PromptContext()
+        self.after_run = False
+        self.redraw_needed = False
         self.cursor = 0
-        self.sends = 0
-        self.send_time = 0.0
 
     def poll(self, data=b"", hold_wait=2.0):
         """One exchange with the socket. Input refused as held is retried for hold_wait seconds, then Held is
@@ -89,10 +88,9 @@ class Term:
                 out = base64.b64decode(d.get("output") or "")
                 if d.get("truncated") or d["cursor"] < self.cursor:
                     self.vt.reset()
+                    self.prompts.reset()
                 self.vt.feed(out)
                 self.cursor = d["cursor"]
-                if out:
-                    self.seen = (self.seen + out.decode("utf-8", "replace"))[-65536:]
                 return bool(out)
             text = raw.decode(errors="replace").strip()
             if status == 410 and "waiting" in text:
@@ -117,10 +115,10 @@ class Term:
 
     def settle(self, status_before=None, multi=False):
         """Wait until the game is quiet. A changed status line with the cursor back on the map means the turn
-        finished, so a short quiet suffices; otherwise wait CFG['quiet']. A multi-turn command (a count, travel
+        finished, so a short quiet suffices; otherwise wait the configured quiet interval. A multi-turn command (a count, travel
         or a run) redraws the status line on the way, so it gets no shortcut and a longer quiet."""
         start = last = time.monotonic()
-        need = max(CFG["quiet"], CFG.get("multi_quiet", 0.12)) if multi else CFG["quiet"]
+        need = max(self.quiet, 0.12) if multi else self.quiet
         seen = False
         while True:
             time.sleep(0.02)
@@ -136,37 +134,34 @@ class Term:
                     (not seen and now - start > 0.4) or now - start > 3:
                 return
 
-    def sync(self):
+    def sync(self, redraw=None):
         self.poll()
-        for keys in (b"\x12", b"\x1b\x12"):     # joined mid-stream: ask for a full redraw (Ctrl-R)
-            if self.vt.complete:
-                return
-            self.vt.reset()
-            self.poll(keys)
-            self.settle()
+        if not self.vt.complete:
+            (redraw or (lambda: self.send("\x12")))()
+        if not self.vt.complete:
+            raise RuntimeError("terminal has not supplied a complete screen")
 
-    def send(self, keys):
-        started = time.monotonic()
-        self.sends += 1
+    def send(self, keys, before_send=None):
         self.poll()
+        before_view = self.view()
+        # Validate and journal only after the last read before sending input.
+        if before_send:
+            before_send(before_view)
         before = self.vt.lines()[23]
         data = keys.encode() if isinstance(keys, str) else keys
         self.poll(data)
+        self.prompts.before_input(before_view, keys if isinstance(keys, str) else keys.decode("latin-1"))
         self.settle(before, multi=bool(MULTI_TURN.match(data)))
         lines = self.vt.lines()
-        if (COUNTED.match(data) or self.after_run) and self.ready() and 1 <= self.vt.y <= 21 and \
-                not lines[0].strip() and not any("--More--" in r for r in lines):
-            # (never over a message: a redraw clears the top line, and with it a farlook answer or a warning)
-            # After travel or a run the game stops redrawing T: until a later command (and counted commands can
-            # leave it stale too), though the turn counter itself moves on. ^R takes no game time and fixes it.
-            self.poll(b"\x12")
-            self.settle()
+        # Counted commands and runs can leave T: stale. The executor records the redraw;
+        # a message must remain visible so that inspection results are not erased.
+        self.redraw_needed = bool((COUNTED.match(data) or self.after_run) and self.ready() and 1 <= self.vt.y <= 21 and
+                                  not lines[0].strip() and not any("--More--" in r for r in lines))
         self.after_run = bool(RUNS.match(data))
-        self.send_time += time.monotonic() - started
 
     def view(self):
         vt = self.vt
-        return View(vt.lines(), vt.fg, vt.bold, vt.rev, (vt.y, vt.x))
+        return self.prompts.observe(View(vt.lines(), vt.fg, vt.bold, vt.rev, (vt.y, vt.x)))
 
 
 # Commands that take many turns: a count prefix (20s), travel (_), runs (G, shift-moves) and the m/n prefixes.

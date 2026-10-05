@@ -1,91 +1,129 @@
-"""The decision-endpoint client, answer normalisation and the questions the inner loop asks."""
+"""System One choices over tools and their concrete arguments."""
 import json
 import time
 import urllib.error
 import urllib.request
 
-ACT_INSTRUCTIONS = ("Choose the hero's best next action. Survive first: do not melee when HP is low if a safer "
-                    "option exists. Otherwise make progress: descend when on the down stairs, travel to known down "
-                    "stairs, kill weak monsters in the way, explore.")
-DANGER_INSTRUCTIONS = ("Could the hero plausibly die within the next 5 turns (very low HP, dangerous monster "
-                       "adjacent, or a deadly condition)?")
+from .base import Paused
+from .knowledge import DIRECTION_NAMES
+from .level import position
+from .tools import TOOLS, tool_description
 
 
-class Unhealthy(RuntimeError):
-    """The endpoint failed or was too slow; the caller should play on rules for a while."""
+class DecisionError(Paused):
+    def __init__(self, message, response=None, latency=None):
+        super().__init__(message)
+        self.response, self.latency = response, latency
 
 
-def decider(url, model=None, key=None, timeout=4.0):
-    """POST {state, questions} to a SystemOne-compatible endpoint. One short attempt plus at most one retry on
-    429/503/529 (honouring a small Retry-After); anything else raises Unhealthy."""
-    if not url or url == "none":
-        return None
-    headers = {"Content-Type": "application/json"}
-    if key:
-        headers["Authorization"] = "Bearer " + key
+def reject_constant(value):
+    raise ValueError("non-finite JSON number: " + value)
 
-    def decide(body, timeout=timeout):
-        if model:
-            body = dict(body, model=model)
-        data = json.dumps(body).encode()
-        for attempt in range(2):
+
+def argument_facts(observation, action):
+    facts = action.as_dict()
+    spec = TOOLS.get(action.kind)
+    if not spec:
+        return facts
+    parts = action.id.split(":")
+    variant = next((v for v in spec.variants if v.name in parts[1:]), None)
+    facts["modifier"] = {"name": variant.name, "description": variant.description} if variant else None
+    if spec.directions and parts[-1] in spec.directions:
+        key = parts[-1]
+        facts.update(direction=dict(DIRECTION_NAMES, **{".": "self", "<": "up", ">": "down"})[key],
+                     direction_key=key, origin=observation.get("hero", {}).get("position"))
+        origin, target = facts["origin"], facts["target"]
+        if origin is not None and target is not None:
+            facts["delta"] = [end - start for start, end in zip(origin, target)]
+        adjacent = next((square for square in observation.get("adjacent", [])
+                         if square["direction"] == key and square["position"] == target), None)
+        if adjacent is not None:
+            facts["target_observation"] = adjacent
+    return facts
+
+
+def request_body(observation, actions, objective, model=None, tool=None, caller_context=None):
+    direct = observation.get("phase") != "play"
+    stage = "arguments" if tool else "input" if direct else "tool"
+    if stage == "tool":
+        criteria = {action.tool: tool_description(action.tool, action.description) for action in actions}
+        instructions = "Choose the tool to use next."
+    else:
+        criteria = {action.id: action.description for action in actions
+                    if tool is None or action.tool == tool or action.kind == "pause"}
+        instructions = "Selected tool: %s. Choose its concrete arguments." % tool if tool else "Answer the current prompt."
+    if "pause" in criteria:
+        instructions += (" Each request is independent; use the supplied state and choices."
+                         " objective_progress records attempts since this objective scope began; use their results"
+                         " to assess whether the objective already warrants pause. Earlier history may belong to other scopes."
+                         " Choose pause for caller review if the evidence or offered choices are insufficient"
+                         " to select an action for the objective, or the recorded actions show a loop without progress.")
+    body = {"state": {"objective": objective, "observation": observation},
+            "questions": {"action": {"type": "choice", "instructions": instructions + " Objective: " + objective,
+                                      "criteria": criteria}}}
+    body["state"]["decision"] = {"stage": stage, "tool": tool}
+    body["state"]["caller_context"] = caller_context or {}
+    if stage == "arguments":
+        body["state"]["argument_facts"] = {
+            action.id: argument_facts(observation, action) for action in actions if action.id in criteria}
+    if not direct:
+        body["state"]["navigation"] = {
+            "source": "offered routes through remembered terrain; not a guarantee of passage",
+            "destinations": [{"action": action.id, "description": action.description,
+                              "position": position(action.target), "known_path_length": len(action.route),
+                              "next_position": position(action.route[0]), "max_steps": action.steps}
+                             for action in actions if action.kind in ("travel", "explore") and action.route]}
+    if model:
+        body["model"] = model
+    return body
+
+
+class Engine:
+    def __init__(self, url, model=None, key=None, timeout=10):
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            raise ValueError("decision endpoint must be an HTTP(S) URL")
+        self.url, self.model, self.key, self.timeout = url, model, key, timeout
+
+    def choose(self, request):
+        headers = {"Content-Type": "application/json"}
+        if self.key:
+            headers["Authorization"] = "Bearer " + self.key
+        started = time.monotonic()
+        answer = None
+
+        def failure(message):
+            return DecisionError(message, answer, time.monotonic() - started)
+
+        try:
+            req = urllib.request.Request(self.url, json.dumps(request, allow_nan=False).encode(), headers)
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                raw = response.read(1024 * 1024 + 1)
+                if len(raw) > 1024 * 1024:
+                    raise failure("decision response exceeds 1 MiB")
+                answer = raw.decode("utf-8", "replace")
+                answer = json.loads(raw, parse_constant=reject_constant)
+        except urllib.error.HTTPError as e:
+            message = "decision endpoint returned HTTP %d" % e.code
             try:
-                req = urllib.request.Request(url, data=data, headers=headers)
-                with urllib.request.urlopen(req, timeout=timeout) as r:
-                    return json.loads(r.read())
-            except urllib.error.HTTPError as e:
-                if e.code in (429, 503, 529) and attempt == 0:
+                with e:
+                    raw = e.read(1024 * 1024 + 1)
+                answer = raw[:1024 * 1024].decode("utf-8", "replace")
+                if len(raw) <= 1024 * 1024:
                     try:
-                        wait = min(2.0, float(e.headers.get("Retry-After") or 0.5))
+                        answer = json.loads(answer, parse_constant=reject_constant)
                     except ValueError:
-                        wait = 0.5
-                    time.sleep(wait)
-                    continue
-                raise Unhealthy("decision endpoint HTTP %d: %s" % (e.code, e.read()[:200]))
-            except (urllib.error.URLError, OSError, ValueError) as e:
-                raise Unhealthy("decision endpoint unreachable or slow: %s" % e)
-        raise Unhealthy("decision endpoint busy")
-    return decide
-
-
-def normalize(answers):
-    """Engines differ in optional fields: make choice answers carry choice, probabilities and confidence."""
-    out = {}
-    for key, ans in (answers or {}).items():
-        if not isinstance(ans, dict):
-            continue
-        ans = dict(ans)
-        probs = ans.get("probabilities")
-        if "choice" in ans or (isinstance(probs, dict) and ans.get("type") == "choice"):
-            if not isinstance(probs, dict) or not probs:
-                probs = {ans.get("choice"): float(ans.get("confidence", 1.0))}
-            probs = {str(k): float(v) for k, v in probs.items()}
-            ans["probabilities"] = probs
-            ans.setdefault("choice", max(probs, key=probs.get))
-            ans.setdefault("confidence", max(probs.values()))
-        if "noul" not in ans and isinstance(probs, dict) and "true" in probs:
-            ans["noul"] = probs["true"]
-        if "noul" in ans and "confidence" not in ans:
-            ans["confidence"] = max(float(ans["noul"]), 1 - float(ans["noul"]))
-        for k in ("noul", "score", "confidence"):
-            if k in ans:
-                ans[k] = float(ans[k])
-        out[key] = ans
-    return out
-
-
-def confidence(probs):
-    """Top probability normalised by the number of options: 0 = uniform, 1 = certain."""
-    n = len(probs)
-    if n < 2:
-        return 1.0
-    p1 = max(probs.values())
-    return max(0.0, (n * p1 - 1) / (n - 1))
-
-
-def builtin_questions(acts, rng):
-    order = list(acts)
-    rng.shuffle(order)   # cheap insurance against position bias
-    return {"act": {"type": "choice", "instructions": ACT_INSTRUCTIONS,
-                    "criteria": {a.key: a.desc for a in order}},
-            "danger": {"type": "noul", "instructions": DANGER_INSTRUCTIONS}}
+                        pass
+                else:
+                    message += " (response truncated after 1 MiB)"
+            except OSError:
+                pass
+            raise failure(message) from None
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise failure("decision request failed (%s)" % type(e).__name__) from None
+        try:
+            choice = answer["answers"]["action"]["choice"]
+            if not isinstance(choice, str) or choice not in request["questions"]["action"]["criteria"]:
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise failure("decision response must contain answers.action.choice naming an offered action") from None
+        return choice, answer, time.monotonic() - started

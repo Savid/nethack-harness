@@ -1,430 +1,475 @@
 # nethack-harness
 
-A fast NetHack autopilot built to sit under an outer-loop agent, such as an LLM
-with a shell. The harness is the **inner loop**. It plays routine NetHack at
-several keys per second and **escalates** to the outer loop when judgment is
-needed. The outer loop reads a compact report, acts by hand or changes the
-plan, and resumes it.
+A NetHack observation and execution adapter for a decision engine. The engine
+chooses what to do. The harness reads the terminal, maintains observed game
+knowledge, presents executable choices and carries out the selected action.
+Python 3.9+, standard library only.
 
-- **Rules own safety and mechanics:**
-  - prompt answers;
-  - monsters never to melee and level-dependent threats;
-  - prayer timing (and never again after a failed prayer);
-  - potions, Elbereth, hunger;
-  - stall breakers and a per-level escape ladder;
-  - free descents (stairs, trap doors, the game's own stairs memory).
-- **A decision model judges contested steps.** It answers one batched call to
-  a SystemOne-compatible endpoint, such as TypeSafe Jev or Cloudflare
-  clef-flash: a `choice` over the legal actions plus a `danger` yes/no.
-  - The model may only add caution; it never answers prompts or unlocks an
-    unsafe melee.
-  - How often it is asked is the `effort` setting.
-- **The outer loop owns strategy:**
-  - risk;
-  - branch choice (Gnomish Mines or main dungeon);
-  - digging and when to descend;
-  - plans, hooks and plugins.
+## Decision cycle
 
-  All of these are settings and primitives it can change at runtime. Nothing
-  role-specific is played automatically. Instead, a startup **briefing**
-  reports the role, the kit and suggested settings.
+1. Read a structured observation: hero stats, conditions, messages, map, entities,
+   remembered terrain, inspected inventory and spells, and recent actions.
+2. Present choices with explicit targets and bounded execution.
+3. Ask the configured decision endpoint for a tool and, when needed, its concrete arguments.
+4. Verify the observation is still current, execute the bounded choice, and return
+   its result to the decision cycle. New information or a prompt can end the
+   action; the daemon continues choosing until a caller handoff or terminal outcome.
+5. Record the request, response, action, input attempts and resulting observation.
 
-The code needs only the Python 3 standard library (3.9 or later). It includes
-its own terminal emulator.
+The engine chooses combat, retreat destinations, resource use, exploration,
+prayer, descent and prompt answers. Actions have no tactical scores. The harness
+does not veto dangerous decisions or substitute a gameplay policy when the
+endpoint fails. Failure pauses the session before another gameplay action.
 
-## Install
+A caller supplies the objective and can pause, inspect, change the objective,
+manually act, or resume. Training and rewards live outside this repository.
 
-**One file (a release).** Each release ships a single-file zipapp and its
-checksum:
+An optional [caller-side goal supervisor](goal_supervisor/README.md) maintains
+editable goals and subgoals, checks caller-defined completion/review conditions,
+and runs one bounded action per execution window. The LLM can add, update,
+switch, suspend, replace or remove goals while retaining their history.
+This is a separate package using the adapter's public CLI; the adapter does not
+import it or select goals. It is available from the source checkout and is not
+part of the harness zipapp.
 
-```sh
-curl -fsSLO https://github.com/Savid/nethack-harness/releases/latest/download/nethack-harness.pyz
-curl -fsSLO https://github.com/Savid/nethack-harness/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS
-python3 nethack-harness.pyz --version      # prints the version and commit
-python3 nethack-harness.pyz help
-```
+## Goal planning and model calls
 
-Releases are milestones, built reproducibly by CI from a `v*` tag
-(`tools/build_pyz.py`). Rebuilding the same tag gives the same bytes.
+The intended use is to reduce expensive planning-model calls by letting a
+decision engine carry out concrete goals. An outer LLM chooses a goal and its
+completion/review conditions. The engine chooses tools and arguments; the
+harness executes them and records the results. The optional supervisor checks
+those conditions and continues the same goal through bounded action windows
+without calling the outer LLM for each check.
 
-**Latest master (the live default).** Fetch a commit's source tarball, record
-the commit, and check that it runs:
+For example, reaching a known destination may take several decision requests
+under one unchanged goal. A bounded travel action can send several movement
+commands without further model requests. Observed completion, a requested
+review or an execution failure returns control to the caller, which decides
+the next goal or recovery plan.
 
-```sh
-SHA=$(git ls-remote https://github.com/Savid/nethack-harness refs/heads/master | cut -f1)
-mkdir -p nh && curl -fsSL https://codeload.github.com/Savid/nethack-harness/tar.gz/$SHA | tar -xz --strip-components=1 -C nh
-echo "$SHA" > nh/COMMIT          # shown by --version, status and help
-python3 nh/nethack_harness.py --version && python3 nh/nethack_harness.py help
-```
+The supervisor does not call an LLM planner or select the next goal automatically.
+Parent/child goals provide context and shared conditions; they do not define an
+ordered execution sequence. A host caller must implement the planning/review
+loop. Compare total planner and decision-engine calls, token usage, latency and
+cost at comparable gameplay progress when evaluating savings. Goal counts and
+action accuracy alone do not establish a cost reduction.
 
-`nethack_harness.py` is a stable entry point beside the `nethack_harness/`
-package; `python3 -m nethack_harness` works too.
+## Run
 
-`master` stays deployable:
-- tests run in CI on Python 3.9 and 3.11;
-- the command line stays backward compatible between commits;
-- force-pushes to master are blocked.
-
-## Quick start (local game)
+Start a local game behind a terminal socket:
 
 ```sh
-python3 nethack_harness.py serve-local --socket /tmp/nh.sock \
-    --nethack /usr/games/nethack --options 'color,!autopickup' -- -u Hero -@ &
-python3 nethack_harness.py --dir /tmp/run start --socket /tmp/nh.sock \
-    --decide http://localhost:8000/v1/systemone --timeout 120
+python3 nethack_harness.py serve-local --socket /tmp/game.sock \
+  --nethack /usr/games/nethack -- -u Hero -@
 ```
 
-- `--decide none` plays on rules alone (the same as `--set effort=off`).
-- Hosted endpoints may need `--model NAME` and `--key-env VAR` (a variable
-  holding a bearer key). `probe` accepts the same two options.
+Then start the adapter in another shell:
 
-## The outer/inner protocol
+```sh
+python3 nethack_harness.py --dir /tmp/game-session start \
+  --socket /tmp/game.sock --decide http://localhost:8000/v1/systemone \
+  --objective 'Explore the dungeon and survive.'
+```
 
-`help` prints the full capability map: every command, setting, mode, effort
-level, plan item, hook type and plugin function, with examples.
-`help TOPIC` prints one section. Its topics are `protocol`, `commands`,
-`settings`, `modes`, `effort`, `plan`, `hooks`, `plugins` and `playbook`.
+For a hosted endpoint, add `--model NAME --key-env ENVIRONMENT_VARIABLE`.
+The bearer key stays in the environment and is not recorded in session data.
+Use a new session directory for each `start`.
 
-`help` (or `help brief`) prints a short map (about 2 KB): exit codes, commands,
-plan items and the settings used most. `help all` prints everything.
-
-Reports are compact by default (about 150 tokens): the reason with its code,
-HP, Dlvl, XL, turn, conditions and the prayer band, the monsters near the hero
-with positions, the last messages, an 11×21 map crop around the hero, food and
-known stairs. `--set report=full` restores the long report with the whole
-screen, and `screen` shows the whole screen at any time. While the loop runs,
-`wait` and `resume` print one short line.
-
-By default the loop does not pause for notices it handles itself (`branch_point`,
-`oscillating`): `pause_on` is `all,-branch_point,-oscillating`. Every safety pause
-stays.
-
-`start`, `wait` and `resume` block until an escalation, game over or the
-`--timeout`:
+The daemon runs independently of the shell command. `start`, `wait` and `resume`
+wait for a pause, game over, or `--timeout` (30 seconds by default).
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Paused with a report (the first one is the BRIEFING). The keyboard is yours until you resume. |
-| 2 | Timeout and still playing; call `wait` again. The line names any decision-model trouble (errors, rules-only time, slow calls). |
-| 3 | Game over (or the terminal socket closed). |
-| 1 | No inner loop in `--dir`, not running, a setup error, or stuck (no heartbeat for 15 s; `stop` ends a stuck loop). See `daemon.log`. |
-| 64 | Usage error (unknown flag, bad `--set` value, `send` without keys); nothing happened. |
+| 0 | Paused, or a command succeeded |
+| 2 | Still running; call `wait` again |
+| 3 | Game over |
+| 1 | Execution/setup failure |
+| 64 | Invalid CLI arguments |
 
-While paused:
-- `send 'keys'` or `send --hex 1b` sends keys and prints the new screen;
-  `screen` shows the screen.
-- `repeat 'Fh' --times 6 [--stop-hp 0.5] [--stop-on REGEX] [--allow-hp-loss]`
-  is a guarded batch: it sends the keys up to N times (1–50) and stops at the
-  first HP loss, HP below the fraction, new monster in view, `--More--` or
-  prompt, level change, or alarming or matching message, then prints why and
-  the screen. Prefer it to unchecked key loops near danger.
-- `status` prints JSON with the settings, effort, hooks, plan, counters, kit
-  and the current depth cap.
-- `mark NAME` names this moment in the key journal; `keys [--since NAME|T]
-  [--raw]` prints every key sent since then, tagged loop, plan, plugin, hand
-  or replay. `--raw` lines can be replayed with `--plan replay:FILE` (one send
-  per step; it stops on a 15% HP loss).
-- `--notes-out FILE` (start or resume) keeps FILE up to date with this game's
-  level notes: stairs, up stairs, holes, the Mines staircase, turns spent and
-  hazards, as 1-based `ROW,COL`. `--notes-in FILE` uses another copy's notes:
-  the loop travels toward down stairs that copy saw, explores toward them first,
-  and never mistakes its Mines staircase for the main one. Notes are only used
-  when both games share the same first screen. `notes` prints one line per level.
-- `--set tiebreak_seed=N` reseeds the loop's tie-breaking choices, so a copy of
-  a game explores differently while every safety rule stays the same.
-- `postmortem` prints the death (or the last crisis) in one block: best-guess
-  killer, HP trail, crisis-ladder steps tried, last escalations, prayer band,
-  settings, last keys and messages. It is also written to `postmortem.txt` at
-  game over, and works after the loop has exited.
+`--decision-timeout` controls one engine request, `--max-action-steps` bounds a
+selected action (default 8; maximum 64), and `--quiet` controls terminal settling.
+These are execution limits, not gameplay preferences.
+Set `--review-after-calls N` on `start` or `resume` to return control after N
+endpoint calls, including tool and argument selections. The default, 0, disables
+this budget. It resets on explicit resume and pauses with `review_budget`;
+reaching it requests review without declaring the objective failed. `--timeout`
+only limits how long the CLI waits and does not stop the running session.
 
-Every escalation has a code (`help escalations` lists them): the status JSON
-has `code`, the report's last line reads `REASON [code]: …`, and plugins see
-it. `--set pause_on=all,-milestone,-branch_point` silences codes (they are
-logged and play goes on; safety codes such as `low_hp` always pause). A
-plugin's `on_escalation(facts, esc)` may answer an escalation itself with
-`{"continue": true}` or `{"plan": [items]}`.
+Set `--max-action-attempts N` on `start` or `resume` to pause with `action_budget`
+after N selected executable actions. For example:
 
-Reports give prayer as a band: `safe`, `uncertain (last T…, N ago; the
-timeout is random after a prayer)`, `fails (last T…, N ago)` when the last
-prayer was under 200 turns ago, or `broken` after a failed prayer.
-
-Resume options can be combined:
-- `--directive TEXT`: orders shown to the model. While orders are set, the
-  model decides contested steps among the safe options.
-- `--mode descend|explore|careful`: sets only the keys modes own (`mode`,
-  `risk`, `danger_max`, `p_min`, `esc_gap`); `mines`, `avoid` and the rest
-  are kept.
-- `--set k=v`: any setting.
-- `--plan ITEM`: queue a step, such as `keys:Za.`, `goal:stairs`, `goal:dig`,
-  `goal:rest:0.9`, `goal:search:30`, `goal:travel:R,C` or `goal:pray`.
-  Crisis items do one fight action in one call: `goal:elbereth` (engraves,
-  reads it back, re-engraves once), `goal:quaff[:L]`, `goal:retreat` (stairs
-  within 8 safe steps, else a less exposed square) and `goal:fight:DIR[:N]`
-  (stops on a 15% HP loss or a new adjacent hostile).
-- `--questions FILE`, `--plugin FILE`, `--enable KEY`, `--disable KEY`:
-  hot-load or switch hooks.
-
-Every report ends with a reminder of these options and the counters: keys,
-decisions, model calls (and how many reused an earlier answer) and escalations.
-
-### Settings worth knowing
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `risk` | normal | `low`, `normal`, `high`: HP gates for descending, resting, Elbereth and escalating, plus the depth lead |
-| `effort` | medium | Decision effort: `off` (rules only), `low`, `medium`, `high` |
-| `lead` | by role | Max depth = XL + lead |
-| `fragile_lead`, `pace_xl` | 1, 4 | Pace: the loop descends no deeper than XL + `fragile_lead` (+1 at `risk=high`) until XL `pace_xl`, then one level more unless the hero is fragile. The cap is the shallower of this pace and XL + `lead`, and the briefing and the "depth gate" escalation name which one binds and how to lift it. While it holds on an explored level, the loop wanders the level for experience |
-| `sturdy_hp`, `sturdy_hp_per_xl`, `sturdy_ac` | 10, 4, 7 | Fragile means max HP below `sturdy_hp` + `sturdy_hp_per_xl` × XL (14 at XL 1) or AC above `sturdy_ac`; `cap_lift` never lifts the pace for a fragile hero before XL 3 |
-| `time_left`, `endgame_secs` | unset, 180 | Seconds of play left from now, set by the outer loop at start and again on any resume (it is counted on this process's monotonic clock, so a restart or a copied state directory reports it as unknown until set again). In the last `endgame_secs` the loop pauses once ("endgame"), lifts depth caps, takes stairs at HP 50% or more and prefers any descent, the Mines included; a larger `time_left` re-arms it. Status and reports show the seconds left |
-| `gate_patience` | 0 | Opt-in: after this many turns held by the depth cap on an explored level, allow one level more (0 = wait for experience) |
-| `fight_question` | 1 | In a crisis, a close call between ladder steps (Elbereth against retreat, say) is one decision-model question; the model may only pick a legal ladder step |
-| `milestone`, `milestone_hp`, `milestone_from` | off, 0.67, 1 | `depth`, `xl` or `both`: pause once at each new deepest level and/or XL, when HP is at least `milestone_hp` and no hostile is in view (deferred otherwise), e.g. "milestone: new deepest Dlvl 6 (XL 4, HP 33/35, T1450; down stairs known: no)". `status` lists them |
-| `fight_handoff`, `crisis_turns` | ladder, 12 | When losing fast, the loop first runs a crisis ladder (pray when safe, quaff, stairs underfoot, verified Elbereth, retreat, then fight) and escalates only if the ladder is exhausted or HP is still falling after `crisis_turns`; the report lists the steps tried. `escalate` hands over at once |
-| `hp_drop`, `hp_drop_min` | 0.25, 5 | "Losing fast" needs both this fraction of max HP and this many points lost within 5 turns; the same fight re-escalates only after another step of loss |
-| `mapping` | 1 | 1 reads magic mapping when a level runs out of options; 2 reads one on each new level |
-| `mines` | auto | `allow` for gnome or dwarf heroes, otherwise `avoid`; or `escalate`. An unused Mines staircase looks like any other, so the harness reads the dungeon overview (`^O`) on each new level, leaves at once under `avoid`, and never takes that staircase again |
-| `dig` | 0 | 1 = dig down with a pick-axe or mattock |
-| `swarm_count`, `swarm_xl`, `swarm_hold` | 3, 10, 150 | A swarm is at least `swarm_count` fast, poisonous attackers in view (killer bees, soldier ants; speed and poison come from the monster data) below XL `swarm_xl`. Below Dlvl 1 the loop leaves by the up stairs instead of fighting in the open, pauses once with "swarm: 4 killer bee, poisonous and fast, on Dlvl 6; ..." and holds off going back down for `swarm_hold` decisions |
-| `avoid` | | Regex of monster names never to melee, even when they attack. Monsters the loop keeps away from by itself (nymphs, slow monsters far above the hero's level such as mimics) are not approached or waited for, but are fought back while they attack |
-| `quiet` | 0.06 | Seconds of terminal silence that end a key send |
-
-`help settings` lists every key.
-
-### Effort
-
-Effort sets when the decision model is asked, how much state it sees, how long
-an answer is reused while the situation is unchanged, and whether ungated hook
-questions run every step:
-
-| Level | Ask | State | Reuse | Ungated hooks |
-| --- | --- | --- | --- | --- |
-| off | never | | | never |
-| low | contested steps with an adjacent hostile or HP below half | compact | 20 decisions | with calls |
-| medium | contested steps with a monster within 3, a recent hit or HP below half | full | 6 decisions | with calls |
-| high | every contested step | full | none | always |
-
-Engines of this kind have no reasoning-effort parameter: each call is one
-forward pass, and its cost grows with input tokens and the number of
-questions. So effort controls only how often and how much the harness asks.
-Switch it at runtime, for example `--set effort=high` in a dangerous spot.
-
-### Hunger
-
-The loop feeds the hero itself:
-- **Corpses.** It remembers what it kills and eats a fresh corpse (under 40
-  turns old) when Hungry, or when the pack holds under 1500 nutrition. It
-  never eats while Satiated or in a shop, nor with a hostile in view unless
-  Weak. It never eats cockatrices, were-creatures, polymorphers, bats,
-  mimics, the undead's corpses, acidic corpses, or cannibal and pet corpses,
-  and eats poisonous ones only when resistant. A Monk eats no meat. Each
-  floor prompt is answered by its own corpse.
-- **The pack, at Hungry.** It eats the cheapest food first and keeps lembas
-  wafers and C- and K-rations while other food lasts. Eggs, unpaid food and
-  corpses of unknown age are never eaten. Tins and cures (wolfsbane,
-  eucalyptus, a lizard) are eaten only when Weak with no safe prayer. Fruit
-  is thrown at blockers only while 1000 nutrition of other food remains.
-- **Prayer.** With no food, it prays at Weak once the prayer is safe. When
-  Fainting, it prays 500 or more turns after the last prayer, or at any time
-  once starvation is under 60 turns away, because starving is certain.
-- **The `hunger` escalation** comes only when no food, no corpse and no safe
-  prayer is available before Fainting. It comes once per hunger state, and
-  at Hungry when possible.
-
-Spells cost nutrition, so trivial adjacent monsters are meleed, not bolted.
-
-### Monsters
-
-- **Never-melee blockers** (floating eyes, molds, blobs, gas spores) are
-  fired at, bolted or hit with thrown missiles, spare weapons, gems or fruit,
-  never wielded weapons or launchers. A gas spore is killed from 2 squares
-  away; the loop steps back first. The game's travel command stops at such a
-  monster, so near one the loop steps around it along its own route. When the
-  blocker is not in a straight line, the loop walks to the nearest square that
-  lines up a clear shot.
-- **Stuck boulders.** A boulder that would not move is broken with force bolt
-  or a wand of striking or digging when the way is otherwise closed.
-- **Mimics.** After "That boulder is a mimic!" every other boulder on the
-  level is suspect: the loop does not push one, and steps around them by hand.
-  It walks away from slow monsters it keeps away from and never waits for them.
-- **Knights** never attack a monster that is fleeing (seen turning to flee) or
-  helpless (asleep or unable to move) unless it is undead, because "You
-  caitiff!" costs alignment and an out-of-favour Knight prays in vain. The
-  crisis ladder may still fight.
-- **Swarms** of fast, poisonous attackers make the loop leave by the up stairs
-  (see `swarm_count`).
-- **Walled in** by a blocker with a mild passive (acid blob, green, red or
-  yellow mold, lichen) and nothing to throw, the loop hits it once probing has
-  failed and its HP is clear of the worst passive damage. It never does this to
-  floating eyes, gas spores, brown molds or cockatrices.
-- **Blind**, the loop applies a unicorn horn (or a towel for a face covered in
-  goo), and otherwise waits blindness out where nothing is attacking. Below half
-  HP it does not swing at unseen-monster markers, and the crisis ladder skips
-  them.
-
-### Movement
-
-The game's travel command picks its own path. When a trip makes no progress,
-because travel swings between two squares or stops at a monster, the loop walks
-its own route one step at a time. It waits a turn for a peaceful monster in the
-way, and stops using a step the game refused without a turn passing. Once a
-trip is under way, it keeps to it while nothing threatens and it is still
-nearly the best option, so two near-equal goals cannot walk the hero back and
-forth. A staircase hidden under objects is learned from the "There is a
-staircase down here" message.
-
-## Terminal socket protocol
-
-```
-POST /terminal  {"input": "<base64 keys>", "after": <cursor>}
-200 {"output": "<base64 terminal bytes since cursor>", "cursor": <new cursor>, "truncated": <bool>}
+```sh
+python3 nethack_harness.py --dir /tmp/game-session resume \
+  --objective 'Attempt one ordinary move east, then pause.' --max-action-attempts 1
 ```
 
-- The server keeps a bounded tail of output. `truncated` means bytes were lost;
-  the client redraws with Ctrl-R.
-- `410` with a body containing `over` means the game takes no more input.
-- `410` with a body containing `waiting` means input is held: nothing was sent,
-  so retry.
-- `503` means busy; retry.
+An attempt is consumed immediately before its first gameplay input, even if the
+move is blocked or the write result is uncertain. Tool/argument selection,
+`pause`, pagination and redraws do not consume attempts. A bounded travel or
+search action counts once and retains its own step limit; built-in command
+follow-ups belong to that same attempt. A separately selected prompt answer is
+another action, so the limit can return control at an unresolved prompt.
+The budget covers engine and manual actions. Once exhausted, another executable
+action requires an explicit resume, which renews the budget. Resume without the
+flag preserves the limit; 0 disables it, and is the default. Errors and terminal
+outcomes retain their more specific reasons. Exhaustion does not declare the
+objective achieved or failed.
 
-The socket can be a Unix socket path, `unix:///path` or `http://host:port`.
+`--context-file FILE` on `start` or `resume` supplies an arbitrary JSON object
+as `state.caller_context` on every decision request, including prompt and argument
+selection. `-` reads stdin. The adapter passes this caller-owned context through
+without interpreting goals or conditions. Resume preserves it when omitted;
+an empty object clears it. `resume --max-action-steps N` changes the per-action
+step bound for subsequent choices. `export --after ID` exports only newer
+decision records, allowing a caller to reconcile a specific execution window.
+
+The terminal should use an 80×24 TTY with standard keyboard bindings, letter
+movement, standard menu selection markers, colour, the turn counter and pet
+highlighting enabled. `serve-local` supplies `color,time,hilite_pet,!autopickup`;
+`--options` can set the game options explicitly. The game executable and its
+playground must be supplied separately.
+
+## Actions and observations
+
+Normal-play choices include individual moves and attacks, opening or kicking a
+door, using items, casting, engraving, praying, inspecting game information,
+bounded searching/waiting and travel toward explicit known map targets.
+Travel destinations include squares beside closed doors; a destination remains
+offered for the final step of its route.
+Corridors expose endpoints and junctions as destinations. Interior corridor
+tiles remain part of routes without each becoming another destination choice.
+Move commands can bump into or attack occupants according to game mechanics.
+Travel uses movement without attacks along an unweighted known route. Both can
+fail or reveal new information; the result is returned to the engine.
+Remembered green or cyan `#` tiles are structural obstacles rather than corridor
+connections and remain visible in `level.structural_obstacles`. Direct movement
+commands remain available for the engine to choose.
+
+`explore:row,column` selects a known corridor frontier. It follows the route to
+that square, then follows newly revealed corridor tiles within the same command
+budget. Ordinary corridor and wall discoveries do not interrupt this action.
+It returns on a newly discovered room or feature, changed entities or hero
+state, messages, prompts, a blocked move, or caller interruption. At a branch
+it returns without choosing a branch. Continuation uses cardinal corridor
+connections and does not revisit terrain known before the action. If there is
+no newly revealed continuation, it reports an exploration boundary. Results
+include the stopping position and newly observed terrain. Room-wide exploration
+is not currently an action.
+
+Attacks are one command. Travel, search and wait can execute several commands up
+to the selected bound. They stop early on changed hero stats, conditions,
+visible entities, known terrain, level, messages, prompts, movement failure or caller interruption.
+Atomic game commands can themselves consume multiple turns; actual elapsed turns
+are recorded separately from command count.
+
+Information queries read all menu pages and close the menu. Pagination is
+mechanical, cancellable and recorded. Directions supplied as part of an action
+are sent only after the expected direction prompt appears. An unexpected prompt
+pauses for caller review without sending the remaining argument keys.
+Confirmations, inventory selection and text input are engine choices. Menus
+offer quantities, bulk selection, paging and search; explicit visible selectors
+take precedence over menu shortcuts. Spell choices use observed spell labels.
+Targeting remains a cursor operation when the game replaces its instructions
+with a description of the selected square. Text input offers characters, Enter,
+Backspace and Escape. Unknown screens allow the engine to return control to the caller.
+
+### Tool coverage
+
+`tools.py` defines command descriptions, launch keys, modifiers, direction
+arguments, repetition and information capture in one registry. Common tools are
+offered directly. The `command` tool offers other named commands as a constrained
+second choice; it sends the complete command without spelling it one character
+at a time. `actions` lists the concrete choices for the current observation.
+
+| Capability | Tools and named commands |
+| --- | --- |
+| Movement and combat | move, attack, open, close, kick, ascend, descend, travel, explore, wait, search |
+| Objects and containers | pickup, drop, droptype, eat, quaff, read, apply, zap, throw, fire, dip, loot, tip, force, rub, invoke |
+| Equipment | wield, wear, takeoff, takeoffall, puton, remove, quiver, swap, twoweapon, adjust |
+| Abilities | cast, enhance, jump, teleport, monster, turn |
+| Interaction | chat, pay, offer, pray, ride, sit, untrap, wipe, engrave |
+| Knowledge | inventory, inventtype, spells, showspells, attributes, overview, inspect, look_here, glance, whatis, lookaround, known, knownclass, showtrap, terrain |
+| Information and settings | name, annotate, conduct, chronicle, genocided, vanquished, equipment summaries, showgold, prevmsg, help, command menus, version information, options, optionsfull, autopickup, redraw |
+| Session | pause, save, quit |
+
+Modifiers are explicit choices with command-specific meanings: movement without
+pickup or deliberate attacks, inventory-only consumption, saddle interaction,
+payment menus, and overriding the game's safe-wait prevention. The game still
+checks the prerequisites for every command. Saving or quitting may be refused
+by the game or its launcher.
+
+Native run, rush, repeat and automatic travel are represented by bounded
+movement, search, wait, travel and exploration, which return at observable
+boundaries. Wizard/discovery modes, host shell and job control, persistent
+inventory window management, configuration-file writes and fork-specific
+diagnostics are outside the gameplay interface. Synonyms and menu conveniences
+do not require separate tools when the same capability is already available.
+
+Positions in observations and action IDs are **1-based screen row,column**.
+Action IDs encode direction or target, for example `attack:l`, `travel:8,24`, `explore:8,24`,
+`search:8` and `input:79` (the character `y`). The offered catalogue is the authority
+for a particular observation. A command being offered does not promise it will
+succeed; some game prerequisites are hidden.
+
+Inventory, spells, attributes, dungeon overview and inspections are remembered
+with the turn they were observed. Query snapshots include their age in turns
+and whether all menu pages were observed; complete does not mean still current.
+An interrupted query can contain only part of the inventory. The engine can
+query again after consuming, acquiring or rearranging items.
+
+Memory lasts for the active game session. Known levels retain terrain, landmarks
+(stairs, traps, altars, fountains and other map features), and observed stair
+connections. Recognized shop welcome/untended messages retain the position where
+they appeared, their exact text and turn. This is evidence of a shop entry, not
+its boundary, current stock or safety; silent entries may only appear in a queried
+dungeon overview. Vibrating-square discovery messages are also retained at their
+observed location. New terrain observations replace contradicted landmarks.
+While engulfed, `map_context` identifies the raw map as an engulfment overlay.
+The overlay does not update terrain, visits, searches, inspections or map
+entities. Remembered level facts remain available; adjacent and underfoot
+geometry, map inspection targets and navigation routes are unavailable until
+the dungeon map returns.
+Inspections and single-message `look_here` results remain in the current level's
+location memory. Direct inspection targets include terrain landmarks and the hero;
+use `look_here` for underfoot details. A monster inspection
+is attached to a visible entity only on the inspected turn with matching display
+attributes: the terminal provides no stable monster identity. Prayer requests
+remain recorded throughout the session, without assuming they succeeded.
+
+Retaining information is separate from including it in every request. Every
+decision receives the current level's detailed memory and a compact landmark
+and connection index for all known levels. Other levels' full terrain stays in
+the observer until revisited. Recent messages and actions are bounded; the full
+decision trace is written to SQLite. Starting a fresh harness session resets
+the observer; memory is not carried between games or restored from old traces.
+
+The last eight executed actions include their
+targets, starting and ending positions, elapsed turns and stopping reasons.
+Identical consecutive history entries are represented once with a repetition
+count. Every attempt remains separate in the full decision log.
+Prompt input history includes the literal keys and their descriptions, including
+quantity digits that the game does not echo. This records attempted input, not
+an inferred accepted quantity.
+A repetition summary counts consecutive identical actions within that history
+and reports whether they consumed turns or changed position. It is an observed
+fact, not a rule that changes or blocks the engine's choices. The last twenty
+messages, terrain memory, visits and search counts are also supplied on every
+decision. The complete decision log is stored separately.
+
+Level identity is inferred from status labels
+and traversed staircase connections; the terminal does not provide a level UUID.
+Quest floors and elemental planes have distinct recognized status labels.
+Same-depth branch transitions and portal connections can remain ambiguous;
+queried dungeon overview rows preserve branch headings and their order for the
+caller to inspect, without inventing a branch identity from depth alone.
+The adapter exposes observations and mechanical capabilities. Game reference
+knowledge, species statistics, tactical advice and strategy belong to the caller
+or decision engine. Unknown glyphs remain unidentified until inspected in-game.
+
+Decision requests expose navigation destinations before tool selection, with
+their descriptions, coordinates, known path lengths, next squares and execution
+bounds. These are the offered routes through remembered terrain, not a ranking
+or guarantee of passage. The observation also identifies remembered terrain
+underfoot. The engine chooses the destination; the executor follows that route
+and returns when its bound or an observed boundary is reached.
+Argument requests also include `argument_facts` for every offered choice, with
+its target, bound and modifier. Directional actions include their direction,
+origin, coordinate delta and matching adjacent-square observation. The target
+is the square addressed by the command, not a guaranteed resulting position.
+These facts supplement the complete observation and unchanged choice descriptions.
+`navigation_obstacles` preserves destinations excluded because occupied squares
+block their known routes, including the observed blocking positions. They remain
+evidence even while they are absent from executable choices. Interruptions report
+`changed_fields` when available, such as entities, terrain, status or messages.
+Unknown terrain under the hero uses a floor placeholder for routing; it is
+explicitly marked as inferred until a map glyph or underfoot message is observed.
+
+If the engine selects an action again after it had no observed effect, on the
+same terminal screen and under the same objective, the session pauses with
+`repeated_no_effect` before sending that duplicate input. Its recorded outcome
+includes `review.previous_decision`, the selected action and the evidence.
+Two repetitions of the same cycle of movement action endpoints on unchanged remembered terrain,
+under the same objective, pause with `navigation_cycle`. The outcome preserves
+the original execution reason and includes the cycle positions and decision
+records for review. Each request includes up to 32 recent movement actions in
+`observation.navigation_progress`. New terrain, level or objective changes,
+nonmovement actions, and explicit resume reset this movement window. A single
+return through a corridor does not trigger it.
+Intermediate steps inside a bounded action are not used in this cycle signature.
+
+Unexpected follow-up prompts also pause with `unexpected_prompt`. A caller can
+read `wait`'s status/observation and `actions`, replan, then `resume --objective`.
+Resume explicitly permits another attempt. Time-consuming searches, waits and
+combat are not classified as failures merely because the hero stays in place.
+These checks do not establish whether a plan is useful or detect every detour.
+The decision endpoint is stateless: each request supplies the objective,
+observations, recent progress and the complete choices for its current stage.
+`observation.objective_progress` identifies the current execution scope with an
+opaque ID, its first observed position/turn/level/fingerprint, total attempts,
+remaining caller budget, and up to 32 recent attempts with omitted-count metadata.
+Each attempt records the selected action, source, attempted inputs and delivery
+status, before/after observations, and execution result. Unknown coordinates or
+turns remain null; a pending input has an uncertain result. Full records remain
+available through `export`.
+This scope starts fresh on every explicit resume, even with identical objective
+text, and on an objective change. It is supplied during tool, argument and prompt
+selection. It records execution evidence; it does not infer objective completion.
+`pause` is available at both tool and argument selection, with instructions to
+request caller review when evidence or choices are insufficient for the objective.
+Confidence and all response metadata remain in the trace for the caller
+to assess; the adapter does not apply a universal confidence threshold or call
+a second model itself.
+
+The normal command set includes the primitives used in an ascension: object
+application, reading, offering, movement and stair travel. Ritual order, resource
+preparation and route selection belong to the engine. Initial death messages
+are allowed to paginate because life-saving may follow. Irreversible disclosure
+or farewell ends play; `game_result.outcome` reports `ascended` only when explicit
+ascension text was observed, otherwise `unknown`. A generic end screen is not
+treated as a win. One-item inventory submenus displayed as `--More--` are still
+automatically dismissed; the engine can select the item at the original prompt.
 
 ## Decision endpoint
 
-```
-POST <url>  {"state": <json or text>, "questions": {key: {"type": "choice"|"noul"|"score", "instructions": "...",
-                                                          "criteria": ...}}}
-200 {"answers": {key: {"choice"|"noul"|"score": ..., "probabilities": {...}, "confidence": ...}}}
-```
+The endpoint accepts System One style JSON state and constrained choice questions.
+The harness supplies facts and executable options; the model returns an offered
+choice rather than free-form text, reasoning or generated code. Endpoint URL and
+model name are configurable.
 
-- Only `state` and `questions` are sent, plus `model` with `--model`.
-- The state is about 800 tokens, or less at low effort.
-- Answers are normalized, so engines that omit `probabilities` or `confidence`
-  still work.
-- Confidence is normalized by the number of options: `(n·p − 1)/(n − 1)`.
-- HTTP 429, 503 and 529 are retried. If the endpoint fails, the loop keeps
-  playing on the rules.
-
-## Hooks
-
-Hooks let a strategy add questions and escalation rules without the harness
-knowing what they are for. Load them on `start` or `resume`. A firing hook
-pauses with reason `hook:<key> (answer)`.
-
-**Declarative questions** (`--questions FILE.json`; see `examples/shopkeeper.json`):
+During normal play the first request selects a tool:
 
 ```json
-{"questions": [{"key": "shopkeeper",
-  "question": {"type": "noul", "instructions": "Is a shopkeeper or a shop entrance visible on the screen?"},
-  "escalate_when": {"noul_gte": 0.8}, "when": {"every": 10}, "cooldown": 200}]}
+{
+  "state": {
+    "objective": "Explore the dungeon and survive.",
+    "observation": {"phase": "play", "hero": {"hp": 12}},
+    "decision": {"stage": "tool", "tool": null}
+  },
+  "questions": {
+    "action": {
+      "type": "choice",
+      "instructions": "Choose the tool to use next. Objective: Explore the dungeon and survive.",
+      "criteria": {"search": "Search here for a selected bounded number of turns.", "pause": "Return control to the caller"}
+    }
+  }
+}
 ```
 
-- `escalate_when` takes any of `noul_gte`, `noul_lte`, `score_gte`,
-  `score_lte`, `choice_in` and `min_confidence`. All given conditions must hold.
-- `when` is `{"every": N}` decisions or `{"new_level": true}`.
-- Ungated questions follow the effort level.
+An optional top-level `model` selects the engine model. A successful response is:
 
-**Plugins** (`--plugin FILE.py`; see `examples/new_level.py`). Hook API version 1:
-
-```python
-API = 1
-def extra_questions(facts): ...        # -> {key: question}
-def on_answers(facts, answers): ...    # -> None | {"escalate": "reason"} | {"action": "keys to send instead"}
-def on_resume(facts, orders): ...      # facts: orders, mode, decisions; orders: directive, mode, set, enable, disable
-def on_escalation(facts, esc): ...     # esc: {"code", "text"} -> None | {"continue": True} | {"plan": [items]}
+```json
+{"answers": {"action": {"choice": "search"}}}
 ```
 
-`examples/auto_answers.py` answers some escalations itself (a safe prayer for
-lycanthropy, playing on at a trap door). Safety codes always reach the outer
-loop. Plugins run with a 5 s time limit; one that overruns or fails twice is
-disabled, and its output goes to a capped `hooks.log`.
+When the tool has several concrete actions, a second request offers only those
+actions, such as `search:1` and `search:8`. Its decision state is
+`{"stage": "arguments", "tool": "search"}`. The selected tool and objective appear
+in the instructions. Tools with one action execute immediately. Game prompts
+offer their input choices directly with stage `input`.
 
-The decision `facts` hold `dlvl`, `hp`, `hpmax`, `hp_percent`, `xl`, `turn`,
-`conditions`, `new_level`, `hostiles`, `standing_on`, `role`, `race`,
-`messages`, `decisions`, `keys`, `mode`, `risk`, `orders`, `screen` and `state`.
+The `command` tool uses the same argument stage to select a named command such
+as `pay`, `loot` or `enhance`. This keeps infrequent commands out of the first
+choice without adding another hierarchy or allowing arbitrary generated code.
 
-A plugin exception pauses the loop with a `hook error` instead of crashing it.
-Alarming messages carry a remedy hint where one is known (lycanthropy, illness,
-sliming, theft, an angry shopkeeper).
+`choice` must name an offered criterion. Each endpoint call has its own record
+and contributes to the call count. Tool selection records `tool_selected` with
+zero execution steps; argument selection records the executed action and result.
+A changed screen, objective or caller interruption invalidates a pending tool
+selection. Repeated execution within a bounded action and information pagination
+need no additional request.
 
-## Layout
+Additional response metadata, such as probabilities, is recorded but never used
+to override the choice. Malformed responses, HTTP failures and timeouts pause
+play. The harness does not impose a model-specific option or token limit; the
+endpoint enforces its own request limits.
 
-| Module | Role |
-| --- | --- |
-| `term` | VT100/xterm screen emulator |
-| `transport` | Terminal-socket client, settling, local pty server |
-| `screen` | Messages, prompts, status, hero, colors |
-| `knowledge` | Monster tables, prompt answers, roles, food worth picking up |
-| `food` | Safe corpses and the corpses the hero made, pack food order, eating, hunger prayer and escalation |
-| `level` | Per-level memory, paths, frontiers, search spots, bans |
-| `policy` | The Pilot: state, clock, escalation routing; composed from the modules below |
-| `perceive` | Screen, pack, character, branch, farlook, depth limits |
-| `messages` | Messages and prompts, prayer timing |
-| `candidates` | Legal actions with rule priorities (combat, doors, stairs, exploring, emergencies) |
-| `crisis` | The crisis ladder, retreat, verified Elbereth |
-| `execute` | Carrying out actions and plan items |
-| `modelview` | What the decision model sees and is asked |
-| `stepper` | One decision: bookkeeping, then arbitration and the action |
-| `course` | Action outcomes, futility (oscillation) checks, keeping a trip under way |
-| `pauses` | When to hand back: milestones, shop-door notes, the escalation checks of each step |
-| `escalation` | Escalation codes, dedupe windows, pause_on |
-| `base` | Act, Hard and shared sentinels |
-| `decide` | Endpoint client, answer normalization, questions |
-| `hooks` | Declarative and plugin hooks |
-| `report` | Escalation reports, briefing, status |
-| `settings` | Tunables, modes, risk, effort |
-| `control` | Command line: start, wait, resume and the other commands |
-| `daemon` | The background loop: start-up, command handling, pauses, the step loop |
-| `store` | State directory: atomic files, command queue, key journal, level notes, saved pilot |
-| `manual` | Guarded key batches (`repeat`) while paused |
-| `helptext` | `help` text: the capability map and topics |
-
-## Development
+## Caller commands
 
 ```sh
-python3 -m unittest discover -s tests
+harness() { python3 nethack_harness.py --dir /tmp/game-session "$@"; }
+harness wait --timeout 30
+harness pause
+harness observe
+harness actions
+harness screen
+harness act search:1
+harness send '\e'
+harness resume --objective 'Find the downstairs.' --timeout 30
+harness status
+harness export --out /tmp/decisions.jsonl
+harness stop
 ```
 
-The tests need no NetHack and no network. `tests/fixtures/screens` holds golden screens: a fresh pilot's
-top actions on each. After an intended rule change, `python3 tools/record_fixtures.py regen
-tests/fixtures/screens` rewrites them; the diff is the behaviour change. `tools/record_fixtures.py record`
-captures new screens from a running game.
+Manual input requires a paused session and is attributed separately in records.
+`act` chooses an action from the current catalogue. `send` takes up to 256 bytes
+with `\e`, `\r`, `\n`, `\t`, `\\` and `\xHH` escapes. It is an explicit caller
+intervention; arbitrary key sequences are not engine-generated actions.
 
-`python3 tools/build_pyz.py --commit SHA --out dist/nethack-harness.pyz` builds
-the release zipapp. Pushing a `v*` tag whose version matches `__version__`
-runs the release workflow, which tests, builds twice to check the bytes match,
-and publishes the zipapp and `SHA256SUMS` with the tag message as notes.
+## Storage and training data
 
-## Benchmark
+Each session has a fresh SQLite database, `session.sqlite3`, plus `daemon.log`,
+a process lock and a schema-initialization lock. SQLite transactions serialize caller commands and record decisions.
+Completed commands are removed. The session retains its decision history for export.
 
-`tools/bench.py` judges behaviour changes on many games instead of one
-anecdote. It plays seeded local games for a fixed wall time each, with no
-decision model by default, under a scripted outer loop. The `resume` loop
-resumes every escalation with no help. The `recommended` loop answers with the
-plan items this README recommends.
+An exported JSONL row includes:
 
-For each game it records:
-- max depth, and the turn and time it first reached each Dlvl;
-- XL, turns, and death with its cause;
-- escalations by code, decisions and keys;
-- stuck periods (500 or more turns without a new deepest level) and turns
-  spent behind the depth gate.
+- `id`, `created`, `source` (`engine`, `manual` or `protocol`).
+- The exact `request`, including the observation and offered choices.
+- `response`, selected `choice`, and endpoint `latency`.
+- `inputs`: keys, source and completion status for each input attempt.
+- `outcome`: selected action metadata, execution boundary, steps, elapsed turns,
+  intermediate messages/status frames and termination.
+- `after`: the resulting structured observation.
 
-It prints medians and a per-role table. `compare` runs two commits side by
-side:
+Intent is written before input. A `pending` input means completion was not
+confirmed; a row without an outcome means the decision did not finish recording.
+Such records are not automatically replayed. A training consumer must distinguish
+these from completed transitions. Terminal disconnection is recorded separately
+from observed game over. No reward function is embedded in the adapter.
+HTTP endpoint failures retain their response as parsed JSON or raw text, capped
+at 1 MiB; the error states when that response was truncated. They pause execution
+without retrying the decision request or sending game input.
+
+## Tests and measurements
 
 ```sh
-python3 tools/bench.py run --seeds 1-12 --secs 240 --out head.jsonl
-python3 tools/bench.py compare --base v0.4.1 --head master --seeds 1-12 --secs 240
-python3 tools/bench.py report base.jsonl head.jsonl
+python3 -m unittest discover -s tests -v
+uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness goal_supervisor tests tools
+python3 tools/record_fixtures.py /tmp/game.sock /tmp/observation.json
 ```
 
-`--serve` is the shell command that starts one game's terminal socket,
-formatted with `{seed}`, `{socket}` and `{dir}`. The default uses
-`serve-local` with `nethack` and `seed:{seed}`. Pick seeds that cover fragile
-and sturdy roles. At most two games run at once.
+Fixtures contain terminal observations. Tests cover choice authority, prompt
+handling, bounded interruption, observation freshness, decision records and
+process lifecycle using local fakes and endpoint stubs.
 
-## License
+`tools/bench.py` runs seeded games against an explicit decision endpoint:
 
-MIT
+```sh
+python3 tools/bench.py run \
+  --serve 'python3 nethack_harness.py serve-local --socket {socket} --nethack nethack --options seed:{seed},color,time,hilite_pet,!autopickup -- -u Hero -@' \
+  --decide http://localhost:8000/v1/systemone --seeds 1-3 --seconds 120 \
+  --objective 'Reach the greatest depth you can while surviving.' --out results.jsonl
+python3 tools/bench.py report results.jsonl
+```
+
+The server command is parsed into arguments and run without a shell. Seed support
+and isolated game storage depend on the supplied game executable/server command.
+Benchmarks stop on a pause, game over, endpoint failure or the time budget. They
+report depth, turns, actions, calls and latency; endpoint failures and truncated
+sessions are reported separately. There is no scripted gameplay fallback.
+This tool measures the decision endpoint under one supplied objective. It does
+not run the goal supervisor or an outer LLM planner, and does not calculate token
+usage or monetary cost. A comparison against direct LLM control needs an external
+evaluation that records those calls and uses comparable game conditions.
+
+## Distribution
+
+`python3 -m nethack_harness` and `python3 nethack_harness.py` run the CLI.
+Build a reproducible single-file zipapp:
+
+```sh
+python3 tools/build_pyz.py --commit "$(git rev-parse HEAD)" --out dist/nethack-harness.pyz
+python3 dist/nethack-harness.pyz --version
+```
+
+CI tests Python 3.9 and 3.11. Tagged releases publish the zipapp and its checksum.

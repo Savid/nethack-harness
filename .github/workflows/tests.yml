@@ -28,4 +28,4 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pipx run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness tests tools
+      - run: pipx run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness goal_supervisor tests tools

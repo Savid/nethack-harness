@@ -1,8 +1,6 @@
 .nethack-harness/
-.test/
 __pycache__/
 *.pyc
-/COMMIT
 *.pyz
 /nethack_harness/_commit.py
 /dist/

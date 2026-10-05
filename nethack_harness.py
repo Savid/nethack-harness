@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Stable entry point: runs the nethack_harness package that sits beside this file.
-
-    python3 nethack_harness.py help      # the capability map
-"""
+"""Run the nethack_harness command-line interface."""
 import os
 import sys
 
