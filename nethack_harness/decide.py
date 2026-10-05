@@ -20,26 +20,67 @@ def reject_constant(value):
     raise ValueError("non-finite JSON number: " + value)
 
 
-def argument_facts(observation, action):
-    facts = action.as_dict()
+GUIDANCE = ("Decide from this state alone; caller_context and objective_progress list earlier attempts and their"
+            " results. Prefer a choice that has not already failed to make progress.")
+OMITTED_LEVEL = ("known_terrain", "visits", "inferred_floor")
+
+
+def visit_counts(observation):
+    return {tuple(entry[:2]): entry[2] for entry in (observation.get("level") or {}).get("visits", ())}
+
+
+def destination(action, visits):
+    target = position(action.target)
+    return {"kind": action.subject, "position": target, "path_length": len(action.route),
+            "next_position": position(action.route[0]), "max_steps": action.steps, "visits": visits.get(tuple(target), 0),
+            "frontier": action.frontier}
+
+
+def argument_facts(observation, action, visits):
+    facts = {"target": position(action.target), "max_steps": action.steps}
     spec = TOOLS.get(action.kind)
+    if action.route:
+        facts.update(destination(action, visits))
     if not spec:
         return facts
     parts = action.id.split(":")
     variant = next((v for v in spec.variants if v.name in parts[1:]), None)
-    facts["modifier"] = {"name": variant.name, "description": variant.description} if variant else None
+    if variant:
+        facts["modifier"] = {"name": variant.name, "description": variant.description}
     if spec.directions and parts[-1] in spec.directions:
         key = parts[-1]
+        origin = observation.get("hero", {}).get("position")
         facts.update(direction=dict(DIRECTION_NAMES, **{".": "self", "<": "up", ">": "down"})[key],
-                     direction_key=key, origin=observation.get("hero", {}).get("position"))
-        origin, target = facts["origin"], facts["target"]
-        if origin is not None and target is not None:
-            facts["delta"] = [end - start for start, end in zip(origin, target)]
+                     direction_key=key, origin=origin)
+        if origin is not None and facts["target"] is not None:
+            facts["delta"] = [end - start for start, end in zip(origin, facts["target"])]
         adjacent = next((square for square in observation.get("adjacent", [])
-                         if square["direction"] == key and square["position"] == target), None)
+                         if square["direction"] == key and square["position"] == facts["target"]), None)
         if adjacent is not None:
-            facts["target_observation"] = adjacent
+            facts["target_observation"] = {name: adjacent[name] for name in ("glyph", "colour", "remembered_terrain")}
     return facts
+
+
+def snapshot_summary(snapshot, field):
+    return {field: snapshot[field], "age_turns": snapshot["age_turns"], "complete": snapshot["complete"]}
+
+
+def request_observation(observation):
+    """The observation as sent to the engine: complete facts, without map memory the screen already shows."""
+    out = {key: value for key, value in observation.items() if key != "fingerprint"}
+    if "messages" in out:
+        out["messages"] = out["messages"][-8:]
+    for key, field in (("inventory", "items"), ("spells", "items"), ("attributes", "lines"), ("dungeon_overview", "lines")):
+        if key not in out:
+            continue
+        if out[key][field] or out[key]["observed_turn"] is not None:
+            out[key] = snapshot_summary(out[key], field)
+        else:
+            del out[key]
+    level = out.get("level")
+    if level and "known_terrain" in level:
+        out["level"] = {key: value for key, value in level.items() if key not in OMITTED_LEVEL and value != []}
+    return out
 
 
 def request_body(observation, actions, objective, model=None, tool=None, caller_context=None):
@@ -53,26 +94,21 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
                     if tool is None or action.tool == tool or action.kind == "pause"}
         instructions = "Selected tool: %s. Choose its concrete arguments." % tool if tool else "Answer the current prompt."
     if "pause" in criteria:
-        instructions += (" Each request is independent; use the supplied state and choices."
-                         " objective_progress records attempts since this objective scope began; use their results"
-                         " to assess whether the objective already warrants pause. Earlier history may belong to other scopes."
-                         " Choose pause for caller review if the evidence or offered choices are insufficient"
-                         " to select an action for the objective, or the recorded actions show a loop without progress.")
-    body = {"state": {"objective": objective, "observation": observation},
-            "questions": {"action": {"type": "choice", "instructions": instructions + " Objective: " + objective,
-                                      "criteria": criteria}}}
-    body["state"]["decision"] = {"stage": stage, "tool": tool}
-    body["state"]["caller_context"] = caller_context or {}
-    if stage == "arguments":
-        body["state"]["argument_facts"] = {
-            action.id: argument_facts(observation, action) for action in actions if action.id in criteria}
-    if not direct:
-        body["state"]["navigation"] = {
+        instructions += " " + GUIDANCE
+    visits = visit_counts(observation)
+    state = {"decision": {"stage": stage, "tool": tool}, "objective": objective, "caller_context": caller_context or {}}
+    if stage == "tool":
+        state["navigation"] = {
             "source": "offered routes through remembered terrain; not a guarantee of passage",
-            "destinations": [{"action": action.id, "description": action.description,
-                              "position": position(action.target), "known_path_length": len(action.route),
-                              "next_position": position(action.route[0]), "max_steps": action.steps}
+            "frontier": "the hero has not stood there and it borders squares that never showed a glyph",
+            "destinations": [dict(action=action.id, **destination(action, visits))
                              for action in actions if action.kind in ("travel", "explore") and action.route]}
+    elif stage == "arguments":
+        state["argument_facts"] = {action.id: argument_facts(observation, action, visits)
+                                   for action in actions if action.id in criteria}
+    state["observation"] = request_observation(observation)
+    body = {"state": state, "questions": {"action": {"type": "choice", "instructions": instructions + " Objective: " + objective,
+                                                      "criteria": criteria}}}
     if model:
         body["model"] = model
     return body

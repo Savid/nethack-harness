@@ -275,6 +275,7 @@ class Observer:
                                                     if origin == lv.id]}
                                    for lv in self.levels]
         else:
+            out["level"] = {"id": self.current.id, "label": self.current.label} if self.current else None
             out["screen"] = view.text_screen()
             out["prompt"] = view.msg
             out["menu_entries"] = parse_menu_entries(view)

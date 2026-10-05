@@ -96,6 +96,13 @@ class ObservationTest(TestCase):
         self.assertEqual(state["underfoot"]["basis"], "observed map or underfoot message")
         self.assertEqual(state["level"]["inferred_floor"], [])
 
+    def test_level_identity_remains_present_at_prompts(self):
+        observer = Observer()
+        prompt = view(screen("Really attack the peaceful gnome? [yn] (n)"), (0, 40))
+        self.assertIsNone(observer.observation(prompt)["level"])
+        observer.observation(view())
+        self.assertEqual(observer.observation(prompt)["level"], {"id": "level-1", "label": "Dlvl:3"})
+
     def test_inspection_records_observed_description_and_turn(self):
         observer = Observer()
         before = view(screen("", [" ------- ", " |.@e..| ", " ------- "]))

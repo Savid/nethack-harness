@@ -16,7 +16,7 @@ class ObjectiveProgress:
     def point(observation):
         return {"fingerprint": observation["fingerprint"], "phase": observation["phase"],
                 "position": observation["hero"].get("position"), "turn": observation["hero"].get("turn"),
-                "level": observation.get("level", {}).get("id")}
+                "level": (observation.get("level") or {}).get("id")}
 
     def sync(self, observation, objective):
         if self.start is None or objective != self.objective:
@@ -49,7 +49,7 @@ class NavigationProgress:
 
     @staticmethod
     def key(observation, objective):
-        level = observation.get("level", {})
+        level = observation.get("level") or {}
         obstacles = tuple((tuple(cell["position"]), cell["colour"]) for cell in level.get("structural_obstacles", ()))
         return (objective, level.get("id"), tuple(level.get("known_terrain", ())), obstacles)
 

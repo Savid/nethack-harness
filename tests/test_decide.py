@@ -9,7 +9,7 @@ from nethack_harness.decide import Engine, DecisionError, request_body
 
 class EngineTest(TestCase):
     def test_argument_facts_preserve_choices_modifiers_and_target_evidence(self):
-        adjacent = {"direction": "u", "position": [8, 72], "glyph": "#", "remembered_terrain": "#"}
+        adjacent = {"direction": "u", "position": [8, 72], "glyph": "#", "colour": "gray", "remembered_terrain": "#"}
         observation = {"phase": "play", "hero": {"position": [9, 71]}, "adjacent": [adjacent]}
         actions = [Action("move:u", "Move northeast", "move", "u", target=(7, 71)),
                    Action("move:no_pickup:u", "Move northeast without pickup", "move", "mu", target=(7, 71)),
@@ -27,8 +27,9 @@ class EngineTest(TestCase):
         self.assertEqual(facts["move:u"]["delta"], [-1, 1])
         self.assertEqual(facts["move:u"]["direction_key"], "u")
         self.assertEqual(facts["move:u"]["direction"], "northeast")
-        self.assertEqual(facts["move:u"]["target_observation"], adjacent)
-        self.assertIsNone(facts["move:u"]["modifier"])
+        self.assertEqual(facts["move:u"]["target_observation"],
+                         {"glyph": "#", "colour": "gray", "remembered_terrain": "#"})
+        self.assertNotIn("modifier", facts["move:u"])
         self.assertEqual(facts["move:no_pickup:u"]["modifier"]["name"], "no_pickup")
         self.assertEqual(facts["pause"]["max_steps"], 0)
         # Vertical and self directions address the same coordinates but differ mechanically.
@@ -40,12 +41,32 @@ class EngineTest(TestCase):
 
     def test_destinations_are_visible_before_selecting_a_navigation_tool(self):
         route = ((2, 4), (2, 5), (2, 6))
-        action = Action("travel:3,7", "Travel to down stairs", "travel", steps=2, target=(2, 6), route=route)
-        request = request_body({"phase": "play"}, [action], "Explore")
+        action = Action("travel:3,7", "Travel to down stairs", "travel", steps=2, target=(2, 6), route=route,
+                        subject="down stairs")
+        observation = {"phase": "play", "level": {"id": "level-1", "known_terrain": ["..."], "visits": [[3, 7, 2]]}}
+        request = request_body(observation, [action], "Explore")
         self.assertEqual(request["state"]["decision"]["stage"], "tool")
         self.assertEqual(request["state"]["navigation"]["destinations"], [
-            {"action": "travel:3,7", "description": "Travel to down stairs", "position": [3, 7],
-             "known_path_length": 3, "next_position": [3, 5], "max_steps": 2}])
+            {"action": "travel:3,7", "kind": "down stairs", "position": [3, 7], "path_length": 3,
+             "next_position": [3, 5], "max_steps": 2, "visits": 2, "frontier": False}])
+        arguments = request_body(observation, [action], "Explore", tool="travel")["state"]
+        self.assertNotIn("navigation", arguments)
+        self.assertEqual(arguments["argument_facts"]["travel:3,7"]["visits"], 2)
+
+    def test_requests_omit_map_memory_the_screen_shows_but_keep_level_facts(self):
+        observation = {"phase": "play", "fingerprint": "f", "messages": [{"text": str(n)} for n in range(20)],
+                       "inventory": {"items": {}, "observed_turn": None, "age_turns": None, "complete": False},
+                       "spells": {"items": {"a": "force bolt"}, "observed_turn": 3, "age_turns": 1, "complete": True},
+                       "level": {"id": "level-2", "label": "Dlvl:2", "known_terrain": ["#"], "visits": [[3, 4, 1]],
+                                 "inferred_floor": [], "searches": [[3, 4, 5]], "inspections": []},
+                       "map": ["@"]}
+        sent = request_body(observation, [Action("wait:1", "Wait", "wait")], "Wait")["state"]["observation"]
+        self.assertEqual(sent["level"], {"id": "level-2", "label": "Dlvl:2", "searches": [[3, 4, 5]]})
+        self.assertEqual([m["text"] for m in sent["messages"]], [str(n) for n in range(12, 20)])
+        self.assertNotIn("inventory", sent)
+        self.assertEqual(sent["spells"], {"items": {"a": "force bolt"}, "age_turns": 1, "complete": True})
+        self.assertNotIn("fingerprint", sent)
+        self.assertEqual(sent["map"], ["@"])
 
     def test_exact_choice_is_used_without_confidence_gate(self):
         endpoint = Endpoint(lambda _: {"answers": {"action": {"choice": "attack:l", "confidence": 0.01}}})
