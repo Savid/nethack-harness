@@ -5,7 +5,7 @@ import string
 from .knowledge import DIRECTION_NAMES
 from .level import FEATURES, neighbours, position, cursor_keys
 from .perceive import parse_menu_entries, phase
-from .tools import TOOLS
+from .tools import PAUSE, TOOLS
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,8 @@ class Action:
     target: tuple = None
     route: tuple = ()
     followups: tuple = ()
+    subject: str = ""
+    frontier: bool = False
 
     @property
     def tool(self):
@@ -25,8 +27,11 @@ class Action:
         return spec.group or self.kind if spec else self.kind
 
     def as_dict(self):
-        return {"id": self.id, "description": self.description, "kind": self.kind,
-                "tool": self.tool, "max_steps": self.steps, "target": position(self.target)}
+        result = {"id": self.id, "description": self.description, "kind": self.kind,
+                  "tool": self.tool, "max_steps": self.steps, "target": position(self.target)}
+        if self.subject:
+            result["subject"] = self.subject
+        return result
 
 
 def input_action(key, description=None):
@@ -53,7 +58,7 @@ def catalogue(view, observer, max_steps):
         return []
     if mode == "more":
         return [Action("continue", "Display the next page", "continue", " ")]
-    pause = Action("pause", "Return control to the caller", "pause", steps=0)
+    pause = Action("pause", PAUSE, "pause", steps=0)
     if mode == "unknown":
         return [pause]
     if mode != "play":
@@ -143,10 +148,12 @@ def catalogue(view, observer, max_steps):
             actions.append(Action("travel:%d,%d" % tuple(pos),
                                   "Move toward %s at %s along %d known squares, at most %d steps" % (
                                       description, pos, len(route), max_steps),
-                                  "travel", steps=min(max_steps, len(route)), target=target, route=tuple(route)))
+                                  "travel", steps=min(max_steps, len(route)), target=target, route=tuple(route),
+                                  subject=description, frontier=level.frontier(target)))
             if description == "corridor endpoint":
                 actions.append(Action("explore:%d,%d" % tuple(pos),
                                       "Explore the corridor beyond %s for at most %d steps; stop at a branch, "
                                       "room, feature or encounter" % (pos, max_steps),
-                                      "explore", steps=max_steps, target=target, route=tuple(route)))
+                                      "explore", steps=max_steps, target=target, route=tuple(route),
+                                      subject=description, frontier=level.frontier(target)))
     return actions + [pause]

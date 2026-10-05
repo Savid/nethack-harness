@@ -94,6 +94,31 @@ class ActionCatalogueTest(TestCase):
         self.assertEqual(near["travel:4,6"].route, ((3, 5),))
         self.assertEqual(near["travel:4,6"].steps, 1)
 
+    def test_frontier_ignores_squares_shown_under_monsters_or_objects_and_visited_edges(self):
+        observer = Observer()
+        rows = [" -------", " |.....|", " |.d$.@.", " -------"]
+        first = view(screen("", rows), (3, 6))
+        observer.observation(first)
+        travel = {a.target: (a.subject, a.frontier) for a in catalogue(first, observer, 8) if a.kind == "travel"}
+        self.assertEqual(travel, {(3, 7): ("edge of known terrain", True), (3, 4): ("object $", False)})
+        doorway = view(screen("", [" -------", " |.....|", " |.d$..@", " -------"]), (3, 7))
+        observer.observation(doorway)
+        observer.observation(first)
+        travel = {a.target: (a.subject, a.frontier) for a in catalogue(first, observer, 8) if a.kind == "travel"}
+        self.assertEqual(travel, {(3, 4): ("object $", False)})
+
+    def test_routes_cross_squares_seen_only_under_objects(self):
+        choices = self.choices(view(screen("", ["", "   @#$#>"]), (2, 3)))
+        self.assertEqual(choices["travel:3,8"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
+
+    def test_diagonal_corridor_steps_connect_unless_a_cardinal_path_joins_them(self):
+        choices = self.choices(view(screen("", ["", "   @#", "     #", "      ##"]), (2, 3)))
+        travel = {a.target: a.subject for a in choices.values() if a.kind == "travel"}
+        self.assertEqual(travel, {(4, 7): "corridor endpoint"})
+        self.assertIn("explore:5,8", choices)
+        bend = self.choices(view(screen("", ["", "   @##", "     ##"]), (2, 3)))
+        self.assertEqual({a.target for a in bend.values() if a.kind == "travel"}, {(3, 6)})
+
     def test_prompt_choices_preserve_game_answers(self):
         v = view(screen("Really attack the peaceful gnome? [yn] (n)"), (0, 40))
         choices = self.choices(v)

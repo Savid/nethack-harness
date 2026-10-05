@@ -188,6 +188,16 @@ class ExecutionTest(TestCase):
         self.assertEqual(result["position"], [5, 5])
         self.assertIn({"position": [6, 5], "glyph": "#"}, result["new_terrain"])
 
+    def test_exploration_follows_a_diagonal_corridor_step(self):
+        tiles = {(2, 3): "#", (2, 4): "#"}
+        turned = {**tiles, (3, 5): "#"}
+        executor, _ = self.executor([corridor((2, 3), tiles), corridor((2, 4), turned, 401),
+                                     corridor((3, 5), turned, 402)])
+        result = executor.run(Action("explore:3,5", "Explore corridor", "explore", steps=8, target=(2, 4),
+                                     route=((2, 4),)), fingerprint(executor.term.view()))
+        self.assertEqual(executor.term.sent, ["ml", "mn"])
+        self.assertEqual(result["reason"], "exploration_boundary")
+
     def test_exploration_returns_at_branch_without_choosing_one(self):
         initial = {(2, 3): "#", (2, 4): "#"}
         junction = dict(initial)
@@ -243,13 +253,30 @@ class ExecutionTest(TestCase):
         self.assertEqual(result["steps"], 1)
         self.assertEqual(executor.observer.current.searches, {})
 
-    def test_new_terrain_returns_control_before_the_next_step(self):
-        revealed = room(4, turn=401)
-        revealed.rows[4] = "    .".ljust(80)
-        executor, _ = self.executor([room(3), revealed, room(5, turn=402)])
+    def test_travel_continues_through_ordinary_map_growth_and_stops_at_a_new_feature(self):
+        for glyph, reason, sent in ((".", "completed", ["ml", "ml"]), (">", "observation_changed", ["ml"]),
+                                    ("+", "observation_changed", ["ml"])):
+            with self.subTest(glyph=glyph):
+                revealed = room(4, turn=401)
+                revealed.rows[4] = ("    " + glyph).ljust(80)
+                executor, _ = self.executor([room(3), revealed, room(5, turn=402)])
+                result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
+                                             route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
+                self.assertEqual(result["reason"], reason)
+                self.assertEqual(executor.term.sent, sent)
+
+    def test_monsters_already_in_view_moving_about_do_not_end_bounded_movement(self):
+        executor, _ = self.executor([room(3, monster=6), room(4, turn=401, monster=8), room(5, turn=402, monster=9),
+                                     room(6, turn=403, monster=9)])
+        result = executor.run(Action("travel:3,7", "Go east", "travel", steps=3,
+                                     route=((2, 4), (2, 5), (2, 6))), fingerprint(executor.term.view()))
+        self.assertEqual((result["reason"], executor.term.sent), ("completed", ["ml", "ml", "ml"]))
+
+    def test_monster_coming_adjacent_ends_bounded_movement(self):
+        executor, _ = self.executor([room(3, monster=9), room(4, turn=401, monster=5), room(5, turn=402)])
         result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
                                      route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
-        self.assertEqual(result["reason"], "observation_changed")
+        self.assertEqual((result["reason"], result["changed_fields"]), ("observation_changed", ["entities"]))
         self.assertEqual(executor.term.sent, ["ml"])
 
     def test_menu_pages_are_observed_and_closed_within_query(self):

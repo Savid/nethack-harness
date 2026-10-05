@@ -21,6 +21,7 @@ class Tool:
     variants: tuple = ()
 
 
+PAUSE = "Return control to the caller"
 INVENTORY_ONLY = Variant("inventory", "m", "Select from inventory, skipping floor objects or terrain")
 NO_PICKUP = Variant("no_pickup", "m", "Move without automatic pickup")
 FORCE_WAIT = Variant("force", "m", "Override the game's safe-wait prevention")
@@ -65,7 +66,7 @@ _TOOLS = (
     Tool("inspect", "Inspect a selected map location"),
     Tool("travel", "Follow a route to a selected known destination without attacking; bounded movement"),
     Tool("explore", "Explore beyond a corridor endpoint until a feature, branch, encounter or step limit"),
-    Tool("pause", "Return control to the caller"),
+    Tool("pause", PAUSE),
 )
 
 
@@ -135,6 +136,7 @@ _COMMANDS = (
 
 TOOLS = {tool.name: tool for tool in _TOOLS}
 TOOLS.update({tool.name: replace(tool, keys=tool.keys or "#" + tool.name + "\r", group="command") for tool in _COMMANDS})
+TOOL_NAMES = frozenset(tool.group or tool.name for tool in TOOLS.values())
 COMMAND_DESCRIPTION = "Use another named command: " + ", ".join(tool.name for tool in _COMMANDS)
 
 

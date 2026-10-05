@@ -1,10 +1,11 @@
 """Execute a selected action and stop at observable boundaries."""
 import re
 import time
+from collections import Counter
 
 from .base import Paused
 from .knowledge import DIRS
-from .level import neighbours, position
+from .level import FEATURES, position
 from .perceive import fingerprint, phase
 from .transport import Closed, Held
 from .tools import TOOLS
@@ -15,14 +16,37 @@ class Boundary(Exception):
         self.reason = reason
 
 
-def interrupt_signature(view, observer, terrain=True):
+def interrupt_signature(view, observer, terrain):
+    """Observed state whose change ends a bounded action; terrain is "all", "features" or None."""
     level = observer.current
+    known = ()
+    if level and terrain:
+        cells = sorted(level.terrain.items()) if terrain == "all" else sorted(
+            (p, ch) for p, ch in level.terrain.items() if ch in FEATURES or ch == "+")
+        known = (tuple(cells), tuple((tuple(cell["position"]), cell["colour"]) for cell in level.structural_obstacles()),
+                 frozenset(level.open_doors))
     return (tuple(sorted((key, value) for key, value in view.st.items() if key != "turn")),
-            tuple(view.cond), view.engulfed,
-            (level.id, tuple(sorted(level.terrain.items())) if terrain else (),
-             tuple((tuple(cell["position"]), cell["colour"]) for cell in level.structural_obstacles()) if terrain else (),
-             frozenset(level.open_doors) if terrain else frozenset()) if level else None,
-            tuple((e["position"], e["glyph"], e["colour"]) for e in observer.entities(view)))
+            tuple(view.cond), view.engulfed, (level.id, known) if level else None)
+
+
+def monsters(view, observer):
+    """Visible monster appearances, and those adjacent to the hero, counted by glyph and colour."""
+    visible, adjacent = Counter(), Counter()
+    hero = view.hero
+    for entity in observer.entities(view):
+        if entity["kind"] not in ("monster", "unseen"):
+            continue
+        key = (entity["glyph"], entity["colour"], entity["bright"])
+        visible[key] += 1
+        r, c = (x - 1 for x in entity["position"])
+        if hero and max(abs(r - hero[0]), abs(c - hero[1])) <= 1:
+            adjacent[key] += 1
+    return visible, adjacent
+
+
+def arrived(start, now):
+    """A monster appeared or came adjacent; monsters already in view moving about do not count."""
+    return any(now[0][key] > start[0][key] for key in now[0]) or any(now[1][key] > start[1][key] for key in now[1])
 
 
 class Executor:
@@ -126,7 +150,9 @@ class Executor:
         if self.cancelled():
             return self.snapshot("caller_interrupt")
         exploring = action.kind == "explore"
-        signature = interrupt_signature(before, self.observer, terrain=not exploring)
+        terrain = None if exploring else "features" if action.kind == "travel" else "all"
+        signature = interrupt_signature(before, self.observer, terrain)
+        presence = monsters(before, self.observer)
         known = dict(self.observer.current.terrain) if exploring else {}
         known_colours = dict(self.observer.current.colours) if exploring else {}
         known_doors = set(self.observer.current.open_doors) if exploring else set()
@@ -144,8 +170,7 @@ class Executor:
                 if step < len(action.route):
                     target = action.route[step]
                 else:
-                    options = [p for key, p in neighbours(origin) if key in "hjkl" and p not in covered
-                               and self.observer.current.corridor(p)]
+                    options = self.observer.current.continuations(origin, covered)
                     if len(options) != 1:
                         reason = "branch_discovered" if options else "exploration_boundary"
                         break
@@ -198,9 +223,11 @@ class Executor:
                 reason = "no_observed_effect"
                 break
             if exploring or step + 1 < action.steps:
-                current_signature = interrupt_signature(view, self.observer, terrain=not exploring)
+                current_signature = interrupt_signature(view, self.observer, terrain)
                 changed_fields = [name for name, old, new in zip(
-                    ("status", "conditions", "engulfed", "terrain", "entities"), signature, current_signature) if old != new]
+                    ("status", "conditions", "engulfed", "terrain"), signature, current_signature) if old != new]
+                if arrived(presence, monsters(view, self.observer)):
+                    changed_fields.append("entities")
                 if view.msg and view.msg != before.msg:
                     changed_fields.append("message")
                 if changed_fields:
