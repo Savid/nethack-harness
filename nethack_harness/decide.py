@@ -61,7 +61,7 @@ def argument_facts(observation, action, visits):
                          if square["direction"] == key and square["position"] == facts["target"]), None)
         if adjacent is not None:
             facts["target_observation"] = {name: adjacent[name] for name in (
-                "glyph", "colour", "remembered_terrain", "remembered_feature") if name in adjacent}
+                "glyph", "colour", "remembered_terrain", "remembered_feature", "pet_highlight") if name in adjacent}
     return facts
 
 

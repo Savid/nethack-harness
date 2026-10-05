@@ -288,6 +288,8 @@ class Observer:
                   "remembered_terrain": self.current.terrain.get(p)}
         if square["remembered_terrain"] in FEATURES:
             square["remembered_feature"] = self.current.kind(p)
+        if view.pet(*p) and square["glyph"] in MON:
+            square["pet_highlight"] = True
         return square
 
     def query_metadata(self, name, view):

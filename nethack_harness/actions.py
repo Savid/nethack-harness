@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 import string
 
-from .knowledge import DIRECTION_NAMES
+from .knowledge import DIRECTION_NAMES, MON
 from .level import FEATURES, neighbours, position, cursor_keys
 from .perceive import parse_menu_entries, phase
 from .tools import PAUSE, TOOLS
@@ -121,9 +121,12 @@ def catalogue(view, observer, max_steps):
                     label = "%s: %s at %s" % (description + ("; " + withheld if withheld else ""),
                                               direction, position(target))
                     if tool.name == "move":
-                        remembered = level.terrain.get(target) if level else None
-                        label += " (glyph %r%s)" % (view.ch(*target), ", remembered " + level.kind(target)
-                                                    if remembered in FEATURES else "")
+                        notes = [repr(view.ch(*target))]
+                        if view.pet(*target) and view.ch(*target) in MON:
+                            notes.append("highlighted pet")
+                        if level and level.terrain.get(target) in FEATURES:
+                            notes.append("remembered " + level.kind(target))
+                        label += " (glyph %s)" % ", ".join(notes)
                     checked = tool.name in ("open", "close", "kick")
                     actions.append(Action(tool.name + suffix + ":" + key, label, tool.name,
                                           ("" if withheld else prefix) + tool.keys + ("" if checked else key),

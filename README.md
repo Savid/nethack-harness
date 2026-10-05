@@ -324,7 +324,8 @@ Argument requests include `argument_facts` for every offered choice, with its
 target, bound, modifier when it has one, and the destination facts above for
 travel and exploration. Directional actions include their direction, origin,
 coordinate delta and the target square's glyph, colour and remembered terrain,
-naming a remembered feature such as `lava`, `water` or `trap`. The target
+naming a remembered feature such as `lava`, `water` or `trap`, and whether the
+terminal highlights a monster there as the pet. The target
 is the square addressed by the command, not a guaranteed resulting position.
 These facts supplement the complete observation and unchanged choice descriptions.
 `navigation_obstacles` preserves destinations excluded because occupied squares

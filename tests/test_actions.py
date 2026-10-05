@@ -151,6 +151,16 @@ class ActionCatalogueTest(TestCase):
         structure.fgs[2][4] = "green"
         self.assertEqual(self.choices(structure)["move:no_pickup:l"].keys, "l")
 
+    def test_moves_name_the_highlighted_pet_they_would_bump(self):
+        v = view(screen("", [" ------ ", " |.@d.| ", " ------ "]))
+        v.revs[2][4] = True
+        observer = Observer()
+        square = next(s for s in observer.observation(v)["adjacent"] if s["direction"] == "l")
+        self.assertTrue(square["pet_highlight"])
+        choices = {a.id: a for a in catalogue(v, observer, 8)}
+        self.assertIn("highlighted pet", choices["move:no_pickup:l"].description)
+        self.assertNotIn("highlighted pet", choices["move:h"].description)
+
     def test_routes_cross_a_known_trap_only_without_another_route(self):
         recorded = View(**json.loads((FIXTURES / "trap-room.json").read_text()))
         observer = Observer()
