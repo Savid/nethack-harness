@@ -10,6 +10,7 @@ class ObjectiveProgress:
         self.id = None
         self.start = None
         self.attempts = 0
+        self.budget_start = 0
         self.events = deque(maxlen=32)
 
     @staticmethod
@@ -22,11 +23,18 @@ class ObjectiveProgress:
         if self.start is None or objective != self.objective:
             self.objective, self.id = objective, uuid4().hex
             self.start = self.point(observation)
-            self.attempts = 0
+            self.attempts = self.budget_start = 0
             self.events.clear()
 
+    def renew(self):
+        """Start a new attempt budget within the same scope."""
+        self.budget_start = self.attempts
+
+    def since_resume(self):
+        return self.attempts - self.budget_start
+
     def exhausted(self, limit):
-        return bool(limit and self.attempts >= limit)
+        return bool(limit and self.since_resume() >= limit)
 
     def begin(self, decision, source, action, before):
         self.attempts += 1
@@ -36,8 +44,9 @@ class ObjectiveProgress:
         return event
 
     def snapshot(self, limit):
-        return deepcopy({"id": self.id, "start": self.start, "attempts_used": self.attempts,
-                         "limit_attempts": limit, "attempts_remaining": max(0, limit - self.attempts) if limit else None,
+        return deepcopy({"id": self.id, "start": self.start, "scope_attempts": self.attempts,
+                         "attempts_used": self.since_resume(), "limit_attempts": limit,
+                         "attempts_remaining": max(0, limit - self.since_resume()) if limit else None,
                          "recent_attempts": list(self.events), "omitted_attempts": self.attempts - len(self.events)})
 
 

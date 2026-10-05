@@ -130,7 +130,7 @@ def catalogue(view, observer, max_steps):
     occupied = {tuple(x - 1 for x in e["position"]) for e in entities if e["kind"] in ("monster", "unseen")}
     previous = level.paths(view.hero, occupied)
     targets = level.targets(previous)
-    inspections = {p: "remembered " + FEATURES[ch] for p, ch in level.terrain.items() if ch in FEATURES}
+    inspections = {p: "remembered " + level.kind(p) for p, ch in level.terrain.items() if ch in FEATURES}
     inspections[view.hero] = "the hero's square"
     for entity in entities:
         p = tuple(x - 1 for x in entity["position"])

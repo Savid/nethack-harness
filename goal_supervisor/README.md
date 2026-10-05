@@ -173,16 +173,19 @@ action bound and a default eight-call selection budget. A goal's default total
 budget is eight attempts. These limits are configurable by the caller.
 Multiple game turns may still elapse inside one atomic command.
 
-Every window explicitly resumes the harness, resetting its per-resume attempt
-and navigation-cycle evidence. A window is one harness command (`resume
+Every window explicitly resumes the harness, renewing its per-resume budgets.
+The first window after an activation starts a new harness objective scope; later
+windows of that activation pass `--continue-scope`, so the harness's
+`repeated_no_effect` and `navigation_cycle` checks span the goal's windows and
+hand back for review like any other native handoff. A window is one harness command (`resume
 --records-after`) that returns the status, observation and the window's decision
 records; within one `run`, the next window starts from that result. The goal's
 cumulative attempts and recent action results persist across windows. The default
 one-step bound can require many decision requests for a longer route; increase
 `steps_per_action` when several steps between supervisor checks are appropriate.
-Idle attempts hand back for review; other persistent cross-window loops, such as
-travelling between the same destinations, are visible in `history` and may still
-reach the goal's total attempt budget.
+Idle attempts hand back for review, and so does a movement cycle the harness
+detects on unchanged terrain. Loops it does not classify remain visible in
+`history` and may still reach the goal's total attempt budget.
 
 Conditions are checked before and after each action window, not between keys
 inside a command. Raising `steps_per_action` permits several movement or search

@@ -136,7 +136,7 @@ def run(store):
                 session.settings = replace(session.settings, caller_context=command["caller_context"])
             if command.get("tools") is not None:
                 session.settings = replace(session.settings, tools=tuple(command["tools"]))
-            session.resume()
+            session.resume(continue_scope=bool(command.get("continue_scope")))
             synchronize()
             return "resumed"
         if name in ("screen", "observe", "actions"):
@@ -188,6 +188,8 @@ def run(store):
                     result = {"ok": True, "value": handle(command)}
                 except Exception as e:
                     result = {"ok": False, "error": str(e) if isinstance(e, ValueError) else type(e).__name__}
+                # A caller that waits after the reply must not read the state from before the command.
+                publish()
                 store.reply(sequence, result)
                 store.acknowledge(sequence)
                 if stopping:

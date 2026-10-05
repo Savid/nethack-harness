@@ -169,8 +169,21 @@ class SupervisorIntegrationTest(TestCase):
         self.assertEqual(self.game.inputs, [b"\x12", b"l", b"l", b"l"])
         requests = [r for r in self.endpoint.requests if r["state"]["decision"]["stage"] == "arguments"]
         self.assertEqual([r["state"]["caller_context"]["goal"]["attempts_used"] for r in requests], [0, 1, 2])
-        scopes = [r["state"]["observation"]["objective_progress"]["id"] for r in requests]
-        self.assertEqual(len(set(scopes)), 3)
+        progress = [r["state"]["observation"]["objective_progress"] for r in requests]
+        self.assertNotEqual(progress[0]["id"], progress[1]["id"])
+        self.assertEqual(progress[1]["id"], progress[2]["id"])
+        self.assertEqual([(p["scope_attempts"], p["attempts_used"], p["attempts_remaining"]) for p in progress],
+                         [(0, 0, 1), (0, 0, 1), (1, 0, 1)])
+
+    def test_windows_of_one_activation_share_the_harness_repetition_evidence(self):
+        self.supervise("add", "--file", "-", payload=spec("beyond", 30, attempts=10))
+        self.supervise("activate", "beyond")
+        result = self.supervise("run", "--max-windows", "10")
+        self.assertEqual((result["reason"], result["outcome"]["boundary"]), ("review", "repeated_no_effect"))
+        self.assertEqual(self.game.inputs, [b"\x12", b"l", b"l", b"l", b"l"])
+        self.supervise("activate", "beyond")
+        self.supervise("run", "--max-windows", "1")
+        self.assertEqual(self.game.inputs[-2:], [b"l", b"l"])
 
     def test_recovery_after_reservation_before_dispatch_pauses_without_sending_the_action(self):
         self.supervise("add", "--file", "-", payload=spec("destination", 23))

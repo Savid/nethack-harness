@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from helpers import screen, view
-from nethack_harness.actions import catalogue
+from nethack_harness.actions import Action, catalogue
 from nethack_harness.perceive import Observer, fingerprint, parse_menu_entries
 from nethack_harness.screen import PromptContext, View
 
@@ -170,6 +170,19 @@ class ObservationTest(TestCase):
         self.assertEqual(shop["position"], [3, 4])
         self.assertEqual(known["connections"][0]["destination"], "level-2")
         self.assertEqual(Observer().levels, [])
+
+    def test_caller_typed_stair_keys_return_to_the_remembered_level(self):
+        observer = Observer()
+        upper = view(screen("", [" -------- ", " |..{.@>| ", " -------- "]), (2, 6))
+        observer.observation(upper)
+        observer.begin(Action("manual", "Caller-supplied keys", "manual", ">"), upper)
+        lower = view(screen("", [" ---- ", " |.@<| ", " ---- "], status2="Dlvl:4 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:401"))
+        observer.observation(lower)
+        observer.begin(Action("manual", "Caller-supplied keys", "manual", "<"), lower)
+        state = observer.observation(view(screen("", [" -------- ", " |..{.@>| ", " -------- "],
+                                                 status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:402"), (2, 6)))
+        self.assertEqual(state["level"]["id"], "level-1")
+        self.assertEqual([level["id"] for level in state["known_levels"]], ["level-1", "level-2"])
 
     def test_query_completeness_and_age_do_not_claim_partial_inventory_is_complete(self):
         observer, initial = Observer(), view()

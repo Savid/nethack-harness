@@ -6,7 +6,9 @@ from .knowledge import DIRS, ITEMS, MON, WARNING
 
 FEATURES = {"<": "up stairs", ">": "down stairs", "^": "trap", "_": "altar",
             "{": "fountain", "}": "water or lava", "\\": "throne"}
-PASSABLE = ".#<>^{}_\\}"
+LIQUIDS = {"red": "lava", "blue": "water"}
+# Remembered water or lava is not ground: routes, like the game's own travel, never cross it.
+PASSABLE = ".#<>^{_\\"
 
 
 def on_map(p):
@@ -95,6 +97,13 @@ class Level:
                  "source": "remembered terminal terrain"}
                 for p, ch in sorted(self.terrain.items()) if ch == "#" and not self.corridor(p)]
 
+    def kind(self, p):
+        """The remembered feature at p; a liquid is named by its terminal colour when that identifies it."""
+        ch = self.terrain.get(p)
+        if ch == "}":
+            return LIQUIDS.get(self.colours.get(p), FEATURES[ch])
+        return FEATURES.get(ch, ch)
+
     def passable(self, p):
         # Objects lie on passable ground, so a square seen only under an object can be routed through.
         return self.terrain.get(p, " ") in PASSABLE or p in self.open_doors or p in self.object_squares
@@ -151,9 +160,8 @@ class Level:
         for p, ch in self.terrain.items():
             if p not in previous:
                 continue
-            if ch in "<>^{}_\\}":
-                out[p] = {"<": "up stairs", ">": "down stairs", "^": "trap", "_": "altar",
-                          "{": "fountain", "}": "water or lava", "\\": "throne"}.get(ch, ch)
+            if ch in FEATURES:
+                out[p] = self.kind(p)
             elif self.corridor(p):
                 exits = self.corridor_links(p)
                 if len(exits) <= 1:
@@ -194,7 +202,7 @@ class Level:
         return blocked
 
     def landmarks(self):
-        return [{"position": position(p), "kind": FEATURES[ch], "glyph": ch,
+        return [{"position": position(p), "kind": self.kind(p), "glyph": ch,
                  "observed_turn": self.feature_turns.get(p), "source": "terminal map or underfoot message"}
                 for p, ch in sorted(self.terrain.items()) if ch in FEATURES] + [
                     dict(value, position=position(p), kind=kind)

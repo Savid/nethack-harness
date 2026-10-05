@@ -9,11 +9,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from unittest import mock
 
 from helpers import Endpoint, FakeGame
-from nethack_harness import __version__, control
+from nethack_harness import __version__, control, daemon
+from nethack_harness.settings import Settings
 from nethack_harness.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -210,6 +212,64 @@ class DaemonTest(TestCase):
         result = cli(self.state, "resume", "--tools", "search,flarp")
         self.assertEqual(result.returncode, 64)
         self.assertIn("unknown tools: flarp", result.stderr)
+
+    def test_continued_scope_keeps_no_effect_evidence_and_a_new_scope_permits_another_try(self):
+        self.endpoint.close()
+        self.endpoint = Endpoint(lambda request: {"answers": {"action": {"choice":
+                                 "move" if request["state"]["decision"]["stage"] == "tool" else "move:k"}}})
+        self.start("--paused")
+
+        def window(*extra):
+            result = cli(self.state, "resume", "--max-action-attempts", "1", "--timeout", "5", *extra)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        first = window()
+        self.assertEqual((first["status"]["reason"], first["status"]["last"]["outcome"]["execution_reason"]),
+                         ("action_budget", "no_observed_effect"))
+        self.assertEqual(self.game.inputs.count(b"k"), 1)
+        repeated = window("--continue-scope")
+        self.assertEqual(repeated["status"]["reason"], "repeated_no_effect")
+        self.assertEqual(self.game.inputs.count(b"k"), 1)
+        self.assertEqual(repeated["observation"]["objective_progress"]["id"], first["observation"]["objective_progress"]["id"])
+        retried = window()
+        self.assertEqual(retried["status"]["reason"], "action_budget")
+        self.assertEqual(self.game.inputs.count(b"k"), 2)
+        self.assertNotEqual(retried["observation"]["objective_progress"]["id"], first["observation"]["objective_progress"]["id"])
+
+    def test_command_reply_follows_the_published_state(self):
+        store = Store(self.state)
+        store.write("config", {"socket": self.game.path, "endpoint": self.endpoint.url, "model": None, "key_env": None,
+                               "paused": True, "settings": Settings(quiet=0.02).as_dict()})
+        published = []
+        reply = store.reply
+
+        def record(sequence, result):
+            published.append(store.read("status"))
+            reply(sequence, result)
+
+        def caller():
+            client = Store(self.state)
+            deadline = time.monotonic() + 10
+            try:
+                while (client.read("status") or {}).get("state") != "paused" and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                for name in ("resume", "stop"):
+                    sequence = client.enqueue(name)
+                    while client.take_reply(sequence) is None and time.monotonic() < deadline:
+                        time.sleep(0.02)
+            finally:
+                client.close()
+
+        store.reply = record
+        thread = threading.Thread(target=caller)
+        thread.start()
+        try:
+            daemon.run(store)
+        finally:
+            thread.join()
+            store.close()
+        self.assertEqual(published[0]["state"], "running")
 
     def test_caller_intent_records_share_the_decision_sequence_and_survive_a_copied_session(self):
         self.start("--paused", "--objective", "Find the stairs.")

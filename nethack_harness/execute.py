@@ -30,11 +30,13 @@ def interrupt_signature(view, observer, terrain):
 
 
 def monsters(view, observer):
-    """Visible monster appearances, and those adjacent to the hero, counted by glyph and colour."""
+    """Visible monster appearances, and those adjacent to the hero, counted by glyph and colour.
+
+    A monster the terminal highlights as the hero's pet is not counted, so a following pet never arrives."""
     visible, adjacent = Counter(), Counter()
     hero = view.hero
     for entity in observer.entities(view):
-        if entity["kind"] not in ("monster", "unseen"):
+        if entity["kind"] not in ("monster", "unseen") or entity["pet_highlight"]:
             continue
         key = (entity["glyph"], entity["colour"], entity["bright"])
         visible[key] += 1
@@ -42,6 +44,21 @@ def monsters(view, observer):
         if hero and max(abs(r - hero[0]), abs(c - hero[1])) <= 1:
             adjacent[key] += 1
     return visible, adjacent
+
+
+def discovery(p, ch, level, known, known_colours, known_seen):
+    """Whether remembered terrain at p is a room or feature found since exploration began.
+
+    A new or changed feature or closed door counts, as does a coloured structure. Other terrain counts only
+    where no glyph had ever shown: floor uncovered by a moving monster or redrawn in another colour once out
+    of sight was already known, and corridor and wall squares are followed rather than reported."""
+    if known.get(p) == ch and known_colours.get(p) == level.colours.get(p):
+        return False
+    if ch in FEATURES or ch == "+":
+        return known.get(p) != ch
+    if ch == "#":
+        return not level.corridor(p)
+    return ch not in "|-" and p not in known_seen
 
 
 def arrived(start, now):
@@ -156,6 +173,7 @@ class Executor:
         known = dict(self.observer.current.terrain) if exploring else {}
         known_colours = dict(self.observer.current.colours) if exploring else {}
         known_doors = set(self.observer.current.open_doors) if exploring else set()
+        known_seen = set(self.observer.current.seen) if exploring else set()
         covered = set(known)
         reason = "completed"
         changed_fields = []
@@ -212,10 +230,10 @@ class Executor:
                 break
             if exploring:
                 covered.add(view.hero)
-                discovered = [(p, ch) for p, ch in self.observer.current.terrain.items()
-                              if (known.get(p) != ch or known_colours.get(p) != self.observer.current.colours.get(p)) and
-                              (ch not in "#|-" or ch == "#" and not self.observer.current.corridor(p))]
-                if discovered or self.observer.current.open_doors - known_doors:
+                level = self.observer.current
+                discovered = [p for p, ch in level.terrain.items()
+                              if discovery(p, ch, level, known, known_colours, known_seen)]
+                if discovered or level.open_doors - known_doors:
                     reason = "feature_discovered"
                     break
             if action.kind in ("move", "attack", "open", "close", "kick", "ascend", "descend", "wait", "search") and \

@@ -132,6 +132,9 @@ step bound for subsequent choices. `export --after ID` exports only newer
 decision records, allowing a caller to reconcile a specific execution window.
 `resume --records-after ID` adds those records to the status and observation it
 prints once paused, so one command can run and report a bounded window.
+`resume --continue-scope` keeps the current objective scope described below, so
+a caller running one action per resume keeps the repetition and movement-cycle
+evidence across its windows; budgets still renew.
 
 The terminal should use an 80×24 TTY with standard keyboard bindings, letter
 movement, standard menu selection markers, colour, the turn counter and pet
@@ -148,14 +151,17 @@ Travel destinations include squares beside closed doors, reachable objects, and
 the edge of known terrain: a known square next to one that has never shown a
 glyph. A square seen under a monster or object is not unknown, and a square the
 hero has stood on is not an edge, because standing there shows all of its
-neighbours. Routes may cross squares seen only under objects. A destination
-remains offered for the final step of its route.
+neighbours. Routes may cross squares seen only under objects. Like the game's
+own travel, routes never cross remembered water or lava (`}`); a red `}` is
+named lava and a blue one water. A destination remains offered for the final
+step of its route.
 Corridors expose endpoints and junctions as destinations. Interior corridor
 tiles remain part of routes without each becoming another destination choice.
 Corridor squares connect cardinally, and diagonally where no cardinal path joins them.
 Move commands can bump into or attack occupants according to game mechanics.
 Travel uses movement without attacks along an unweighted known route. Both can
-fail or reveal new information; the result is returned to the engine.
+fail or reveal new information; the result is returned to the engine. A move
+into water or lava stays a direct movement choice.
 Remembered green or cyan `#` tiles are structural obstacles rather than corridor
 connections and remain visible in `level.structural_obstacles`. Direct movement
 commands remain available for the engine to choose.
@@ -163,7 +169,8 @@ commands remain available for the engine to choose.
 `explore:row,column` selects a known corridor frontier. It follows the route to
 that square, then follows newly revealed corridor tiles within the same command
 budget. Ordinary corridor and wall discoveries do not interrupt this action.
-It returns on a newly discovered room or feature, an arriving monster, changed
+It returns on a newly discovered room (terrain where no glyph had shown) or
+feature, an arriving monster, changed
 hero state, messages, prompts, a blocked move, or caller interruption. At a branch
 it returns without choosing a branch. Continuation follows corridor connections,
 cardinal ones first, and does not revisit terrain known before the action. If there is
@@ -175,8 +182,9 @@ Attacks are one command. Travel, search and wait can execute several commands up
 to the selected bound. They stop early on changed hero stats, conditions, level,
 messages, prompts, movement failure or caller interruption, and when a monster
 arrives: one more of a glyph and colour is in view, or adjacent to the hero, than
-when the action began. Monsters already in view moving about, such as a following
-pet, and objects they cover or uncover do not stop them. Search and wait also stop
+when the action began. Monsters already in view moving about, a monster the
+terminal highlights as the pet, and objects or floor they cover or uncover do not
+stop them. Search and wait also stop
 on any terrain change; travel stops on newly seen features, doors and structural
 obstacles but not on ordinary floor, wall or corridor discoveries.
 Atomic game commands can themselves consume multiple turns; actual elapsed turns
@@ -281,7 +289,8 @@ messages, terrain memory, visits and search counts are also supplied on every
 decision. The complete decision log is stored separately.
 
 Level identity is inferred from status labels
-and traversed staircase connections; the terminal does not provide a level UUID.
+and traversed staircase connections, including stairs taken with caller-sent `<`
+or `>` keys; the terminal does not provide a level UUID.
 `observation.level` is always present: at prompts and menus it holds the current
 level's `id` and `label`, and it is null before any map has been seen.
 Quest floors and elemental planes have distinct recognized status labels.
@@ -321,26 +330,29 @@ under the same objective, pause with `navigation_cycle`. The outcome preserves
 the original execution reason and includes the cycle positions and decision
 records for review. Each request includes up to 32 recent movement actions in
 `observation.navigation_progress`. New terrain, level or objective changes,
-nonmovement actions, and explicit resume reset this movement window. A single
+nonmovement actions, and a resume that starts a new scope reset this movement
+window. A single
 return through a corridor does not trigger it.
 Intermediate steps inside a bounded action are not used in this cycle signature.
 
 Unexpected follow-up prompts also pause with `unexpected_prompt`. A caller can
 read `wait`'s status/observation and `actions`, replan, then `resume --objective`.
-Resume explicitly permits another attempt. Time-consuming searches, waits and
+A resume that starts a new scope permits another attempt. Time-consuming searches, waits and
 combat are not classified as failures merely because the hero stays in place.
 These checks do not establish whether a plan is useful or detect every detour.
 The decision endpoint is stateless: each request supplies the objective,
 observations, recent progress and the complete choices for its current stage.
 `observation.objective_progress` identifies the current execution scope with an
-opaque ID, its first observed position/turn/level/fingerprint, total attempts,
-remaining caller budget, and up to 32 recent attempts with omitted-count metadata.
+opaque ID, its first observed position/turn/level/fingerprint, attempts in the
+scope, attempts used and remaining under the caller budget since the latest
+resume, and up to 32 recent attempts with omitted-count metadata.
 Each attempt records the selected action, source, attempted inputs and delivery
 status, before/after observations, and execution result. Unknown coordinates or
 turns remain null; a pending input has an uncertain result. Full records remain
 available through `export`.
-This scope starts fresh on every explicit resume, even with identical objective
-text, and on an objective change. It is supplied during tool, argument and prompt
+This scope starts fresh on every resume, even with identical objective text,
+unless the resume passes `--continue-scope`, and always on an objective change.
+It is supplied during tool, argument and prompt
 selection. It records execution evidence; it does not infer objective completion.
 `pause` is available at tool, argument and prompt selection as "Return control to
 the caller". The instructions ask the engine to decide from the supplied state and

@@ -11,6 +11,9 @@ from .tools import TOOLS
 
 
 MENU_ENTRY = re.compile(r"^\s*([!-~])\s+([-+*#])\s+(.+)")
+# Caller-typed keys that are exactly a stair command connect levels like the stair tools do.
+STAIR_KEYS = {prefix + TOOLS[name].keys: name for name in ("ascend", "descend")
+              for prefix in [""] + [variant.prefix for variant in TOOLS[name].variants]}
 
 
 def menu_rows(view):
@@ -155,8 +158,9 @@ class Observer:
             edge = None
             if self.last_action:
                 action, old, origin = self.last_action
-                if old and origin and action.kind in ("ascend", "descend"):
-                    edge = (old.id, origin, action.kind)
+                kind = STAIR_KEYS.get(action.keys) if action.kind == "manual" else action.kind
+                if old and origin and kind in ("ascend", "descend"):
+                    edge = (old.id, origin, kind)
             known = self.edges.get(edge)
             if known is None and edge:
                 reverse = "ascend" if edge[2] == "descend" else "descend"

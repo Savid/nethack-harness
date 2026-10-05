@@ -1,7 +1,12 @@
+import json
+from pathlib import Path
 from unittest import TestCase
 from helpers import screen, view
 from nethack_harness.actions import catalogue
 from nethack_harness.perceive import Observer
+from nethack_harness.screen import View
+
+FIXTURES = Path(__file__).parent / "fixtures" / "screens"
 
 
 class ActionCatalogueTest(TestCase):
@@ -106,6 +111,25 @@ class ActionCatalogueTest(TestCase):
         observer.observation(first)
         travel = {a.target: (a.subject, a.frontier) for a in catalogue(first, observer, 8) if a.kind == "travel"}
         self.assertEqual(travel, {(3, 4): ("object $", False)})
+
+    def test_routes_never_cross_remembered_water_or_lava(self):
+        # A recorded game where the shortest route to the door beside [6, 34] began on a lava square.
+        recorded = View(**json.loads((FIXTURES / "lava-room.json").read_text()))
+        observer = Observer()
+        state = observer.observation(recorded)
+        liquid = {p for p, ch in observer.current.terrain.items() if ch == "}"}
+        self.assertEqual(len(liquid), 9)
+        self.assertEqual({lm["kind"] for lm in state["known_levels"][0]["landmarks"] if lm["glyph"] == "}"}, {"lava"})
+        choices = {a.id: a for a in catalogue(recorded, observer, 64)}
+        routes = [a for a in choices.values() if a.kind in ("travel", "explore")]
+        self.assertGreater(len(routes), 10)
+        self.assertEqual([a.id for a in routes if liquid & set(a.route) or a.target in liquid], [])
+        self.assertEqual(choices["travel:6,35"].route[0], (12, 56))
+        self.assertIn("move:h", choices)
+        pool = view(screen("", ["", "   @}>"]), (2, 3))
+        pool.fgs[2][4] = "blue"
+        self.assertNotIn("travel:3,6", self.choices(pool))
+        self.assertEqual(Observer().observation(pool)["known_levels"][0]["landmarks"][0]["kind"], "water")
 
     def test_routes_cross_squares_seen_only_under_objects(self):
         choices = self.choices(view(screen("", ["", "   @#$#>"]), (2, 3)))

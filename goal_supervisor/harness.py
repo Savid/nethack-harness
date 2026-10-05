@@ -53,6 +53,7 @@ class HarnessClient:
                              "--review-after-calls", str(limits["decision_calls_per_action"]),
                              "--tools", ",".join(preparation["tools"]) or "all",
                              "--records-after", str(preparation["after_decision"]), "--timeout", str(WINDOW_WAIT),
+                             *(["--continue-scope"] if preparation.get("continue_scope") else []),
                              payload=preparation["context"])
         if "records" in response:
             return self.outcome(execution, response["status"], response["observation"], response["records"])

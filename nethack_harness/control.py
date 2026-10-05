@@ -122,6 +122,8 @@ def parser():
     resume.add_argument("--max-action-attempts", type=int, help="replace the action attempt budget; 0 disables")
     resume.add_argument("--tools", type=tool_list, help="replace the tools the engine may choose; all removes the limit")
     resume.add_argument("--records-after", type=int, help="once paused, also print decision records after this ID")
+    resume.add_argument("--continue-scope", action="store_true",
+                        help="keep the objective scope's attempt history and repetition evidence; budgets still renew")
     resume.add_argument("--timeout", type=float, default=30)
     sub.add_parser("wait", help="wait for a pause or game over").add_argument("--timeout", type=float, default=30)
     for name, description in (("pause", "return control at the next action boundary"),
@@ -256,7 +258,7 @@ def main(argv=None):
         elif args.command == "resume":
             send_command(store, "resume", objective=args.objective, review_after_calls=args.review_after_calls,
                          max_action_attempts=args.max_action_attempts, max_action_steps=args.max_action_steps,
-                         caller_context=caller_context, tools=args.tools)
+                         caller_context=caller_context, tools=args.tools, continue_scope=args.continue_scope)
             return wait(store, args.timeout, args.records_after)
         else:
             values = {"action": args.action} if args.command == "act" else {"keys": args.keys} if args.command == "send" else {}

@@ -279,6 +279,24 @@ class ExecutionTest(TestCase):
         self.assertEqual((result["reason"], result["changed_fields"]), ("observation_changed", ["entities"]))
         self.assertEqual(executor.term.sent, ["ml"])
 
+    def test_highlighted_pet_coming_adjacent_does_not_end_bounded_movement(self):
+        frames = [room(3, monster=9), room(4, turn=401, monster=5), room(5, turn=402, monster=6)]
+        for frame, column in zip(frames, (9, 5, 6)):
+            frame.revs[2][column] = True
+        executor, _ = self.executor(frames)
+        result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
+                                     route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
+        self.assertEqual((result["reason"], executor.term.sent), ("completed", ["ml", "ml"]))
+
+    def test_exploration_ignores_known_floor_uncovered_or_redrawn_while_moving(self):
+        start, moved = room(3, monster=6), room(4, turn=401, monster=8)
+        moved.fgs[2][2] = "blue"
+        executor, _ = self.executor([start, moved, room(5, turn=402, monster=9)])
+        result = executor.run(Action("explore:3,6", "Explore", "explore", steps=8, target=(2, 5),
+                                     route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
+        self.assertEqual(executor.term.sent, ["ml", "ml"])
+        self.assertEqual(result["reason"], "exploration_boundary")
+
     def test_menu_pages_are_observed_and_closed_within_query(self):
         menu1 = view(screen("", [" Weapons", " a - a dagger", " (1 of 2)"]), (3, 10))
         menu2 = view(screen("", [" Comestibles", " b - a food ration", " (2 of 2)"]), (3, 10))

@@ -23,11 +23,16 @@ class Session:
         self.review_calls = 0
         self.objective_progress = ObjectiveProgress()
 
-    def resume(self):
+    def resume(self, continue_scope=False):
+        """Renew the caller budgets. A new scope also forgets attempts, movement cycles and no-effect evidence,
+        so the caller's resume permits another try; a continued scope keeps them for an unchanged objective."""
         self.pending_tool = None
+        self.review_calls = 0
+        if continue_scope:
+            self.objective_progress.renew()
+            return
         self.failed_action = None
         self.navigation.reset()
-        self.review_calls = 0
         self.objective_progress = ObjectiveProgress()
 
     def observe(self):
@@ -180,7 +185,7 @@ class Session:
             outcome["reason"] = "action_budget"
             outcome["review"] = {"evidence": "caller-selected action attempt budget reached",
                                  "objective_id": self.objective_progress.id,
-                                 "attempts": self.objective_progress.attempts,
+                                 "attempts": self.objective_progress.since_resume(),
                                  "limit_attempts": self.settings.max_action_attempts}
             self.pending_tool = None
         elif (source == "engine" and self.settings.review_after_calls and
@@ -196,7 +201,7 @@ class Session:
             outcome.setdefault("review", {}).update(objective=self.settings.objective,
                 decision_stage=request["state"]["decision"]["stage"], selected_tool=request["state"]["decision"]["tool"],
                 observation_fingerprint=after["fingerprint"])
-        if outcome["reason"] == "no_observed_effect" and source == "engine":
+        if outcome.get("execution_reason", outcome["reason"]) == "no_observed_effect" and source == "engine":
             self.failed_action = ((after["fingerprint"], self.settings.objective, action), number)
         elif outcome.get("steps", 0) > 0:
             self.failed_action = None

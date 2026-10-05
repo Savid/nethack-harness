@@ -346,8 +346,11 @@ class GoalBoard:
                                    ("id", "objective", "valid_while", "review_when", "metadata")} for parent in parents]
         self.state["inflight"] = deepcopy(execution)
         self.event("execution_started", goal, execution=execution)
+        # The first window after activation starts a new harness scope; later ones continue it, so the
+        # harness's repetition and movement-cycle evidence spans the goal's windows.
         return {"reason": "execute", "context": context, "objective": goal["objective"],
-                "limits": deepcopy(goal["limits"]), "tools": list(goal["tools"])}
+                "limits": deepcopy(goal["limits"]), "tools": list(goal["tools"]),
+                "continue_scope": goal["windows_used"] > goal["activated_after_window"]}
 
     def reject(self, execution_id, error):
         """The harness refused the window before any input, so nothing was attempted."""
