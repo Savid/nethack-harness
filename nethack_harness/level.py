@@ -1,5 +1,6 @@
-"""Observed terrain and unweighted paths through known squares."""
-from collections import deque
+"""Observed terrain and shortest paths through known squares."""
+import heapq
+from itertools import count
 
 from .knowledge import DIRS, ITEMS, MON, WARNING
 
@@ -104,6 +105,18 @@ class Level:
             return LIQUIDS.get(self.colours.get(p), FEATURES[ch])
         return FEATURES.get(ch, ch)
 
+    def guarded(self, p):
+        """The name of remembered terrain at p that the game checks before a plain move enters it, or None.
+
+        It refuses a step into known water or lava, and asks before one onto a known trap or into a visible gas
+        cloud, which is drawn as a coloured #. The movement prefix that suppresses autopickup skips these checks."""
+        ch = self.terrain.get(p)
+        if ch in ("}", "^"):
+            return self.kind(p)
+        if ch == "#" and not self.corridor(p):
+            return "%s #" % self.colours[p]
+        return None
+
     def passable(self, p):
         # Objects lie on passable ground, so a square seen only under an object can be routed through.
         return self.terrain.get(p, " ") in PASSABLE or p in self.open_doors or p in self.object_squares
@@ -130,19 +143,28 @@ class Level:
                 and self.linked(p, q, key, self.corridor)]
 
     def paths(self, start, occupied=()):
-        previous, queue = {start: None}, deque([start])
+        """Shortest routes that cross the fewest remembered traps: like the game's own travel, a route crosses
+        a trap only where no other known route exists."""
+        previous, cost = {start: None}, {start: (0, 0)}
+        order = count()
+        queue = [(0, 0, next(order), start)]
         blocked = set(occupied) - {start}
         while queue:
-            p = queue.popleft()
+            traps, length, _, p = heapq.heappop(queue)
+            if (traps, length) != cost[p]:
+                continue
             for key, q in neighbours(p):
-                if q in previous or q in blocked or not self.passable(q):
+                if q in blocked or not self.passable(q):
                     continue
                 if self.terrain.get(q) == "#" and not self.corridor(q):
                     continue
                 if key in "yubn" and (p in self.open_doors or q in self.open_doors):
                     continue
-                previous[q] = p
-                queue.append(q)
+                step = (traps + (self.terrain.get(q) == "^"), length + 1)
+                if q in cost and cost[q] <= step:
+                    continue
+                cost[q], previous[q] = step, p
+                heapq.heappush(queue, step + (next(order), q))
         return previous
 
     @staticmethod

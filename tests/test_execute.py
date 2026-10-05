@@ -58,6 +58,15 @@ class ExecutionTest(TestCase):
         self.assertEqual((result["reason"], result["steps"], result["elapsed_turns"]), ("completed", 2, 2))
         self.assertTrue(all(r["status"] == "completed" for r in records))
 
+    def test_route_step_onto_a_known_trap_leaves_the_games_confirmation_to_the_engine(self):
+        tiles = {(2, 4): "#", (2, 5): "^", (2, 6): "#"}
+        confirm = view(screen("Really step onto that bear trap? [yn] (n)", corridor((2, 4), tiles).rows[1:22]), (0, 40))
+        executor, _ = self.executor([corridor((2, 3), tiles), corridor((2, 4), tiles, turn=401), confirm])
+        result = executor.run(Action("travel:3,7", "Go east", "travel", steps=3, target=(2, 6),
+                                     route=((2, 4), (2, 5), (2, 6))), fingerprint(executor.term.view()))
+        self.assertEqual(executor.term.sent, ["ml", "l"])
+        self.assertEqual((result["reason"], result["steps"]), ("prompt", 2))
+
     def test_failed_navigation_distinguishes_unchanged_and_changed_observations(self):
         for kind in ("travel", "explore"):
             for after, reason in ((room(3), "no_observed_effect"),
@@ -279,14 +288,14 @@ class ExecutionTest(TestCase):
         self.assertEqual((result["reason"], result["changed_fields"]), ("observation_changed", ["entities"]))
         self.assertEqual(executor.term.sent, ["ml"])
 
-    def test_highlighted_pet_coming_adjacent_does_not_end_bounded_movement(self):
-        frames = [room(3, monster=9), room(4, turn=401, monster=5), room(5, turn=402, monster=6)]
-        for frame, column in zip(frames, (9, 5, 6)):
+    def test_highlighted_pet_coming_adjacent_does_not_end_bounded_movement_and_swaps_on_the_route(self):
+        frames = [room(3, monster=9), room(4, turn=401, monster=5), room(5, turn=402, monster=4)]
+        for frame, column in zip(frames, (9, 5, 4)):
             frame.revs[2][column] = True
         executor, _ = self.executor(frames)
         result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
                                      route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
-        self.assertEqual((result["reason"], executor.term.sent), ("completed", ["ml", "ml"]))
+        self.assertEqual((result["reason"], executor.term.sent), ("completed", ["ml", "l"]))
 
     def test_exploration_ignores_known_floor_uncovered_or_redrawn_while_moving(self):
         start, moved = room(3, monster=6), room(4, turn=401, monster=8)

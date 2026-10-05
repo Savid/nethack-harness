@@ -101,6 +101,26 @@ class GoalTest(TestCase):
         self.assertEqual(result["condition_goal_id"], "conditional")
         self.assertIsNone(board.state["active"])
 
+    def test_open_prompt_defers_unknown_conditions_but_not_known_ones(self):
+        board = GoalBoard()
+        goal = destination(attempts=5)
+        goal["valid_while"] = [equals(["underfoot", "remembered_terrain"], ".")]
+        goal["review_when"] = [{"path": ["hero", "hp"], "op": "lt", "value": 5}]
+        board.add(goal)
+        play = observed()
+        play["underfoot"], play["hero"]["hp"] = {"remembered_terrain": "."}, 9
+        board.activate("destination", play)
+        prompt = {"fingerprint": "prompt", "phase": "choice", "hero": {"position": None, "turn": 14, "hp": 9},
+                  "level": {"id": "level-1"}}
+        execution = board.begin(play, 0)["context"]["execution"]["id"]
+        self.assertEqual(board.finish(execution, prompt, {"boundary": "action_budget", "attempts": 1})["reason"], "ready")
+        execution = board.begin(prompt, 1)["context"]["execution"]["id"]
+        hurt = dict(prompt, hero=dict(prompt["hero"], hp=3))
+        result = board.finish(execution, hurt, {"boundary": "action_budget", "attempts": 1})
+        self.assertEqual(result["condition_group"], "review_when")
+        board.activate("destination", play)
+        self.assertEqual(board.assess(dict(play, underfoot={}))["reason"], "review")
+
     def test_goal_identity_and_attempts_survive_windows_budget_review_and_revision(self):
         board = GoalBoard()
         board.add(destination(column=7, attempts=2))

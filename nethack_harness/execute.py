@@ -4,7 +4,7 @@ import time
 from collections import Counter
 
 from .base import Paused
-from .knowledge import DIRS
+from .knowledge import DIRS, MON
 from .level import FEATURES, position
 from .perceive import fingerprint, phase
 from .transport import Closed, Held
@@ -198,7 +198,12 @@ class Executor:
                 if direction is None:
                     reason = "route_changed"
                     break
-                keys = "m" + direction
+                # The prefix moves without pickup or attacks, but it also skips the game's own check before
+                # a guarded square, so a step onto one is sent plain and any confirmation goes to the engine.
+                # Into the highlighted pet the prefix would only bump it; a plain step swaps places with it,
+                # as the game's own travel does.
+                plain = self.observer.current.guarded(target) or view.pet(*target) and view.ch(*target) in MON
+                keys = ("" if plain else "m") + direction
             prior = view
             view = self.send(keys, "protocol" if action.kind in ("continue", "redraw") else "action")
             self.steps += 1

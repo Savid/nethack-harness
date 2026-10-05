@@ -6,7 +6,7 @@ import string
 from collections import deque
 
 from .knowledge import ITEMS, MON, WARNING
-from .level import Level, neighbours, position
+from .level import FEATURES, Level, neighbours, position
 from .tools import TOOLS
 
 
@@ -259,9 +259,7 @@ class Observer:
                                 "basis": "unavailable while engulfed" if view.engulfed else
                                 "inferred floor placeholder" if view.hero in self.current.inferred_floor
                                 else "observed map or underfoot message"}
-            out["adjacent"] = [] if view.engulfed else [{"direction": key, "position": position(p), "glyph": view.ch(*p),
-                                "colour": view.fg(*p), "remembered_terrain": self.current.terrain.get(p)}
-                               for key, p in neighbours(view.hero)]
+            out["adjacent"] = [] if view.engulfed else [self.adjacent(view, key, p) for key, p in neighbours(view.hero)]
             out["map"] = [row.rstrip() for row in view.rows[1:22]]
             out["map_context"] = "engulfed overlay" if view.engulfed else "dungeon"
             out["level"] = {"id": self.current.id, "label": self.current.label,
@@ -284,6 +282,13 @@ class Observer:
             out["prompt"] = view.msg
             out["menu_entries"] = parse_menu_entries(view)
         return out
+
+    def adjacent(self, view, key, p):
+        square = {"direction": key, "position": position(p), "glyph": view.ch(*p), "colour": view.fg(*p),
+                  "remembered_terrain": self.current.terrain.get(p)}
+        if square["remembered_terrain"] in FEATURES:
+            square["remembered_feature"] = self.current.kind(p)
+        return square
 
     def query_metadata(self, name, view):
         turn = self.query_turns.get(name)

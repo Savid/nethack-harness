@@ -7,6 +7,8 @@ from .level import FEATURES, neighbours, position, cursor_keys
 from .perceive import parse_menu_entries, phase
 from .tools import PAUSE, TOOLS
 
+WITHHELD = "modifier withheld toward remembered %s, so the game's own refusal or confirmation applies"
+
 
 @dataclass(frozen=True)
 class Action:
@@ -20,6 +22,7 @@ class Action:
     followups: tuple = ()
     subject: str = ""
     frontier: bool = False
+    withheld: str = ""
 
     @property
     def tool(self):
@@ -98,6 +101,7 @@ def catalogue(view, observer, max_steps):
         return [input_action(key, desc) for key, desc in sorted(labels.items())] + [pause]
     actions = []
     adjacent = dict(neighbours(view.hero))
+    level = None if view.engulfed else observer.current
     for tool in TOOLS.values():
         if not tool.keys and not tool.directions:
             continue
@@ -111,13 +115,20 @@ def catalogue(view, observer, max_steps):
                     if target is None:
                         continue
                     direction = dict(DIRECTION_NAMES, **{".": "self", "<": "up", ">": "down"})[key]
-                    label = "%s: %s at %s" % (description, direction, position(target))
+                    withheld = ""
+                    if variant and variant.skips_guards and level and level.guarded(target):
+                        withheld = WITHHELD % level.guarded(target)
+                    label = "%s: %s at %s" % (description + ("; " + withheld if withheld else ""),
+                                              direction, position(target))
                     if tool.name == "move":
-                        label += " (glyph %r)" % view.ch(*target)
+                        remembered = level.terrain.get(target) if level else None
+                        label += " (glyph %r%s)" % (view.ch(*target), ", remembered " + level.kind(target)
+                                                    if remembered in FEATURES else "")
                     checked = tool.name in ("open", "close", "kick")
                     actions.append(Action(tool.name + suffix + ":" + key, label, tool.name,
-                                          prefix + tool.keys + ("" if checked else key), target=target,
-                                          followups=(("direction", key),) if checked else ()))
+                                          ("" if withheld else prefix) + tool.keys + ("" if checked else key),
+                                          target=target, followups=(("direction", key),) if checked else (),
+                                          withheld=withheld))
             else:
                 for count in sorted({1, max_steps}) if tool.repeat else (1,):
                     label = description + (" for up to %d turns" % count if tool.repeat else "")
@@ -125,7 +136,6 @@ def catalogue(view, observer, max_steps):
                     actions.append(Action(identifier, label, tool.name, prefix + tool.keys, count))
     if view.engulfed:
         return actions + [pause]
-    level = observer.current
     entities = observer.entities(view)
     occupied = {tuple(x - 1 for x in e["position"]) for e in entities if e["kind"] in ("monster", "unseen")}
     previous = level.paths(view.hero, occupied)

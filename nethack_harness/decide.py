@@ -23,6 +23,7 @@ def reject_constant(value):
 GUIDANCE = ("Decide from this state alone; caller_context and objective_progress list earlier attempts and their"
             " results. Prefer a choice that has not already failed to make progress.")
 OMITTED_LEVEL = ("known_terrain", "visits", "inferred_floor")
+REQUEST_ATTEMPTS = 8
 
 
 def visit_counts(observation):
@@ -47,6 +48,8 @@ def argument_facts(observation, action, visits):
     variant = next((v for v in spec.variants if v.name in parts[1:]), None)
     if variant:
         facts["modifier"] = {"name": variant.name, "description": variant.description}
+        if action.withheld:
+            facts["modifier"]["withheld"] = action.withheld
     if spec.directions and parts[-1] in spec.directions:
         key = parts[-1]
         origin = observation.get("hero", {}).get("position")
@@ -57,7 +60,8 @@ def argument_facts(observation, action, visits):
         adjacent = next((square for square in observation.get("adjacent", [])
                          if square["direction"] == key and square["position"] == facts["target"]), None)
         if adjacent is not None:
-            facts["target_observation"] = {name: adjacent[name] for name in ("glyph", "colour", "remembered_terrain")}
+            facts["target_observation"] = {name: adjacent[name] for name in (
+                "glyph", "colour", "remembered_terrain", "remembered_feature") if name in adjacent}
     return facts
 
 
@@ -65,9 +69,38 @@ def snapshot_summary(snapshot, field):
     return {field: snapshot[field], "age_turns": snapshot["age_turns"], "complete": snapshot["complete"]}
 
 
+def point_summary(point):
+    return {key: value for key, value in point.items() if key != "fingerprint"} if point else point
+
+
+def attempt_summary(attempt):
+    out = {key: value for key, value in attempt.items() if key != "decision"}
+    out["action"] = attempt["action"]["id"]
+    for key in ("before", "after"):
+        if key in out:
+            out[key] = point_summary(out[key])
+    return out
+
+
+def progress_summary(progress):
+    """Recent scoped attempts without screen hashes, record numbers or the action descriptions the choices repeat."""
+    attempts = progress["recent_attempts"][-REQUEST_ATTEMPTS:]
+    return dict(progress, start=point_summary(progress["start"]),
+                recent_attempts=[attempt_summary(attempt) for attempt in attempts],
+                omitted_attempts=progress["omitted_attempts"] + len(progress["recent_attempts"]) - len(attempts))
+
+
 def request_observation(observation):
-    """The observation as sent to the engine: complete facts, without map memory the screen already shows."""
+    """The observation as sent to the engine: complete facts, without map memory the screen already shows.
+
+    Attempt and movement histories are shortened to their most recent entries; the decision log keeps them whole."""
     out = {key: value for key, value in observation.items() if key != "fingerprint"}
+    if out.get("objective_progress"):
+        out["objective_progress"] = progress_summary(out["objective_progress"])
+    if out.get("navigation_progress"):
+        events = out["navigation_progress"]["recent_actions"][-REQUEST_ATTEMPTS:]
+        out["navigation_progress"] = dict(out["navigation_progress"], recent_actions=[
+            {key: value for key, value in event.items() if key != "decision"} for event in events])
     if "messages" in out:
         out["messages"] = out["messages"][-8:]
     for key, field in (("inventory", "items"), ("spells", "items"), ("attributes", "lines"), ("dungeon_overview", "lines")):

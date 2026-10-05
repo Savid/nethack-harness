@@ -126,7 +126,9 @@ object keys or array indexes; no expression language or code execution is used.
 
 Missing or null values and incompatible numeric comparisons yield unknown.
 Unknown activation evidence prevents activation; unknown completion, validity
-or review evidence returns control. A fresh observation may include remembered
+or review evidence returns control, except while a prompt, menu or `--More--`
+hides map facts such as position: then the goal continues and the next window's
+engine answers the prompt. Known values, such as HP, still apply there. A fresh observation may include remembered
 inventory or inspections; include their age/source metadata in conditions when
 freshness matters. The supervisor does not infer whether a remembered fact is
 sufficient for a particular goal.

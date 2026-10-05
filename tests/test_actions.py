@@ -131,6 +131,39 @@ class ActionCatalogueTest(TestCase):
         self.assertNotIn("travel:3,6", self.choices(pool))
         self.assertEqual(Observer().observation(pool)["known_levels"][0]["landmarks"][0]["kind"], "water")
 
+    def test_moves_toward_guarded_terrain_name_it_and_keep_the_games_own_check(self):
+        # Recorded games: lava west of the hero, and a known trap south of the hero.
+        for fixture, key, kind, open_key in (("lava-room.json", "h", "lava", "l"), ("trap-room.json", "j", "trap", "l")):
+            with self.subTest(fixture=fixture):
+                recorded = View(**json.loads((FIXTURES / fixture).read_text()))
+                observer = Observer()
+                state = observer.observation(recorded)
+                square = next(s for s in state["adjacent"] if s["direction"] == key)
+                self.assertEqual(square["remembered_feature"], kind)
+                choices = {a.id: a for a in catalogue(recorded, observer, 8)}
+                self.assertEqual(choices["move:" + key].keys, key)
+                self.assertEqual(choices["move:no_pickup:" + key].keys, key)
+                self.assertIn("withheld toward remembered " + kind, choices["move:no_pickup:" + key].description)
+                self.assertIn("remembered " + kind, choices["move:" + key].description)
+                self.assertEqual(choices["move:no_pickup:" + open_key].keys, "m" + open_key)
+                self.assertEqual(choices["move:no_pickup:" + open_key].withheld, "")
+        structure = view(screen("", ["", "   @#"]), (2, 3))
+        structure.fgs[2][4] = "green"
+        self.assertEqual(self.choices(structure)["move:no_pickup:l"].keys, "l")
+
+    def test_routes_cross_a_known_trap_only_without_another_route(self):
+        recorded = View(**json.loads((FIXTURES / "trap-room.json").read_text()))
+        observer = Observer()
+        observer.observation(recorded)
+        trap = (8, 59)
+        choices = {a.id: a for a in catalogue(recorded, observer, 64)}
+        self.assertEqual(choices["travel:9,60"].route, (trap,))
+        south = [choices[name] for name in ("travel:11,61", "travel:18,61", "travel:20,61")]
+        self.assertEqual([len(a.route) for a in south], [3, 10, 12])
+        self.assertFalse([a.id for a in south if trap in a.route])
+        corridor = self.choices(view(screen("", ["", "   @#^#>"]), (2, 3)))
+        self.assertEqual(corridor["travel:3,8"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
+
     def test_routes_cross_squares_seen_only_under_objects(self):
         choices = self.choices(view(screen("", ["", "   @#$#>"]), (2, 3)))
         self.assertEqual(choices["travel:3,8"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))

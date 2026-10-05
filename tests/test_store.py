@@ -1,4 +1,5 @@
 from unittest import TestCase
+import json
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -76,3 +77,21 @@ class StoreTest(TestCase):
                 self.assertIsNone(store.take_reply(1))
             finally:
                 store.close()
+
+    def test_decision_payloads_are_stored_compressed_and_exported_whole(self):
+        observation = {"map": ["|....." * 13] * 21, "known_terrain": ["-----" * 16] * 21,
+                       "attempts": [{"fingerprint": "%064x" % n, "position": [n, n]} for n in range(32)]}
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                for _ in range(100):
+                    number = store.begin("engine", {"state": {"observation": observation}})
+                    store.choice(number, "wait:1", {"answers": {"action": {"choice": "wait:1"}}}, 0.1)
+                    store.finish(number, {"reason": "completed"}, observation)
+                stored, = store.db.execute("SELECT sum(length(request) + length(after_state)) FROM records").fetchone()
+                self.assertLess(stored, 100 * 2 * len(json.dumps(observation)) / 4)
+                record = list(store.records())[-1]
+                self.assertEqual((record["request"]["state"]["observation"], record["after"]), (observation, observation))
+            finally:
+                store.close()
+

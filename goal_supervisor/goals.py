@@ -301,10 +301,13 @@ class GoalBoard:
             return {"reason": "no_active_goal"}
         goal = self.goal(self.state["active"])
         result = {"goal_id": goal["id"], "observation": point(observation)}
+        # A prompt, menu or --More-- hides map facts such as position and underfoot terrain. A value unknown
+        # there waits for the next window, where the engine answers the prompt, instead of requesting review.
+        waiting = observation.get("phase") not in ("play", "ended")
         for parent in self.chain(goal["id"]):
             for name, any_match in (("valid_while", False), ("review_when", True)):
                 checked = check(parent[name], observation, any_match)
-                if checked["matches"] is None or checked["matches"] == any_match:
+                if checked["matches"] == any_match or checked["matches"] is None and not waiting:
                     evidence = dict(checked, condition_group=name, condition_goal_id=parent["id"])
                     self.suspend(goal["id"], "condition_unknown" if checked["matches"] is None else name, evidence)
                     return dict(result, reason="review", **evidence)
@@ -317,7 +320,7 @@ class GoalBoard:
                 goal["status"], self.state["active"] = "completed", None
                 self.event("completed", goal, source="observation_conditions", evidence=success, observation=point(observation))
                 return dict(result, reason="completed", **success)
-            if success["matches"] is None:
+            if success["matches"] is None and not waiting:
                 self.suspend(goal["id"], "success_unknown", success)
                 return dict(result, reason="review", condition_group="success", **success)
         if observation.get("phase") == "ended":

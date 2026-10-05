@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import time
+import zlib
 
 INTENT_SCHEMA = 1
 
@@ -15,7 +16,7 @@ CREATE TABLE IF NOT EXISTS commands (id INTEGER PRIMARY KEY AUTOINCREMENT, body 
 CREATE TABLE IF NOT EXISTS replies (id INTEGER PRIMARY KEY, created REAL NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS records (
     id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL NOT NULL, type TEXT NOT NULL, source TEXT NOT NULL,
-    request TEXT, response TEXT, choice TEXT, latency REAL, outcome TEXT, after_state TEXT, intent TEXT,
+    request BLOB, response BLOB, choice TEXT, latency REAL, outcome BLOB, after_state BLOB, intent TEXT,
     CHECK ((type = 'decision' AND request IS NOT NULL) OR (type = 'intent' AND intent IS NOT NULL))
 );
 CREATE TABLE IF NOT EXISTS inputs (
@@ -29,6 +30,15 @@ CREATE INDEX IF NOT EXISTS inputs_decision ON inputs(decision_id);
 
 def encode(value):
     return json.dumps(value, allow_nan=False, separators=(",", ":"))
+
+
+def pack(value):
+    """Decision payloads are compressed: each holds full observations, and sessions often live on small tmpfs."""
+    return zlib.compress(encode(value).encode())
+
+
+def unpack(blob):
+    return json.loads(zlib.decompress(blob))
 
 
 class Store:
@@ -91,7 +101,7 @@ class Store:
     def begin(self, source, request):
         with self.db:
             return self.db.execute("INSERT INTO records(created,type,source,request) VALUES (?,'decision',?,?)",
-                                   (time.time(), source, encode(request))).lastrowid
+                                   (time.time(), source, pack(request))).lastrowid
 
     def intent(self, record):
         """Append a caller intent record; the harness stores it verbatim and never interprets it."""
@@ -105,7 +115,7 @@ class Store:
     def choice(self, number, choice, response, latency):
         with self.db:
             self.db.execute("UPDATE records SET choice=?,response=?,latency=? WHERE id=?",
-                            (choice, encode(response), latency, number))
+                            (choice, pack(response), latency, number))
 
     def input(self, number, keys, source):
         with self.db:
@@ -119,7 +129,7 @@ class Store:
     def finish(self, number, outcome, after):
         with self.db:
             self.db.execute("UPDATE records SET outcome=?,after_state=? WHERE id=?",
-                            (encode(outcome), encode(after), number))
+                            (pack(outcome), pack(after), number))
 
     def records(self, after=0):
         """Decision and caller intent records in their shared sequence."""
@@ -134,7 +144,7 @@ class Store:
             del record["intent"]
             for key in ("request", "response", "outcome", "after"):
                 if record[key] is not None:
-                    record[key] = json.loads(record[key])
+                    record[key] = unpack(record[key])
             record["inputs"] = [dict(zip(("keys", "source", "status"), item)) for item in self.db.execute(
                 "SELECT keys,source,status FROM inputs WHERE decision_id=? ORDER BY id", (record["id"],))]
             yield record

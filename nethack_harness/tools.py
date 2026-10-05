@@ -7,6 +7,8 @@ class Variant:
     name: str
     prefix: str
     description: str
+    # The game also skips its own refusal or confirmation before entering a guarded square with this prefix.
+    skips_guards: bool = False
 
 
 @dataclass(frozen=True)
@@ -29,7 +31,8 @@ FORCE_WAIT = Variant("force", "m", "Override the game's safe-wait prevention")
 
 _TOOLS = (
     Tool("move", "Move or bump one adjacent square in a chosen direction", directions="ykuhlbjn",
-         variants=(Variant("no_pickup", "m", "Move without automatic pickup or intentionally attacking"),)),
+         variants=(Variant("no_pickup", "m", "Move without automatic pickup; into a visible monster, bump it without "
+                           "attacking or swapping places, using a turn", skips_guards=True),)),
     Tool("attack", "Force an attack at an adjacent square, even if no monster is visible", "F", directions="ykuhlbjn"),
     Tool("open", "Open an adjacent door, or a container here", "o", directions="ykuhlbjn.<>"),
     Tool("close", "Close an adjacent door", "c", directions="ykuhlbjn"),

@@ -152,16 +152,28 @@ the edge of known terrain: a known square next to one that has never shown a
 glyph. A square seen under a monster or object is not unknown, and a square the
 hero has stood on is not an edge, because standing there shows all of its
 neighbours. Routes may cross squares seen only under objects. Like the game's
-own travel, routes never cross remembered water or lava (`}`); a red `}` is
+own travel, routes never cross remembered water or lava (`}`), and cross a
+remembered trap (`^`) only where no other known route exists; a red `}` is
 named lava and a blue one water. A destination remains offered for the final
 step of its route.
 Corridors expose endpoints and junctions as destinations. Interior corridor
 tiles remain part of routes without each becoming another destination choice.
 Corridor squares connect cardinally, and diagonally where no cardinal path joins them.
 Move commands can bump into or attack occupants according to game mechanics.
-Travel uses movement without attacks along an unweighted known route. Both can
+Travel uses movement without attacks along a shortest known route. Both can
 fail or reveal new information; the result is returned to the engine. A move
 into water or lava stays a direct movement choice.
+Route steps and `move:no_pickup` use the game's `m` prefix, which moves without
+autopickup or attacking; into a visible monster it only bumps, using a turn.
+A route step into the highlighted pet is sent without the prefix, so the hero
+swaps places with it as in the game's own travel. The prefix also skips the game's own checks before
+guarded terrain: it refuses a step into known water or lava, and asks before a
+step onto a known trap or into a visible gas cloud (a coloured `#`). Toward a
+remembered `}`, `^` or coloured `#`, these moves are sent without the prefix,
+and the refusal or confirmation prompt returns to the engine like any other
+result. The choice says so in its description and in
+`argument_facts.modifier.withheld`. Entering known water or lava on purpose
+therefore needs caller input.
 Remembered green or cyan `#` tiles are structural obstacles rather than corridor
 connections and remain visible in `level.structural_obstacles`. Direct movement
 commands remain available for the engine to choose.
@@ -311,7 +323,8 @@ and returns when its bound or an observed boundary is reached.
 Argument requests include `argument_facts` for every offered choice, with its
 target, bound, modifier when it has one, and the destination facts above for
 travel and exploration. Directional actions include their direction, origin,
-coordinate delta and the target square's glyph, colour and remembered terrain. The target
+coordinate delta and the target square's glyph, colour and remembered terrain,
+naming a remembered feature such as `lava`, `water` or `trap`. The target
 is the square addressed by the command, not a guaranteed resulting position.
 These facts supplement the complete observation and unchanged choice descriptions.
 `navigation_obstacles` preserves destinations excluded because occupied squares
@@ -328,8 +341,8 @@ includes `review.previous_decision`, the selected action and the evidence.
 Two repetitions of the same cycle of movement action endpoints on unchanged remembered terrain,
 under the same objective, pause with `navigation_cycle`. The outcome preserves
 the original execution reason and includes the cycle positions and decision
-records for review. Each request includes up to 32 recent movement actions in
-`observation.navigation_progress`. New terrain, level or objective changes,
+records for review. `observation.navigation_progress` keeps up to 32 recent
+movement actions; requests carry the latest 8 and every recent position. New terrain, level or objective changes,
 nonmovement actions, and a resume that starts a new scope reset this movement
 window. A single
 return through a corridor does not trigger it.
@@ -348,8 +361,9 @@ scope, attempts used and remaining under the caller budget since the latest
 resume, and up to 32 recent attempts with omitted-count metadata.
 Each attempt records the selected action, source, attempted inputs and delivery
 status, before/after observations, and execution result. Unknown coordinates or
-turns remain null; a pending input has an uncertain result. Full records remain
-available through `export`.
+turns remain null; a pending input has an uncertain result. Requests carry the
+latest 8 attempts, naming each action by its ID, without screen fingerprints or
+record numbers; `observe` keeps the rest. Full records remain available through `export`.
 This scope starts fresh on every resume, even with identical objective text,
 unless the resume passes `--continue-scope`, and always on an objective change.
 It is supplied during tool, argument and prompt
@@ -382,7 +396,8 @@ model name are configurable.
 `state` holds `decision` (stage and selected tool), `objective`, `caller_context`,
 then `navigation` (tool stage) or `argument_facts` (argument stage), then the
 `observation`. The stage-specific members are compact; the observation is the
-largest member. Requests in early levels are typically 3 to 7 thousand tokens.
+largest member. Requests in early levels are typically 3 to 7 thousand tokens,
+and the shortened attempt histories keep them near that size during long goals.
 An endpoint that serializes keys in sorted order and truncates long input keeps
 these members ahead of the observation's later keys.
 
@@ -485,6 +500,8 @@ anything the engine should see through `--context-file`.
 
 Each session has a fresh SQLite database, `session.sqlite3`, plus `daemon.log`,
 a process lock and a schema-initialization lock. SQLite transactions serialize caller commands and record decisions.
+Decision payloads (request, response, outcome and resulting observation) are
+stored zlib-compressed, since each holds complete observations; `export` returns JSON.
 Completed commands are removed. The session retains its decision history for export.
 
 An exported JSONL row has a `type`: `intent` rows carry `id`, `created`,

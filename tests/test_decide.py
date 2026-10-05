@@ -1,6 +1,7 @@
 from unittest import TestCase
 from unittest import mock
 import io
+import json
 from urllib.error import HTTPError
 from helpers import Endpoint
 from nethack_harness.actions import Action
@@ -31,6 +32,11 @@ class EngineTest(TestCase):
                          {"glyph": "#", "colour": "gray", "remembered_terrain": "#"})
         self.assertNotIn("modifier", facts["move:u"])
         self.assertEqual(facts["move:no_pickup:u"]["modifier"]["name"], "no_pickup")
+        lava = dict(adjacent, glyph="}", colour="red", remembered_terrain="}", remembered_feature="lava")
+        withheld = Action("move:no_pickup:u", "Move northeast", "move", "u", target=(7, 71), withheld="toward lava")
+        liquid = request_body(dict(observation, adjacent=[lava]), [withheld], "Go", tool="move")["state"]["argument_facts"]
+        self.assertEqual(liquid["move:no_pickup:u"]["target_observation"]["remembered_feature"], "lava")
+        self.assertEqual(liquid["move:no_pickup:u"]["modifier"]["withheld"], "toward lava")
         self.assertEqual(facts["pause"]["max_steps"], 0)
         # Vertical and self directions address the same coordinates but differ mechanically.
         actions = [Action("open:" + key, "Open", "open", target=(8, 70)) for key in ".<>"]
@@ -52,6 +58,29 @@ class EngineTest(TestCase):
         arguments = request_body(observation, [action], "Explore", tool="travel")["state"]
         self.assertNotIn("navigation", arguments)
         self.assertEqual(arguments["argument_facts"]["travel:3,7"]["visits"], 2)
+
+    def test_requests_carry_recent_attempts_without_screen_hashes_or_repeated_descriptions(self):
+        point = {"fingerprint": "f" * 64, "phase": "play", "position": [3, 4], "turn": 9, "level": "level-1"}
+        attempts = [{"attempt": n, "decision": 100 + n, "source": "engine", "before": point, "after": point,
+                     "action": {"id": "move:l", "description": "Move east " * 20, "kind": "move"},
+                     "inputs": [{"keys": "l", "source": "action", "status": "completed"}],
+                     "result": {"reason": "no_observed_effect"}} for n in range(1, 21)]
+        movements = [{"decision": n, "action": "travel:3,9", "position_before": [3, 4], "position_after": [3, 9]}
+                     for n in range(20)]
+        observation = {"phase": "play", "objective_progress": {"id": "scope", "start": point, "scope_attempts": 30,
+                                                               "recent_attempts": attempts, "omitted_attempts": 10},
+                       "navigation_progress": {"recent_positions": [[3, 4]], "recent_actions": movements,
+                                               "window_actions": 32}}
+        sent = request_body(observation, [Action("wait:1", "Wait", "wait")], "Wait")["state"]["observation"]
+        progress, navigation = sent["objective_progress"], sent["navigation_progress"]
+        self.assertEqual([a["attempt"] for a in progress["recent_attempts"]], list(range(13, 21)))
+        self.assertEqual(progress["omitted_attempts"], 22)
+        self.assertEqual(progress["recent_attempts"][-1]["action"], "move:l")
+        self.assertEqual(progress["recent_attempts"][-1]["after"]["position"], [3, 4])
+        self.assertNotIn("fingerprint", json.dumps(sent))
+        self.assertNotIn("decision", json.dumps(sent))
+        self.assertEqual([a["action"] for a in navigation["recent_actions"]], ["travel:3,9"] * 8)
+        self.assertEqual(len(observation["objective_progress"]["recent_attempts"]), 20)
 
     def test_requests_omit_map_memory_the_screen_shows_but_keep_level_facts(self):
         observation = {"phase": "play", "fingerprint": "f", "messages": [{"text": str(n)} for n in range(20)],
