@@ -4,6 +4,16 @@ import re
 from .knowledge import CONDITION_RE, colour
 
 
+def continues(line, row):
+    """Whether row continues the message on the line above it.
+
+    The game splits a message too long for one line at a space, so a continuation starts in the first column
+    with a word that would not have fitted on the line above. A map row starts with map structure instead."""
+    first = row.split(" ", 1)[0]
+    return (bool(line and first) and len(line) + 1 + len(first) > 79 and
+            (row.startswith("--More--") or row[0] not in "|-#.+"))
+
+
 class PromptContext:
     """Keep a targeting cursor distinct from the hero after automatic descriptions."""
 
@@ -44,15 +54,17 @@ class View:
         self.rows = [r.ljust(80)[:80] for r in rows]
         self.fgs, self.bolds, self.revs = fg, bold, rev
         top = rows[0].rstrip()
-        wrapped = len(top) >= 79 and rows[1].strip() and not re.search(r"[|\-#.]{3}", rows[1])
-        if wrapped:
-            top += " " + rows[1].strip()   # a message or prompt that wrapped onto row 1
+        wrapped = 0
+        while wrapped < 2 and continues(rows[wrapped].rstrip(), rows[wrapped + 1]):
+            wrapped += 1
+            top += " " + rows[wrapped].strip()
+        self.message_rows = wrapped + 1
         msg = self.msg = top.strip()
         self.more = any("--More--" in r for r in rows)
         self.menu = any(re.search(r"\((end|\d+ of \d+)\)\s*$", r.rstrip()) for r in rows)
         # A question is live only while the cursor waits on the message line; once answered, its text can stay
         # on screen but must not be answered again.
-        asking = self.asking = (cursor[0] == 0 or wrapped and cursor[0] == 1) and not self.more
+        asking = self.asking = cursor[0] <= wrapped and not self.more
         m = re.search(r"\[([a-zA-Z#\-]+)\](?: \(.\))?\s*$", msg)
         self.yn = m.group(1) if m and not self.more and asking else None
         m = re.search(r"\[([^\]]*?)(?: or \?\*)?\]\s*$", msg)
@@ -73,7 +85,7 @@ class View:
                                      re.search(farewell + r".+ the Demigod(?:dess)?\.\.\.", joined)) else None
         self.ended = bool(self.result or re.search(r"possessions identified\?|Do you want to see what you had",
                                    msg) or re.search(r"(?:^|\n)\s*(?:Goodbye|Fare thee well|Sayonara|Aloha|Farvel) "
-                                                    r".+ the .+\.\.\.|REST\s+IN\s+PEACE", joined))
+                                                    r".+ the .+\.\.\.|REST\s+IN\s+PEACE|^\s*Be seeing you\.\.\.", joined, re.M))
         status = rows[22] + " " + rows[23]
         location = re.search(r"\b(Dlvl:\d+|Home \d+|Tutorial:\d+|Fort Ludios|Astral Plane|"
                              r"Earth|Air|Fire|Water|Plane of \w+|End Game)\b", rows[23])

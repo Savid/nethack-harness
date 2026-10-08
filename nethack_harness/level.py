@@ -1,8 +1,9 @@
 """Observed terrain and shortest paths through known squares."""
 import heapq
+import re
 from itertools import count
 
-from .knowledge import DIRS, ITEMS, MON, WARNING
+from .knowledge import DIRS, ITEMS, MON, WARNING, trap_kind
 
 
 FEATURES = {"<": "up stairs", ">": "down stairs", "^": "trap", "_": "altar",
@@ -27,6 +28,11 @@ def neighbours(p):
             yield key, q
 
 
+def door_line(view, r, c):
+    """Whether the square sits in a wall line, as a door does; a spellbook, also drawn +, lies on a floor."""
+    return view.ch(r, c - 1) == "-" or view.ch(r, c + 1) == "-" or view.ch(r - 1, c) == "|" or view.ch(r + 1, c) == "|"
+
+
 def cursor_keys(start, target):
     dr, dc = target[0] - start[0], target[1] - start[1]
     return ";@" + ("l" * dc if dc > 0 else "h" * -dc) + ("j" * dr if dr > 0 else "k" * -dr) + "."
@@ -46,6 +52,10 @@ class Level:
         self.feature_turns = {}
         self.inspections = {}
         self.landmark_messages = {}
+        self.trap_kinds = {}
+        # Statues are drawn as the monster they depict; a farlook that named one keeps its square an object.
+        self.statues = {}
+        self.underfoot = {}
 
     def remember_terrain(self, p, ch, turn, colour=None):
         previous = self.terrain.get(p)
@@ -67,13 +77,14 @@ class Level:
                 p, ch = (r, c), view.ch(r, c)
                 if p == view.hero or ch == " " or ch in WARNING or ch == "I":
                     continue
-                if ch in MON:
+                statue = self.statues.get(p) == (ch, view.col(r, c))
+                if ch in MON and not statue:
                     # A monster sensed while blind does not show its square.
                     if not blind:
                         self.seen.add(p)
                     continue
                 self.seen.add(p)
-                if ch in ITEMS:
+                if ch in ITEMS or statue or ch == "+" and not door_line(view, r, c):
                     if p not in self.terrain:
                         self.object_squares.add(p)
                     continue
@@ -103,7 +114,21 @@ class Level:
         ch = self.terrain.get(p)
         if ch == "}":
             return LIQUIDS.get(self.colours.get(p), FEATURES[ch])
+        if ch == "^":
+            return self.trap_kinds.get(p, FEATURES[ch])
         return FEATURES.get(ch, ch)
+
+    def note_underfoot(self, p, notes, turn):
+        """Keep what the game said about the hero's square, and the stairs or trap it names."""
+        self.underfoot[p] = {"notes": list(notes), "observed_turn": turn}
+        for note in notes:
+            stairs = re.search(r"\b(?:staircase|ladder) (up|down)\b", note)
+            if stairs and re.search(r"\bhere\.?$", note):
+                self.remember_terrain(p, "<" if stairs[1] == "up" else ">", turn)
+            trap = trap_kind(note)
+            if trap:
+                self.remember_terrain(p, "^", turn)
+                self.trap_kinds[p] = trap
 
     def guarded(self, p):
         """The name of remembered terrain at p that the game checks before a plain move enters it, or None.

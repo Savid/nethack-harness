@@ -141,23 +141,35 @@ class Term:
         if not self.vt.complete:
             raise RuntimeError("terminal has not supplied a complete screen")
 
-    def send(self, keys, before_send=None):
+    def send(self, keys, before_send=None, separately=False):
+        """Write keys, one byte per character, and wait for the game to settle.
+
+        With separately, each byte is written and settled on its own, so a prompt that opens inside the batch
+        is tracked before the keys that follow it reach it."""
         self.poll()
         before_view = self.view()
         # Validate and journal only after the last read before sending input.
         if before_send:
             before_send(before_view)
-        before = self.vt.lines()[23]
-        data = keys.encode() if isinstance(keys, str) else keys
-        self.poll(data)
-        self.prompts.before_input(before_view, keys if isinstance(keys, str) else keys.decode("latin-1"))
-        self.settle(before, multi=bool(MULTI_TURN.match(data)))
+        data = keys.encode("latin-1") if isinstance(keys, str) else keys
+        multi = bool(MULTI_TURN.match(data))
+        self.vt.touched.clear()
+        for piece in [data[i:i + 1] for i in range(len(data))] if separately else [data]:
+            before = self.vt.lines()[23]
+            self.poll(piece)
+            self.prompts.before_input(before_view, piece.decode("latin-1"))
+            self.settle(before, multi=multi)
+            before_view = self.view()
         lines = self.vt.lines()
         # Counted commands and runs can leave T: stale. The executor records the redraw;
         # a message must remain visible so that inspection results are not erased.
         self.redraw_needed = bool((COUNTED.match(data) or self.after_run) and self.ready() and 1 <= self.vt.y <= 21 and
                                   not lines[0].strip() and not any("--More--" in r for r in lines))
         self.after_run = bool(RUNS.match(data))
+
+    def message_written(self, rows):
+        """Whether the game wrote to the message line since the last input; an unwritten line holds old text."""
+        return bool(self.vt.touched & set(range(rows)))
 
     def view(self):
         vt = self.vt

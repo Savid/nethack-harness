@@ -28,6 +28,8 @@ class VT:
         self.dec = False
         self.esc = ""
         self.complete = False
+        # Rows written or erased since the caller last cleared this set; an unchanged row may still hold old text.
+        self.touched = set(range(self.rows))
 
     def feed(self, data):
         for ch in self.decoder.decode(data):
@@ -51,6 +53,7 @@ class VT:
             self.x, self.wrap = 0, False
             self._linefeed()
         self.chars[self.y][self.x] = ch
+        self.touched.add(self.y)
         self.fg[self.y][self.x], self.bold[self.y][self.x], self.rev[self.y][self.x] = self.attr
         if self.x == self.cols - 1:
             self.wrap = True
@@ -79,11 +82,13 @@ class VT:
             self.y += 1
 
     def _blank(self, y, x0, x1):
+        self.touched.add(y)
         for x in range(max(0, x0), min(self.cols, x1)):
             self.chars[y][x], self.fg[y][x], self.bold[y][x], self.rev[y][x] = " ", "default", False, False
 
     def _scroll(self, top, bottom, n):
         """Scroll rows top..bottom up by n (down if n < 0)."""
+        self.touched.update(range(top, bottom + 1))
         for grid in (self.chars, self.fg, self.bold, self.rev):
             blank = {id(self.chars): " ", id(self.fg): "default"}.get(id(grid), False)
             block = grid[top:bottom + 1]
@@ -199,12 +204,14 @@ class VT:
             self._scroll(self.top, self.bottom, -num(0))
         elif final == "P":
             n, row = num(0), self.y
+            self.touched.add(row)
             for grid, blank in ((self.chars, " "), (self.fg, "default"), (self.bold, False), (self.rev, False)):
                 line = grid[row]
                 grid[row] = line[:self.x] + line[self.x + n:] + [blank] * min(n, self.cols - self.x)
                 grid[row] = grid[row][:self.cols]
         elif final == "@":
             n, row = num(0), self.y
+            self.touched.add(row)
             for grid, blank in ((self.chars, " "), (self.fg, "default"), (self.bold, False), (self.rev, False)):
                 line = grid[row]
                 grid[row] = (line[:self.x] + [blank] * n + line[self.x:])[:self.cols]

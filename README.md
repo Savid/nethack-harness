@@ -1,9 +1,14 @@
 # nethack-harness
 
-A NetHack observation and execution adapter for a decision engine. The engine
+A NetHack observation and execution adapter. A caller or a decision engine
 chooses what to do. The harness reads the terminal, maintains observed game
 knowledge, presents executable choices and carries out the selected action.
 Python 3.9+, standard library only.
+
+A caller that makes its own decisions, such as an LLM agent, plays a session
+without a decision endpoint through [direct play](#direct-play): a compact text
+view, raw keys, and bounded walking and resting. A session with an endpoint runs
+the decision cycle below.
 
 ## Decision cycle
 
@@ -63,7 +68,14 @@ python3 nethack_harness.py serve-local --socket /tmp/game.sock \
   --nethack /usr/games/nethack -- -u Hero -@
 ```
 
-Then start the adapter in another shell:
+For direct play, start a session without `--decide`; it prints the first view:
+
+```sh
+python3 nethack_harness.py --dir /tmp/game-session start --socket /tmp/game.sock \
+  --max-action-steps 32
+```
+
+To run the decision cycle, start the adapter with an endpoint instead:
 
 ```sh
 python3 nethack_harness.py --dir /tmp/game-session start \
@@ -121,7 +133,7 @@ objective achieved or failed.
 normal play to a comma-separated list such as `travel,explore,move,open,kick,search`;
 `pause` stays available and game prompts still offer all of their answers. Resume
 without the flag preserves the list; `--tools all` removes the limit. Unknown names
-are rejected. `actions`, `act` and `send` are not limited.
+are rejected. Caller commands (`send`, `go` and `rest`) are not limited.
 
 `--context-file FILE` on `start` or `resume` supplies an arbitrary JSON object
 as `state.caller_context` on every decision request, including prompt and argument
@@ -141,6 +153,111 @@ movement, standard menu selection markers, colour, the turn counter and pet
 highlighting enabled. `serve-local` supplies `color,time,hilite_pet,!autopickup`;
 `--options` can set the game options explicitly. The game executable and its
 playground must be supplied separately.
+
+## Direct play
+
+A session started without `--decide` never decides by itself. The caller plays
+it with four commands; `help` prints this interface for the caller, and an
+unknown command prints only these four. `wait` and `observe` refuse such a
+session, and `resume` reports that it has no decision endpoint.
+
+| Command | Effect |
+| --- | --- |
+| `look` | Print the view. Uses no game time. |
+| `send 'KEYS'` | Type up to 256 bytes, then print the messages and the view. |
+| `go TARGET` | Walk the shortest known route, then print why it stopped and the view. |
+| `rest [N]` | Search up to N times (default 20, at most 200), then the same. |
+
+`send` escapes are `\e` Escape, `\r` Enter, `\n`, `\t`, `\\` and `\xHH`, which
+sends exactly that byte (`\xf0` is M-p); other characters must be ASCII. Keys
+starting with `-` need no `--`. The keys are written one at a time, so a prompt
+opened by one of them is known before the next arrives; a prompt or menu still
+takes any keys that follow it. `--More--` pages are dismissed and their text,
+including text windows such as "Things that are here", is reported.
+
+`go` takes `x,y`, `<`, `>`, `item`, `frontier` or a kind listed under `seen:`
+(`door`, `open door`, `altar`, `fountain`, `dart trap`, ...) and walks to the
+nearest by known route, skipping one the hero already stands at; for a closed
+door it walks to a square beside it. A named square is the destination even at a
+corridor end. `frontier` takes the nearest group of known squares beside
+never-seen ones and walks to its far side; at the end of a known corridor it
+follows the corridor on, as the exploration action does. A corridor square
+counts as a frontier only at the end of the known corridor, because rock beside
+a corridor never shows. `go` runs the bounded travel or exploration action with
+the session's `--max-action-steps` bound and their stopping rules; messages that
+are only about a tame monster the game has named do not stop it, and a step that
+the pet blocks is tried once more. Routes pass through the highlighted pet,
+swapping places. When no route exists `go` sends nothing and says why: the
+monster blocking the only route, a target that is a door or was never seen, or,
+for `frontier`, the doors, blocking monsters, boulders and corridor ends that
+remain. `rest` is the bounded search; it refuses at a prompt, and when no game
+time passes the game refused to search and the exit code is 1. `go`, `rest`
+and `send` refuse to start while another of them runs on the same session, and
+`go` and `rest` stop between steps on `pause`, `stop` or SIGTERM.
+
+Exit codes are 0; 3 once the game is over or its process has exited, for every
+command (`send` can still answer the game's closing questions); 1 for a refused
+or failed command; 2 when `start` returns before the session is ready (run
+`look`); and 64 for invalid arguments. `start` names a terminal socket it cannot
+reach.
+
+A view of the recorded start of a seeded game:
+
+```
+Dlvl:1 $:0 HP:14(14) Pw:5(5) AC:4 Xp:1 T:1
+Hero the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
+msg: This is a seeded game (seed "1001", generator version 1).
+   30        40
+   01234567890
+ 3 -----------
+ 4 |../.......
+ 5 +.d.......|
+ 6 |.@...d...|
+ 7 --+--------
+you: 32,6  here: < up stairs; There is a staircase up out of the dungeon here.
+monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away
+seen: + door 32,7 (adjacent j); + door 30,5 (1)
+items: / 33,4 (2)
+frontier: 40,4 (8)
+```
+
+The view holds the game's two status lines; `msg:` lines with the complete
+messages written during the last command (a long message joined from the rows
+it wrapped over; text the game left on screen from before is not repeated, and
+a bare `look` shows only messages no command has shown); an open `prompt:`, the
+targeting `cursor:` and `keys:`, the answers the screen offers; the map without
+blank rows, cropped to known columns, with column numbers above and row numbers
+to the left. Every position is `x,y` read from those numbers: x is the terminal
+column, y the terminal row. `you:` gives the hero's square and what is
+underfoot: remembered terrain and what the game said about the square ("There
+is a staircase up here", "You see here ..."). Where the hero arrives on a square
+whose terrain was never seen or where an object lay, the view asks the game with
+`:`, which takes no game time. `monsters:` are named by the game's own farlook
+(`;`), including "tame" and "peaceful" and answers that run to `--More--`. A
+name is kept only while that monster stays on its square with the same glyph
+and colour at every view, and shows `(looked T:n)` once that turn has passed; a
+monster that moved or arrived is looked at again, at most eight looks per view.
+Naming and `:` happen only in sessions without a decision endpoint and only
+while the game verifiably waits for a command: no prompt, the cursor on the
+hero's `@` and the status lines shown. A farlook that names a statue keeps that
+square an object. `adjacent K` is the movement key toward a monster or feature
+beside the hero. `seen:` lists remembered stairs, traps (by kind when a message
+named them), altars, fountains, doors and message landmarks; `items:` remembered
+objects and statues, each with its known route length in steps; `frontier:` the
+targets of `go frontier`. Lists show the nearest six. A `+` counts as a door only
+in a wall line; elsewhere it is an object, such as a spellbook. Menus,
+`--More--` and the end of the game print the screen rows instead of the map.
+
+Traps that messages report at the hero's square, such as "There is a dart trap
+here" or "A little dart shoots out at you!", are remembered there like a `^`, so
+routes avoid them where another known route exists. The view reads the default
+ASCII symbols; a map with DECgraphics, IBMgraphics or other non-ASCII symbols is
+refused with that explanation. The view contains no gameplay advice: the game's
+own prompts, such as leaving the dungeon from level 1, are shown in full and
+answered by the caller.
+
+Every command, including each farlook and `:`, is a decision record with source
+`manual` or `protocol`, so `export` contains the complete input history.
 
 ## Actions and observations
 
@@ -193,8 +310,12 @@ is not currently an action.
 Attacks are one command. Travel, search and wait can execute several commands up
 to the selected bound. They stop early on changed hero stats, conditions, level,
 messages, prompts, movement failure or caller interruption, and when a monster
-arrives: one more of a glyph and colour is in view, or adjacent to the hero, than
-when the action began. Monsters already in view moving about, a monster the
+arrives. Regenerating HP or Pw is not a change; losing either is, and a message
+is one unless every sentence is about a tame monster that a farlook named. Search and wait
+also stop when HP that was below its maximum reaches it (`hp_full`), and report
+no observed effect only after three unchanged screens in a row, because a fast
+hero can act twice within one turn. A monster arrives when one more of a glyph
+and colour is in view, or adjacent to the hero, than when the action began. Monsters already in view moving about, a monster the
 terminal highlights as the pet, and objects or floor they cover or uncover do not
 stop them. Search and wait also stop
 on any terrain change; travel stops on newly seen features, doors and structural
@@ -204,7 +325,9 @@ are recorded separately from command count.
 
 Information queries read all menu pages and close the menu. Pagination is
 mechanical, cancellable and recorded. Directions supplied as part of an action
-are sent only after the expected direction prompt appears. An unexpected prompt
+are sent only after the expected direction prompt appears; `--More--` pages and
+text windows without entries, such as first-use tips, are dismissed before it.
+An unexpected prompt
 pauses for caller review without sending the remaining argument keys.
 Confirmations, inventory selection and text input are engine choices. Menus
 offer quantities, bulk selection, paging and search; explicit visible selectors
@@ -219,7 +342,7 @@ Backspace and Escape. Unknown screens allow the engine to return control to the 
 arguments, repetition and information capture in one registry. Common tools are
 offered directly. The `command` tool offers other named commands as a constrained
 second choice; it sends the complete command without spelling it one character
-at a time. `actions` lists the concrete choices for the current observation.
+at a time.
 
 | Capability | Tools and named commands |
 | --- | --- |
@@ -245,7 +368,8 @@ inventory window management, configuration-file writes and fork-specific
 diagnostics are outside the gameplay interface. Synonyms and menu conveniences
 do not require separate tools when the same capability is already available.
 
-Positions in observations and action IDs are **1-based screen row,column**.
+Positions in JSON observations and action IDs are **1-based screen row,column**.
+The direct-play view instead prints x,y, the column and row numbers it shows.
 Action IDs encode direction or target, for example `attack:l`, `travel:8,24`, `explore:8,24`,
 `search:8` and `input:79` (the character `y`). The offered catalogue is the authority
 for a particular observation. A command being offered does not promise it will
@@ -259,7 +383,10 @@ query again after consuming, acquiring or rearranging items.
 
 Memory lasts for the active game session. Known levels retain terrain, landmarks
 (stairs, traps, altars, fountains and other map features), and observed stair
-connections. Recognized shop welcome/untended messages retain the position where
+connections. Messages about the hero's square ("There is a dart trap here", "You
+see here ...", trap announcements) are kept for that square and name its trap or
+stairs. A `+` counts as a door only in a wall line; elsewhere it is an object,
+such as a spellbook. A square a farlook named as a statue stays an object. Recognized shop welcome/untended messages retain the position where
 they appeared, their exact text and turn. This is evidence of a shop entry, not
 its boundary, current stock or safety; silent entries may only appear in a queried
 dungeon overview. Vibrating-square discovery messages are also retained at their
@@ -350,7 +477,7 @@ return through a corridor does not trigger it.
 Intermediate steps inside a bounded action are not used in this cycle signature.
 
 Unexpected follow-up prompts also pause with `unexpected_prompt`. A caller can
-read `wait`'s status/observation and `actions`, replan, then `resume --objective`.
+read `wait`'s status/observation or `look`, replan, then `resume --objective`.
 A resume that starts a new scope permits another attempt. Time-consuming searches, waits and
 combat are not classified as failures merely because the hero stays in place.
 These checks do not establish whether a plan is useful or detect every detour.
@@ -458,10 +585,10 @@ harness() { python3 nethack_harness.py --dir /tmp/game-session "$@"; }
 harness wait --timeout 30
 harness pause
 harness observe
-harness actions
-harness screen
-harness act search:1
+harness look
 harness send '\e'
+harness go '>'
+harness rest 10
 harness resume --objective 'Find the downstairs.' --timeout 30
 harness status
 harness export --out /tmp/decisions.jsonl
@@ -470,10 +597,10 @@ harness purpose --kind trial --about 'Try the east corridor first.'
 harness stop
 ```
 
-Manual input requires a paused session and is attributed separately in records.
-`act` chooses an action from the current catalogue. `send` takes up to 256 bytes
-with `\e`, `\r`, `\n`, `\t`, `\\` and `\xHH` escapes. It is an explicit caller
-intervention; arbitrary key sequences are not engine-generated actions.
+Caller input (`send`, `go`, `rest`) requires a paused session and is attributed
+separately in records. It is an explicit caller intervention; arbitrary key
+sequences are not engine-generated actions. A session without an endpoint is
+always paused, and refuses `resume`.
 
 ## Caller intent records
 
@@ -533,9 +660,9 @@ uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness 
 python3 tools/record_fixtures.py /tmp/game.sock /tmp/observation.json
 ```
 
-Fixtures contain terminal observations. Tests cover choice authority, prompt
-handling, bounded interruption, observation freshness, decision records and
-process lifecycle using local fakes and endpoint stubs.
+Fixtures contain terminal observations. Tests cover the direct-play view, choice
+authority, prompt handling, bounded interruption, observation freshness, decision
+records and process lifecycle using local fakes and endpoint stubs.
 
 `tools/bench.py` runs seeded games against an explicit decision endpoint:
 

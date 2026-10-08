@@ -29,3 +29,20 @@ def colour(fg, bold):
     if fg in ("default", "white"):
         return ("white" if bold or fg == "white" else "gray"), bold or fg == "white"
     return fg, bold
+
+# Messages that report a trap at the hero's square: the game's own description of a square, and the
+# announcements of traps that leave the hero where they triggered.
+TRAP_HERE = re.compile(r"There is an? ((?:[\w-]+ )*?(?:trap|trap door|hole|web|pit|squeaky board|magic portal)) here")
+TRAP_EVENTS = ((r"\bdart shoots out at you", "dart trap"), (r"\barrow shoots out at you", "arrow trap"),
+               (r"\bbear trap closes on", "bear trap"), (r"\byou (?:fall|land) (?:into|in) a (?:spiked )?pit", "pit"),
+               (r"\bsharp iron spikes", "spiked pit"), (r"\bboard beneath you squeaks", "squeaky board"),
+               (r"\brock falls on your head", "falling rock trap"), (r"\bcloud of gas", "sleeping gas trap"),
+               (r"\bgush of water hits", "rust trap"), (r"\b(?:stumble into|caught in) a (?:spider )?web", "web"),
+               (r"\bKAABLAMM", "land mine"))
+
+
+def trap_kind(message):
+    here = TRAP_HERE.search(message)
+    if here:
+        return here[1]
+    return next((kind for pattern, kind in TRAP_EVENTS if re.search(pattern, message, re.I)), None)

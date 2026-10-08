@@ -35,7 +35,7 @@ class FakeTerm:
             self.on_poll()
         return False
 
-    def send(self, keys, before_send=None):
+    def send(self, keys, before_send=None, separately=False):
         self.poll()
         if before_send:
             before_send(self.view())
@@ -45,6 +45,9 @@ class FakeTerm:
 
     def view(self):
         return self.views[0]
+
+    def message_written(self, rows):
+        return True
 
 
 class FakeGame:

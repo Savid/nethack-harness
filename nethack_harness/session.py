@@ -52,16 +52,18 @@ class Session:
     def offered(self):
         return catalogue(self.term.view(), self.observer, self.settings.max_action_steps)
 
-    def step(self, cancelled=lambda: False, manual=None, protocol=None):
+    def step(self, cancelled=lambda: False, manual=None, protocol=None, expected=None):
+        """One decision and its execution. `expected` is the screen fingerprint a supplied action was built from;
+        if the screen has changed since, nothing is sent."""
         self.term.poll()
         before = self.observe()
-        if before["phase"] == "ended":
+        if before["phase"] == "ended" and not (manual and manual.kind == "manual"):
             return "game_over"
         actions = self.offered()
         supplied = manual or protocol
         if not supplied and before["phase"] == "play" and self.settings.tools:
             actions = [action for action in actions if action.tool in self.settings.tools or action.kind == "pause"]
-        if supplied and supplied.kind in ("manual", "redraw"):
+        if supplied and supplied not in actions:
             actions.append(supplied)
         source = "manual" if manual else "protocol" if protocol or before["phase"] == "more" else "engine"
         if source == "engine" and self.objective_progress.exhausted(self.settings.max_action_attempts):
@@ -78,7 +80,7 @@ class Session:
         if self.pending_tool and self.pending_tool[0] == selection_key and source == "engine":
             tool = self.pending_tool[1]
         self.pending_tool = None
-        request = request_body(before, actions, self.settings.objective, self.engine.model, tool,
+        request = request_body(before, actions, self.settings.objective, self.engine and self.engine.model, tool,
                                self.settings.caller_context)
         number = self.store.begin(source, request)
         attempt = None
@@ -143,7 +145,7 @@ class Session:
                                           "objective": self.settings.objective, "selected_action": action.id}}
                     self.pending_tool = None
                 else:
-                    outcome = executor.run(action, before["fingerprint"], cancelled)
+                    outcome = executor.run(action, expected or before["fingerprint"], cancelled)
                 outcome["action"] = action.as_dict()
                 self.actions += int(outcome["steps"] > 0 and source != "protocol")
                 self.turns += max(0, outcome.get("elapsed_turns") or 0)

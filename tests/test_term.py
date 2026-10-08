@@ -35,6 +35,15 @@ class VTTest(TestCase):
         vt.feed(b"\x1b[2J\x1b[1;1Hone\r\ntwo\x1b[1;2r\x1b[2;1H\n")
         self.assertEqual(vt.lines()[0][:3], "two")
 
+    def test_rows_written_since_cleared(self):
+        vt = VT()
+        vt.feed(b"\x1b[2J\x1b[1;1HYou miss the jackal.\x1b[5;3H@")
+        vt.touched.clear()
+        vt.feed(b"\x1b[5;3H.\x1b[5;4H@")
+        self.assertEqual(vt.touched, {4})
+        vt.feed(b"\x1b[1;1H\x1b[K")
+        self.assertIn(0, vt.touched)
+
 
 if __name__ == "__main__":
     unittest.main()

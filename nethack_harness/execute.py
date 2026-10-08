@@ -6,7 +6,7 @@ from collections import Counter
 from .base import Paused
 from .knowledge import DIRS, MON
 from .level import FEATURES, position
-from .perceive import fingerprint, phase
+from .perceive import fingerprint, more_window, parse_menu_entries, phase
 from .transport import Closed, Held
 from .tools import TOOLS
 
@@ -17,7 +17,9 @@ class Boundary(Exception):
 
 
 def interrupt_signature(view, observer, terrain):
-    """Observed state whose change ends a bounded action; terrain is "all", "features" or None."""
+    """Observed state whose change ends a bounded action; terrain is "all", "features" or None.
+
+    HP and Pw are left out: regenerating them does not end an action, losing them does (see `drained`)."""
     level = observer.current
     known = ()
     if level and terrain:
@@ -25,7 +27,7 @@ def interrupt_signature(view, observer, terrain):
             (p, ch) for p, ch in level.terrain.items() if ch in FEATURES or ch == "+")
         known = (tuple(cells), tuple((tuple(cell["position"]), cell["colour"]) for cell in level.structural_obstacles()),
                  frozenset(level.open_doors))
-    return (tuple(sorted((key, value) for key, value in view.st.items() if key != "turn")),
+    return (tuple(sorted((key, value) for key, value in view.st.items() if key not in ("turn", "hp", "pw"))),
             tuple(view.cond), view.engulfed, (level.id, known) if level else None)
 
 
@@ -61,6 +63,17 @@ def discovery(p, ch, level, known, known_colours, known_seen):
     return ch not in "|-" and p not in known_seen
 
 
+def drained(prior, view):
+    return any(view.st.get(key) is not None and prior.st.get(key) is not None and view.st[key] < prior.st[key]
+               for key in ("hp", "pw"))
+
+
+def recovered(start, view):
+    """HP that was below its maximum when the action began has reached it."""
+    hp, hpmax = start.st.get("hp"), start.st.get("hpmax")
+    return hp is not None and hpmax is not None and hp < hpmax and view.st.get("hp", 0) >= view.st.get("hpmax", hpmax)
+
+
 def arrived(start, now):
     """A monster appeared or came adjacent; monsters already in view moving about do not count."""
     return any(now[0][key] > start[0][key] for key in now[0]) or any(now[1][key] > start[1][key] for key in now[1])
@@ -82,7 +95,7 @@ class Executor:
             nonlocal number
             if self.cancelled():
                 raise Boundary("caller_interrupt")
-            if view.ended:
+            if view.ended and self.action.kind != "manual":
                 raise Boundary("game_over")
             if fingerprint(view) != expected:
                 raise Boundary("observation_changed")
@@ -92,12 +105,28 @@ class Executor:
                 self.observer.begin(self.action, self.before)
                 self.action_started = True
 
-        self.term.send(keys, before_send=before_send)
+        # Caller keys go one at a time, so a prompt opened by one of them is tracked before the next.
+        self.term.send(keys, before_send=before_send, separately=self.action.kind == "manual" and source == "action")
         self.record_result(number, "completed")
         view = self.term.view()
         self.observer.ingest(view)
-        self.frames.append({"status": dict(view.st), "phase": phase(view), "message": view.msg})
+        frame = {"status": dict(view.st), "phase": phase(view), "message": view.msg}
+        if view.msg and not self.term.message_written(view.message_rows):
+            frame["message_unchanged"] = True
+        window = more_window(view) if view.more else None
+        if window:
+            frame["window"] = window
+        self.frames.append(frame)
         return view
+
+    def notices(self, view):
+        """Dismiss --More-- pages and text windows, which have no entries to choose, before an expected prompt."""
+        for _ in range(32):
+            view = self.pages(view)
+            if phase(view) != "menu" or parse_menu_entries(view):
+                return view
+            view = self.send("\x1b", "protocol")
+        raise Paused("text windows did not finish after 32 pages")
 
     def pages(self, view):
         for _ in range(32):
@@ -160,7 +189,7 @@ class Executor:
         self.before = before
         if fingerprint(before) != expected:
             return self.snapshot("observation_changed")
-        if before.ended:
+        if before.ended and action.kind != "manual":
             return self.snapshot("game_over")
         if action.kind == "pause":
             return self.snapshot("requested_pause")
@@ -178,6 +207,8 @@ class Executor:
         reason = "completed"
         changed_fields = []
         view = before
+        repeat = bool(TOOLS.get(action.kind) and TOOLS[action.kind].repeat)
+        idle = 0
         for step in range(action.steps):
             if self.cancelled():
                 reason = "caller_interrupt"
@@ -204,13 +235,19 @@ class Executor:
                 # as the game's own travel does.
                 plain = self.observer.current.guarded(target) or view.pet(*target) and view.ch(*target) in MON
                 keys = ("" if plain else "m") + direction
-            prior = view
+            prior, shown = view, len(self.frames)
             view = self.send(keys, "protocol" if action.kind in ("continue", "redraw") else "action")
             self.steps += 1
             if getattr(self.term, "redraw_needed", False):
                 view = self.send("\x12", "protocol")
             view = self.pages(view)
+            if action.kind in ("travel", "explore") and view.hero == origin and phase(view) == "play" and \
+                    self.observer.about_pet(view.msg):
+                # The pet in the way stops a step without moving it; the step is tried once more.
+                view = self.pages(self.send(keys, "action"))
+                self.steps += 1
             for index, (expected_phase, followup_keys) in enumerate(action.followups):
+                view = self.notices(view)
                 if phase(view) != expected_phase:
                     return self.snapshot("game_over" if view.ended else "unexpected_prompt")
                 view = self.send(followup_keys)
@@ -241,17 +278,27 @@ class Executor:
                 if discovered or level.open_doors - known_doors:
                     reason = "feature_discovered"
                     break
-            if action.kind in ("move", "attack", "open", "close", "kick", "ascend", "descend", "wait", "search") and \
-                    fingerprint(view) == fingerprint(prior):
+            unchanged = fingerprint(view) == fingerprint(prior)
+            if action.kind in ("move", "attack", "open", "close", "kick", "ascend", "descend") and unchanged:
+                reason = "no_observed_effect"
+                break
+            # A fast hero can act twice within one turn, so one search or wait can leave the screen unchanged.
+            idle = idle + 1 if repeat and unchanged else 0
+            if idle >= 3:
                 reason = "no_observed_effect"
                 break
             if exploring or step + 1 < action.steps:
                 current_signature = interrupt_signature(view, self.observer, terrain)
                 changed_fields = [name for name, old, new in zip(
                     ("status", "conditions", "engulfed", "terrain"), signature, current_signature) if old != new]
+                if drained(prior, view) and "status" not in changed_fields:
+                    changed_fields.append("status")
+                if repeat and recovered(before, view):
+                    changed_fields.append("hp_full")
                 if arrived(presence, monsters(view, self.observer)):
                     changed_fields.append("entities")
-                if view.msg and view.msg != before.msg:
+                if any(frame["message"] and not frame.get("message_unchanged") and
+                       not self.observer.about_pet(frame["message"]) for frame in self.frames[shown:]):
                     changed_fields.append("message")
                 if changed_fields:
                     reason = "observation_changed"

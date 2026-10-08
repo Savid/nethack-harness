@@ -133,6 +133,42 @@ class ExecutionTest(TestCase):
                 self.assertEqual(result["reason"], "observation_changed")
                 self.assertIn(field, result["changed_fields"])
 
+    def test_search_continues_through_regeneration_and_a_free_move(self):
+        frames = [room(hp=12), room(hp=12), room(hp=13, turn=401), room(hp=14, turn=402), room(hp=14, turn=403)]
+        executor, _ = self.executor(frames)
+        result = executor.run(Action("search:4", "Search", "search", "s", 4), fingerprint(executor.term.view()))
+        self.assertEqual((result["reason"], result["steps"]), ("completed", 4))
+
+    def test_search_stops_when_hp_drops_or_refills(self):
+        for after, field in ((room(hp=11, turn=401), "status"), (room(hp=16, turn=401), "hp_full")):
+            with self.subTest(field=field):
+                executor, _ = self.executor([room(hp=12), after, room(hp=16, turn=402)])
+                result = executor.run(Action("search:8", "Search", "search", "s", 8), fingerprint(executor.term.view()))
+                self.assertEqual(executor.term.sent, ["s"])
+                self.assertEqual(result["changed_fields"], [field])
+
+    def test_text_window_before_an_expected_prompt_is_dismissed(self):
+        before = room(monster=4)
+        tip = view(screen("Tip: Farlooking or selecting a map location", ["", "  Press ESC to leave.", "  (end)"]),
+                   (3, 7))
+        targeting = room(message="Move cursor to a monster, object or location:", monster=4)
+        identified = room(message="d        a dog or other canine (jackal)", monster=4)
+        executor, _ = self.executor([before, tip, targeting, identified])
+        action = next(a for a in catalogue(before, executor.observer, 8) if a.id == "inspect:3,5")
+        result = executor.run(action, fingerprint(before))
+        self.assertEqual(executor.term.sent, [";", "\x1b", "@l."])
+        self.assertEqual(result["reason"], "completed")
+
+    def test_pet_messages_do_not_end_travel_and_a_pet_in_the_way_is_stepped_past(self):
+        executor, _ = self.executor([room(3), room(4, turn=401, message="You swap places with your little dog."),
+                                     room(4, turn=402, message="You stop.  Your little dog is in the way!"),
+                                     room(5, turn=403), room(6, turn=404)])
+        executor.observer.pets.add("little dog")
+        result = executor.run(Action("travel:3,7", "Go east", "travel", steps=3, route=((2, 4), (2, 5), (2, 6))),
+                              fingerprint(executor.term.view()))
+        self.assertEqual(executor.term.sent, ["ml", "ml", "ml", "ml"])
+        self.assertEqual(result["reason"], "completed")
+
     def test_stale_choice_sends_nothing(self):
         executor, records = self.executor([room()])
         expected = fingerprint(executor.term.view())
@@ -224,6 +260,8 @@ class ExecutionTest(TestCase):
             with self.subTest(glyph=glyph, hp=hp):
                 revealed = dict(initial)
                 revealed[(2, 5)] = glyph
+                if glyph == "+":
+                    revealed.update({(1, 5): "|", (3, 5): "|"})
                 executor, _ = self.executor([corridor((2, 3), initial), corridor((2, 4), revealed, 401, hp)])
                 result = executor.run(Action("explore:3,5", "Explore corridor", "explore", steps=8,
                                              target=(2, 4), route=((2, 4),)), fingerprint(executor.term.view()))
@@ -267,7 +305,7 @@ class ExecutionTest(TestCase):
                                     ("+", "observation_changed", ["ml"])):
             with self.subTest(glyph=glyph):
                 revealed = room(4, turn=401)
-                revealed.rows[4] = ("    " + glyph).ljust(80)
+                revealed.rows[4] = ("   -" + glyph + "-").ljust(80)
                 executor, _ = self.executor([room(3), revealed, room(5, turn=402)])
                 result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
                                              route=((2, 4), (2, 5))), fingerprint(executor.term.view()))

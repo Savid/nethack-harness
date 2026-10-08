@@ -35,7 +35,7 @@ class CliTest(TestCase):
             state = os.path.join(directory, "session")
             result = cli(state, "help")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("observe", result.stdout)
+            self.assertIn("go TARGET", result.stdout)
             self.assertFalse(os.path.exists(state))
 
     def test_invalid_settings_are_rejected_before_creating_session(self):
@@ -51,15 +51,17 @@ class CliTest(TestCase):
             store.write("config", {"socket": "original"})
             store.write("status", {"state": "starting"})
             sequence = store.enqueue("pause")
+            game = FakeGame([SCREEN])
             try:
                 with open(store.path("daemon.lock"), "a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    result = cli(directory, "start", "--socket", "replacement", "--decide", "http://localhost/choose")
+                    result = cli(directory, "start", "--socket", game.path, "--decide", "http://localhost/choose")
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertEqual(store.read("config"), {"socket": "original"})
                 self.assertEqual(store.read("status"), {"state": "starting"})
                 self.assertEqual(store.pending(), [(sequence, {"command": "pause"})])
             finally:
+                game.close()
                 store.close()
 
     def test_lock_is_retained_across_daemon_handoff(self):
@@ -72,7 +74,8 @@ class CliTest(TestCase):
                         fcntl.flock(competing, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 store.write("status", {"state": "starting"})
 
-            with mock.patch.object(control, "spawn", side_effect=spawn), mock.patch.object(control, "wait", return_value=2):
+            with mock.patch.object(control, "spawn", side_effect=spawn), mock.patch.object(control, "wait", return_value=2), \
+                    mock.patch.object(control, "check_socket"):
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = control.main(["--dir", directory, "start", "--socket", "socket", "--decide", "http://localhost/choose"])
             self.assertEqual(result, 2)
@@ -309,7 +312,7 @@ class DaemonTest(TestCase):
     def test_pause_manual_action_resume_export_and_stop(self):
         result = self.start()
         self.assertEqual(json.loads(result.stdout)["status"]["reason"], "requested_pause")
-        result = cli(self.state, "act", "search:1")
+        result = cli(self.state, "send", "s")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"s", self.game.inputs)
         result = cli(self.state, "resume", "--objective", "Explore the dungeon", "--timeout", "5")
@@ -328,6 +331,63 @@ class DaemonTest(TestCase):
             self.assertEqual(store.pending(), [])
         finally:
             store.close()
+
+    def test_session_without_an_endpoint_is_played_by_command(self):
+        result = cli(self.state, "start", "--socket", self.game.path, "--quiet", "0.02", "--timeout", "5")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(" 3 |.@..|", result.stdout.splitlines())
+        self.assertIn("you: 21,3  here: unknown", result.stdout.splitlines())
+        refused = cli(self.state, "resume", "--timeout", "1")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("no decision endpoint", refused.stderr)
+        for command in ("wait", "observe"):
+            self.assertEqual(cli(self.state, command).returncode, 1)
+        self.assertEqual(cli(self.state, "send", "-\\e").returncode, 0)
+        self.assertEqual(self.game.inputs[-2:], [b"-", b"\x1b"])
+        went = cli(self.state, "go", "23,3")
+        self.assertEqual(went.returncode, 0, went.stderr)
+        self.assertIn(b"ml", self.game.inputs)
+        rested = cli(self.state, "rest", "2")
+        self.assertEqual(rested.returncode, 1, "a search that passes no time was refused")
+        unknown = cli(self.state, "go", "altar")
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("no remembered", unknown.stderr)
+        self.assertEqual(cli(self.state, "rest", "0").returncode, 64)
+        self.assertEqual(cli(self.state, "act", "search:1").returncode, 64)
+        with open(os.path.join(self.state, "play.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            busy = cli(self.state, "send", "s")
+        self.assertEqual(busy.returncode, 1)
+        self.assertIn("another", busy.stderr)
+        self.assertEqual(self.endpoint.requests, [])
+        records = [json.loads(line) for line in cli(self.state, "export").stdout.splitlines()]
+        manual = [record for record in records if record["source"] == "manual"]
+        self.assertEqual([record["choice"] for record in manual], ["manual", "travel:4,24", "search:2"])
+        self.assertEqual((manual[1]["outcome"]["reason"], manual[1]["outcome"]["steps"]), ("no_observed_effect", 1))
+
+    def test_the_game_over_prompt_is_answered_by_send_and_every_command_then_exits_3(self):
+        ended = (b"\x1b[H\x1b[2JDo you want your possessions identified? [ynq] (n)"
+                 b"\x1b[23;1HHero the Stripling   St:16 Dx:12 Co:14 In:9 Wi:10 Ch:8 Lawful"
+                 b"\x1b[24;1HDlvl:1 $:0 HP:0(16) Pw:2(2) AC:6 Xp:1 T:10\x1b[1;52H")
+        self.game.close()
+        self.game = FakeGame([ended] * 10)
+        result = cli(self.state, "start", "--socket", self.game.path, "--quiet", "0.02", "--timeout", "5")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.rstrip().endswith("keys: y n q"))
+        inputs = len(self.game.inputs)
+        self.assertEqual(cli(self.state, "go", ">").returncode, 3)
+        self.assertEqual(len(self.game.inputs), inputs)
+        self.assertEqual(cli(self.state, "send", "q").returncode, 3)
+        self.assertEqual(self.game.inputs[-1], b"q")
+        self.game.refusals.append((410, b"game is stopping"))
+        self.assertEqual(cli(self.state, "send", "y").returncode, 3)
+        self.assertEqual(cli(self.state, "look").returncode, 3)
+        self.assertEqual(cli(self.state, "send", "y").returncode, 3)
+
+    def test_start_names_an_unreachable_socket(self):
+        result = cli(self.state, "start", "--socket", os.path.join(self.state, "absent.sock"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot connect to the terminal socket", result.stderr)
 
     def test_daemon_survives_terminated_start_client(self):
         client = subprocess.Popen([sys.executable, str(ROOT / 'nethack_harness.py'), '--dir', self.state,

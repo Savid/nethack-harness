@@ -155,18 +155,27 @@ def catalogue(view, observer, max_steps):
         actions.append(Action("inspect:%d,%d" % tuple(pos), "Inspect %s at %s" % (description, pos), "inspect",
                               ";", target=p, followups=(("position", cursor_keys(view.hero, p)[1:]),)))
     for target, description in sorted(targets.items()):
-        route = level.route(previous, target)
-        if route:
-            pos = position(target)
-            actions.append(Action("travel:%d,%d" % tuple(pos),
-                                  "Move toward %s at %s along %d known squares, at most %d steps" % (
-                                      description, pos, len(route), max_steps),
-                                  "travel", steps=min(max_steps, len(route)), target=target, route=tuple(route),
-                                  subject=description, frontier=level.frontier(target)))
+        if level.route(previous, target):
+            actions.append(travel(level, previous, target, description, max_steps))
             if description == "corridor endpoint":
-                actions.append(Action("explore:%d,%d" % tuple(pos),
-                                      "Explore the corridor beyond %s for at most %d steps; stop at a branch, "
-                                      "room, feature or encounter" % (pos, max_steps),
-                                      "explore", steps=max_steps, target=target, route=tuple(route),
-                                      subject=description, frontier=level.frontier(target)))
+                actions.append(explore(level, previous, target, max_steps))
     return actions + [pause]
+
+
+def travel(level, previous, target, description, max_steps):
+    """Bounded movement along the known route to target; `previous` is from `level.paths`."""
+    route = level.route(previous, target)
+    pos = position(target)
+    return Action("travel:%d,%d" % tuple(pos), "Move toward %s at %s along %d known squares, at most %d steps" % (
+                      description, pos, len(route), max_steps),
+                  "travel", steps=min(max_steps, len(route)), target=target, route=tuple(route),
+                  subject=description, frontier=level.frontier(target))
+
+
+def explore(level, previous, target, max_steps):
+    """Travel to a corridor endpoint, then follow the corridor newly revealed beyond it."""
+    pos = position(target)
+    return Action("explore:%d,%d" % tuple(pos), "Explore the corridor beyond %s for at most %d steps; stop at a "
+                  "branch, room, feature or encounter" % (pos, max_steps),
+                  "explore", steps=max_steps, target=target, route=tuple(level.route(previous, target)),
+                  subject="corridor endpoint", frontier=level.frontier(target))

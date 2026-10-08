@@ -123,7 +123,7 @@ class SessionTest(TestCase):
                                         "move" if request["state"]["decision"]["stage"] == "tool" else "move:l"}}})
         session.settings = replace(session.settings, max_action_attempts=1)
 
-        def uncertain_send(keys, before_send=None):
+        def uncertain_send(keys, before_send=None, separately=False):
             before_send(session.term.view())
             raise Held("unknown input result")
 
@@ -217,7 +217,7 @@ class SessionTest(TestCase):
         for _ in range(3):
             self.assertIsNone(session.step())
         self.assertEqual(session.step(), "repeated_no_effect")
-        self.assertEqual(session.term.sent, ["."])
+        self.assertEqual(session.term.sent, ["."] * 3)
 
     def test_changed_screen_allows_retry_of_failed_action(self):
         session, _ = self.session(lambda request: {"answers": {"action": {"choice":
@@ -305,12 +305,12 @@ class SessionTest(TestCase):
         self.assertEqual(session.step(), "action_budget")
         self.assertEqual(len(endpoint.requests), 2)
 
-    def test_manual_catalogue_action_is_revalidated_after_polling(self):
+    def test_supplied_action_is_revalidated_after_polling(self):
         session, endpoint = self.session(lambda _: {})
-        session.observe()
+        built = session.observe()["fingerprint"]
         action = next(a for a in session.offered() if a.id == "move:l")
         session.term.on_poll = lambda: setattr(session.term, "views", [view(screen("In what direction?"), (0, 18))])
-        session.step(manual=action)
+        session.step(manual=action, expected=built)
         record, = session.store.records()
         self.assertEqual(record["outcome"]["reason"], "observation_changed")
         self.assertEqual(record["outcome"]["action"]["id"], "move:l")
@@ -326,7 +326,7 @@ class SessionTest(TestCase):
                                   "wait" if request["state"]["decision"]["stage"] == "tool" else "wait:8"}}}, frames)
         original_send = session.term.send
 
-        def fail_second_input(keys, before_send=None):
+        def fail_second_input(keys, before_send=None, separately=False):
             if session.term.sent:
                 before_send(session.term.view())
                 raise Held("waiting")

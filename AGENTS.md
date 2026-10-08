@@ -61,10 +61,12 @@ The modules below live in `nethack_harness/`:
 
 - `term.py`, `screen.py`, `transport.py`: terminal emulation, parsing and I/O.
 - `perceive.py`, `level.py`, `knowledge.py`: observations, memory, geometry,
-  terminal symbols and direction bindings.
+  terminal symbols, direction bindings and the messages that name a trap underfoot.
 - `tools.py`, `actions.py`, `decide.py`, `execute.py`, `session.py`: command registry, action catalogue, endpoint
   contract, bounded execution and the decision cycle.
 - `progress.py`: objective-scoped attempt evidence and bounded movement cycle detection.
+- `play.py`: direct play for a caller that decides for itself: the compact text
+  view and the `send`, `go` and `rest` commands over the same bounded actions.
 - `control.py`, `daemon.py`, `store.py`, `settings.py`: CLI, process lifecycle,
   fresh SQLite schema and execution limits.
 

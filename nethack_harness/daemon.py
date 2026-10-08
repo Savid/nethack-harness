@@ -9,10 +9,11 @@ from dataclasses import replace
 from . import __version__
 from .actions import Action
 from .decide import Engine
+from .play import Play
 from .session import Session
 from .settings import Settings
 from .store import Store
-from .transport import Term
+from .transport import Closed, Term
 
 
 def commit():
@@ -79,8 +80,9 @@ def run(store):
     settings = Settings(**config["settings"])
     term = Term(config["socket"], quiet=settings.quiet)
     engine = Engine(config["endpoint"], config["model"], os.environ.get(config["key_env"]) if config["key_env"] else None,
-                    settings.decision_timeout)
+                    settings.decision_timeout) if config["endpoint"] else None
     session = Session(term, engine, store, settings)
+    play = Play(session)
     status = {"state": "starting", "pid": os.getpid(), "reason": None, "revision": 0, "version": __version__}
     stopping = False
 
@@ -99,7 +101,7 @@ def run(store):
 
     def pause(reason):
         session.pending_tool = None
-        status.update(state="ended" if reason == "game_over" else "paused", reason=reason,
+        status.update(state="ended" if reason in ("game_over", "terminal_closed") else "paused", reason=reason,
                       revision=status["revision"] + 1)
 
     def synchronize():
@@ -110,7 +112,15 @@ def run(store):
         except Exception as e:
             pause("terminal synchronization failed (%s)" % type(e).__name__)
 
-    def handle(command):
+    def refresh():
+        try:
+            term.poll()
+        except Closed:
+            pause("terminal_closed")
+        if status["state"] != "ended" and term.view().ended:
+            pause("game_over")
+
+    def handle(sequence, command):
         nonlocal stopping
         name = command["command"]
         if name == "stop":
@@ -120,6 +130,8 @@ def run(store):
             pause("caller_pause")
             return "paused"
         if name == "resume":
+            if engine is None:
+                raise ValueError("this session has no decision endpoint; play it with look, send, go and rest")
             if status["state"] != "paused":
                 raise ValueError("resume requires a paused session")
             if command.get("objective") is not None and command["objective"] != session.settings.objective:
@@ -139,30 +151,34 @@ def run(store):
             session.resume(continue_scope=bool(command.get("continue_scope")))
             synchronize()
             return "resumed"
-        if name in ("screen", "observe", "actions"):
+        if name == "observe":
             term.poll()
             observation = session.observe()
             store.write("observation", observation)
-            if name == "screen":
-                return term.view().text_screen()
-            if name == "observe":
-                return observation
-            return [a.as_dict() for a in session.offered()]
-        if name in ("act", "send"):
-            if status["state"] != "paused":
-                raise ValueError("manual input requires a paused session")
-            term.poll()
+            return observation
+        if name == "look":
+            refresh()
+            text = play.view()
+            store.write("observation", session.observe())
+            return {"view": text, "ended": status["state"] == "ended"}
+        if name in ("send", "go", "rest"):
+            if status["state"] not in ("paused", "ended"):
+                raise ValueError("the session is playing by itself; pause it first")
+            refresh()
+            closed = status["reason"] == "terminal_closed"
+            if status["state"] == "ended" and (name != "send" or closed):
+                report = "%s: the game %s; nothing was sent" % (name, "has exited" if closed else "is over")
+                return {"view": play.view(report), "ended": True}
+
+            def interrupted():
+                return stopping or any(other["command"] in ("pause", "stop")
+                                       for number, other in store.pending() if number != sequence)
+
             session.observe()
-            if name == "act":
-                action = next((a for a in session.offered() if a.id == command["action"]), None)
-                if action is None:
-                    raise ValueError("action is not available on this observation")
-            else:
-                action = Action("manual", "Caller-supplied keys", "manual", command["keys"])
-            reason = session.step(manual=action)
+            report, reason, refused = getattr(play, name)(command["argument"], interrupted)
             if reason:
                 pause(reason)
-            return {"result": session.last, "observation": session.observe()}
+            return {"view": play.view(report), "ended": status["state"] == "ended", "failed": bool(refused)}
         raise ValueError("unknown command")
 
     store.intent({"record": "goal", "transition": "set", "objective": settings.objective,
@@ -185,7 +201,7 @@ def run(store):
         while not stopping:
             for sequence, command in store.pending():
                 try:
-                    result = {"ok": True, "value": handle(command)}
+                    result = {"ok": True, "value": handle(sequence, command)}
                 except Exception as e:
                     result = {"ok": False, "error": str(e) if isinstance(e, ValueError) else type(e).__name__}
                 # A caller that waits after the reply must not read the state from before the command.

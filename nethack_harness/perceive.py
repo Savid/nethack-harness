@@ -5,8 +5,8 @@ import re
 import string
 from collections import deque
 
-from .knowledge import ITEMS, MON, WARNING
-from .level import FEATURES, Level, neighbours, position
+from .knowledge import ITEMS, MON, WARNING, trap_kind
+from .level import FEATURES, Level, door_line, neighbours, position
 from .tools import TOOLS
 
 
@@ -37,6 +37,19 @@ def parse_menu_entries(view):
             entries.append({"key": key, "text": text.strip(),
                             "selection": "partial" if marker == "#" else "all" if marker in "+*" else "none"})
     return entries
+
+
+def more_window(view):
+    """The lines of a text window that ends in --More--, or None when --More-- follows a message instead."""
+    for index in range(view.message_rows, len(view.rows)):
+        at = view.rows[index].find("--More--")
+        # A window's footer stands apart; one that follows text on its row ends a message.
+        if at >= 0 and (at == 0 or view.rows[index][at - 1] == " "):
+            lines = [row[at:].rstrip() for row in view.rows[:index]]
+            while lines and not lines[0]:
+                lines.pop(0)
+            return lines
+    return None
 
 
 def fingerprint(view):
@@ -72,6 +85,10 @@ class Observer:
         self.current = None
         self.previous = None
         self.messages = deque(maxlen=20)
+        self.message_total = 0
+        self.notes = []
+        self.noted = None
+        self.pets = set()
         self.history = deque(maxlen=8)
         self.inventory = {}
         self.spells = {}
@@ -115,6 +132,8 @@ class Observer:
         new_message = view.msg and (not self.messages or self.messages[-1]["text"] != view.msg)
         if new_message:
             self.messages.append({"turn": view.st.get("turn"), "text": view.msg})
+            self.message_total += 1
+        self.collect_notes(view)
         mode = phase(view)
         if self.reading and mode in ("menu", "more"):
             self.query_turns[self.reading] = self.reading_turn
@@ -184,9 +203,9 @@ class Observer:
             self.last_play_message = view.msg
             return
         self.current.observe(view)
-        for word, glyph in (("up", "<"), ("down", ">")):
-            if re.search(r"(?:staircase|ladder) %s here" % word, view.msg, re.I):
-                self.current.remember_terrain(view.hero, glyph, view.st.get("turn"))
+        if self.notes and view.hero:
+            self.current.note_underfoot(view.hero, self.notes, view.st.get("turn"))
+            self.notes = []
         if view.msg != self.last_play_message and view.hero:
             evidence = {"text": view.msg, "observed_turn": view.st.get("turn")}
             if (re.search(r"Welcome(?: again)? to .+!", view.msg) or
@@ -202,15 +221,49 @@ class Observer:
             self.current.visits[view.hero] = self.current.visits.get(view.hero, 0) + 1
             self.previous = signature
 
-    def remember_look(self, target, before, after, source="inspect"):
-        if phase(after) != "play" or before.engulfed or after.engulfed:
+    def collect_notes(self, view):
+        """Gather what the game says about the hero's square, from messages and from paged text windows, until
+        the next map observation places them at the hero."""
+        window = more_window(view) if view.more else None
+        source = tuple(window) if window else view.msg
+        if source == self.noted:
             return
-        parts = re.findall(r"\(([^()]*)\)", after.msg)
-        text = (parts[-1] if parts and source == "inspect" else after.msg).strip()
-        if text and self.current:
-            self.current.inspections[target] = {
-                "description": text, "observed_turn": before.st.get("turn"),
-                "glyph": before.ch(*target), "colour": before.col(*target), "source": source}
+        self.noted = source
+        lines = [line.strip() for line in window] if window else [view.msg.replace("--More--", "")]
+        items = False
+        for line in lines:
+            if items and line:
+                self.notes.append(line)
+                continue
+            items = line == "Things that are here:"
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                if (re.match(r"(?:There (?:is|are) .* here|You see here .+)\.?$", sentence)
+                        or trap_kind(sentence)):
+                    self.notes.append(sentence)
+
+    def about_pet(self, message):
+        """Whether every sentence of a message is about a pet the game has named as tame."""
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", message.replace("--More--", "").strip()) if s]
+        about = [any(name in s for name in self.pets) for s in sentences]
+        return bool(sentences) and any(about) and all(a or s == "You stop." for a, s in zip(about, sentences))
+
+    def remember_look(self, target, before, after, source="inspect"):
+        if phase(after) not in ("play", "more") or after.getpos or before.engulfed or after.engulfed:
+            return
+        message = after.msg.replace("--More--", "").strip()
+        parts = re.findall(r"\(([^()]*)\)", message)
+        text = (parts[-1] if parts and source == "inspect" else message).strip()
+        if not text or not self.current:
+            return
+        glyph, colour = before.ch(*target), before.col(*target)
+        self.current.inspections[target] = {
+            "description": text, "observed_turn": before.st.get("turn"),
+            "glyph": glyph, "colour": colour, "source": source}
+        if source == "inspect" and glyph in MON and re.search(r"\bstatue of\b", message):
+            self.current.statues[target] = (glyph, colour)
+        tame = re.match(r"tame (.+?)(?: called (.+))?$", text)
+        if source == "inspect" and tame:
+            self.pets.update(name for name in tame.groups() if name)
 
     def entities(self, view):
         entities = []
@@ -219,12 +272,17 @@ class Observer:
         for r in range(1, 22):
             for c in range(80):
                 p, ch = (r, c), view.ch(r, c)
-                if p == view.hero or ch not in MON | ITEMS | WARNING | {"I", "0", "`"}:
+                book = ch == "+" and not door_line(view, r, c)
+                if p == view.hero or ch not in MON | ITEMS | WARNING | {"I", "0", "`"} and not book:
                     continue
                 colour, bright = view.col(r, c)
-                kind = "monster" if ch in MON else "unseen" if ch in WARNING | {"I"} else "object"
+                statue = bool(self.current) and self.current.statues.get(p) == (ch, (colour, bright))
+                kind = "object" if statue or book else "monster" if ch in MON else \
+                    "unseen" if ch in WARNING | {"I"} else "object"
                 entry = {"position": position(p), "glyph": ch, "colour": colour, "bright": bright,
                          "kind": kind, "pet_highlight": view.pet(r, c)}
+                if statue:
+                    entry["statue"] = True
                 looked = self.current.inspections.get(p) if self.current else None
                 if (looked and looked["observed_turn"] == view.st.get("turn") and
                         looked["glyph"] == ch and looked["colour"] == (colour, bright)):

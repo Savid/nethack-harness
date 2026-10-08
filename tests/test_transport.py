@@ -4,12 +4,35 @@ import unittest
 
 from helpers import FakeGame
 from nethack_harness import transport
+from nethack_harness.base import unescape
 from nethack_harness.transport import Term, Closed, Held
 from nethack_harness.term import VT
 from nethack_harness.screen import PromptContext
 
 
 class ProtocolTest(TestCase):
+    def test_a_position_prompt_opened_inside_a_batch_is_tracked_and_bytes_are_sent_raw(self):
+        def frame(message, cursor):
+            return (b"\x1b[2J\x1b[1;1H" + message + b"\x1b[3;4H@.." +
+                    b"\x1b[23;1HHero St:16 Lawful\x1b[24;1HDlvl:1 HP:14(14) Pw:3(3) AC:7 Xp:1 T:1" + cursor)
+
+        initial = frame(b"", b"\x1b[3;4H")
+        game = FakeGame([frame(b"Where do you want to travel?", b"\x1b[3;4H"),
+                         frame(b"floor of a room", b"\x1b[3;5H"), frame(b"floor of a room", b"\x1b[3;6H"),
+                         frame(b"Are you sure you want to pray? [yn] (n)", b"\x1b[1;40H")])
+        try:
+            game.buf, game.cursor = initial, len(initial)
+            term = Term(game.path, quiet=0.02)
+            term.poll()
+            term.send("_ll", separately=True)
+            self.assertEqual(game.inputs, [b"_", b"l", b"l"])
+            self.assertTrue(term.view().getpos)
+            self.assertIsNone(term.view().hero)
+            term.send(unescape(r"\xf0"))
+            self.assertEqual(game.inputs[-1], b"\xf0")
+        finally:
+            game.close()
+
     def test_targeting_survives_descriptions_and_refused_cancel(self):
         def frame(message, cursor):
             return (b"\x1b[2J\x1b[1;1H" + message + b"\x1b[3;4H@+" +

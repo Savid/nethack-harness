@@ -66,6 +66,25 @@ class ViewTest(TestCase):
         self.assertEqual(phase(v), "text")
         self.assertIsNone(v.hero)
 
+    def test_message_split_at_a_space_continues_on_the_next_row(self):
+        first = "(The seed chose your character; your role, race, gender and alignment options"
+        v = view(screen(first, ["were ignored.)--More--", "", " ---- ", " |.@.| "]), (1, 22))
+        self.assertEqual(v.msg, first + " were ignored.)--More--")
+        self.assertEqual(phase(v), "more")
+        corner = view(screen(" " * 31 + "There is a staircase up out of the dungeon here.",
+                             ["", " " * 31 + "Things that are here:", " " * 31 + "--More--"]), (3, 39))
+        self.assertEqual(corner.msg, "There is a staircase up out of the dungeon here.")
+
+    def test_continuation_with_dots_or_more_is_part_of_the_message(self):
+        for first, rest in (('You read: "They say that a gnome with a wand of digging can do wonders, but so',
+                             "can you...--More--"),
+                            ("You hear the footsteps of a guard on patrol.  You see here a piece of the",
+                             "piece.--More--")):
+            with self.subTest(rest=rest):
+                v = view(screen(first, [rest, "", " ---- ", " |.@.| "]), (1, len(rest)))
+                self.assertEqual(v.msg, first + " " + rest)
+                self.assertEqual(v.message_rows, 2)
+
     def test_menu_search_reads_text_above_existing_menu(self):
         v = view(screen("Search for:", [" a - a dagger", " (end)"]), (0, 12))
         self.assertTrue(v.menu)

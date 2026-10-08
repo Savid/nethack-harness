@@ -4,7 +4,7 @@ from pathlib import Path
 
 from helpers import screen, view
 from nethack_harness.actions import Action, catalogue
-from nethack_harness.perceive import Observer, fingerprint, parse_menu_entries
+from nethack_harness.perceive import Observer, fingerprint, more_window, parse_menu_entries
 from nethack_harness.screen import PromptContext, View
 
 
@@ -219,6 +219,67 @@ class ObservationTest(TestCase):
                 json.dumps(state, allow_nan=False)
                 self.assertEqual(state["hero"].get("hp"), v.st.get("hp"))
                 self.assertEqual(len(state["fingerprint"]), 64)
+
+    def test_text_window_ending_in_more_is_read_apart_from_the_map(self):
+        rows = [" " * 31 + "There is a staircase up here.", "", " " * 31 + "Things that are here:",
+                " " * 31 + "7 uncursed apples", " " * 31 + "--More--", "  |.@.|"]
+        self.assertEqual(more_window(view(screen(rows[0], rows[1:]), (4, 39))),
+                         ["There is a staircase up here.", "", "Things that are here:", "7 uncursed apples"])
+        self.assertIsNone(more_window(view(screen("You hit the jackal.--More--"), (0, 27))))
+        dotted = view(screen("The kitten picks up a gem.", ["", "  |.@.|...--More--"]), (2, 18))
+        self.assertIsNone(more_window(dotted))
+
+    def test_trap_reported_by_a_message_is_remembered_where_the_hero_stands(self):
+        room = [" ------- ", " |.@...| ", " ------- "]
+        for frames in ([view(screen("A little dart shoots out at you!  You are hit by a little dart.", room))],
+                       [view(screen("There is a dart trap here.--More--"), (0, 34)), view(screen("", room))]):
+            with self.subTest(first=frames[0].msg):
+                observer = Observer()
+                observer.observation(view(screen("", room)))
+                for frame in frames:
+                    observer.observation(frame)
+                self.assertEqual(observer.current.terrain[(2, 3)], "^")
+                self.assertEqual(observer.current.kind((2, 3)), "dart trap")
+                self.assertIn({"position": [3, 4], "kind": "dart trap", "glyph": "^", "observed_turn": 400,
+                               "source": "terminal map or underfoot message"}, observer.current.landmarks())
+
+    def test_what_the_game_says_is_underfoot_is_kept_for_that_square(self):
+        observer = Observer()
+        rows = [" ---- ", " |.@.| ", " ---- "]
+        observer.observation(view(screen("", rows)))
+        observer.observation(view(screen("There is a staircase down here.  You see here a dagger.", rows)))
+        self.assertEqual(observer.current.terrain[(2, 3)], ">")
+        self.assertEqual(observer.current.underfoot[(2, 3)]["notes"],
+                         ["There is a staircase down here.", "You see here a dagger."])
+        window = [" " * 30 + "Things that are here:", " " * 30 + "a dagger", " " * 30 + "2 apples", " " * 30 + "--More--"]
+        observer.observation(view(screen(window[0], window[1:]), (3, 38)))
+        observer.observation(view(screen("", rows)))
+        self.assertEqual(observer.current.underfoot[(2, 3)]["notes"], ["a dagger", "2 apples"])
+
+    def test_spellbook_on_a_floor_is_an_object_and_a_door_sits_in_a_wall(self):
+        observer = Observer()
+        state = observer.observation(view(screen("", [" ---+--- ", " |.@.+.| ", " |.....| ", " ------- "]), (2, 3)))
+        self.assertEqual(observer.current.terrain[(1, 4)], "+")
+        self.assertNotIn((2, 5), observer.current.terrain)
+        self.assertIn({"position": [3, 6], "glyph": "+", "colour": "gray", "bright": False, "kind": "object",
+                       "pet_highlight": False}, state["entities"])
+        beside = {a.target for a in catalogue(view(screen("", [" ---+--- ", " |.@.+.| ", " |.....| ", " ------- "]),
+                                                    (2, 3)), observer, 8) if a.kind == "travel"}
+        self.assertNotIn((2, 6), beside)
+
+    def test_a_farlooked_statue_is_an_object_and_tame_names_identify_the_pet(self):
+        observer = Observer()
+        rows = [" ------- ", " |.@.d.| ", " ------- "]
+        before = view(screen("", rows))
+        observer.observation(before)
+        observer.remember_look((2, 5), before, view(screen("d        a statue of a jackal", rows)))
+        entity, = observer.observation(before)["entities"]
+        self.assertEqual((entity["kind"], entity.get("statue")), ("object", True))
+        observer.remember_look((2, 5), before,
+                               view(screen("d        a dog (tame little dog called Hachi) [seen: normal vision]", rows)))
+        self.assertTrue(observer.about_pet("You swap places with Hachi."))
+        self.assertTrue(observer.about_pet("You stop.  Your little dog is in the way!"))
+        self.assertFalse(observer.about_pet("The little dog bites the jackal.  The jackal bites!"))
 
     def test_fingerprint_changes_with_colour(self):
         a, b = view(), view()
