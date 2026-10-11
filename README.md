@@ -101,7 +101,9 @@ wait for a pause, game over, or `--timeout` (30 seconds by default).
 | 64 | Invalid CLI arguments |
 
 `--decision-timeout` bounds one decision request including its retries,
-`--max-action-steps` bounds a selected action (default 8; maximum 64), and
+`--max-request-tokens` bounds its estimated size (see
+[Decision endpoint](#decision-endpoint)), `--max-action-steps` bounds a selected
+action (default 8; maximum 64), and
 `--quiet` controls terminal settling. These are execution limits, not gameplay
 preferences. The status `calls` counts every HTTP request to the endpoint,
 retries included.
@@ -427,7 +429,8 @@ visit counts and inferred-floor list stay in `observe` and the decision log;
 requests carry visit counts on each navigation destination instead. Other levels'
 full terrain stays in the observer until revisited. Requests carry the last eight
 messages and omit inventory, spell, attribute and overview snapshots that were
-never queried. The full decision trace is written to SQLite. Starting a fresh harness session resets
+never queried; a request over its token budget omits more, as described under
+[Decision endpoint](#decision-endpoint). The full decision trace is written to SQLite. Starting a fresh harness session resets
 the observer; memory is not carried between games or restored from old traces.
 
 The last eight executed engine and caller actions (protocol steps such as
@@ -539,8 +542,8 @@ choice rather than free-form text, reasoning or generated code. Endpoint URL and
 model name are configurable.
 
 `state` holds `decision` (stage and selected tool), `objective`, `caller_context`,
-then `navigation` (tool stage) or `argument_facts` (argument stage), then the
-`observation`. The stage-specific members are compact; the observation is the
+`omitted` when the token budget left something out, then `navigation` (tool
+stage) or `argument_facts` (argument stage), then the `observation`. The stage-specific members are compact; the observation is the
 largest member. Requests in early levels are typically 3 to 7 thousand tokens,
 and the shortened attempt histories keep them near that size during long goals.
 An endpoint that serializes keys in sorted order and truncates long input keeps
@@ -597,9 +600,17 @@ starts at 0.5 seconds and doubles up to 8, or after the Retry-After the endpoint
 sends when that is longer, while the retry still fits in `--decision-timeout`.
 Each failed attempt is kept in the record's `outcome.retries` with its error,
 HTTP status, response, latency, Retry-After and wait. Other HTTP failures,
-malformed responses and a transient failure with no time left pause play. The
-harness does not impose a model-specific option or token limit; the endpoint
-enforces its own request limits.
+malformed responses and a transient failure with no time left pause play.
+
+`--max-request-tokens N` on `start` or `resume` (default 14000) bounds the
+estimated size of each request sent to the engine, counting one token for every
+two bytes of its JSON, which overstates typical JSON, so an engine with a
+16,384-token limit keeps room for its own framing. A request over the budget
+leaves out, in this order and only as far as needed, the landmarks of other
+levels, the messages before the latest two, and the destinations beyond the 24
+nearest by route, with their travel and exploration choices. `state.omitted`
+lists what was left out, for example `["landmarks of other levels"]`. A request
+still over the budget is not sent: the decision pauses with `decision_error`.
 
 ## Caller commands
 

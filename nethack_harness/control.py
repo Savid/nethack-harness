@@ -10,7 +10,7 @@ from . import __version__
 from .base import unescape
 from .daemon import alive, commit, daemon, spawn
 from .decide import Engine
-from .settings import Settings
+from .settings import MAX_REQUEST_TOKENS, Settings
 from .store import Store
 from .transport import Closed, Term, serve_local
 
@@ -178,6 +178,8 @@ def parser():
     start.add_argument("--tools", type=tool_list, default=[], help="comma-separated tools the engine may choose; all removes the limit")
     start.add_argument("--context-file", help="JSON object to pass through as caller context; - reads stdin")
     start.add_argument("--decision-timeout", type=float, default=10)
+    start.add_argument("--max-request-tokens", type=int, default=MAX_REQUEST_TOKENS,
+                       help="estimated tokens a decision request may use (default %(default)s)")
     start.add_argument("--quiet", type=float, default=0.06)
     start.add_argument("--max-action-steps", type=int, default=8)
     start.add_argument("--review-after-calls", type=int, default=0, help="return to caller after this many endpoint calls; 0 disables")
@@ -187,6 +189,7 @@ def parser():
     resume.add_argument("--objective")
     resume.add_argument("--context-file", help="replace caller context from a JSON object; - reads stdin")
     resume.add_argument("--max-action-steps", type=int, help="replace the selected action step bound")
+    resume.add_argument("--max-request-tokens", type=int, help="replace the decision request token budget")
     resume.add_argument("--review-after-calls", type=int, help="replace the caller review budget; 0 disables")
     resume.add_argument("--max-action-attempts", type=int, help="replace the action attempt budget; 0 disables")
     resume.add_argument("--tools", type=tool_list, help="replace the tools the engine may choose; all removes the limit")
@@ -247,7 +250,8 @@ def main(argv=None):
             Settings(caller_context=caller_context)
         if args.command == "start":
             settings = Settings(args.objective, args.decision_timeout, args.quiet, args.max_action_steps,
-                                args.review_after_calls, args.max_action_attempts, caller_context or {}, args.tools)
+                                args.review_after_calls, args.max_action_attempts, caller_context or {}, args.tools,
+                                args.max_request_tokens)
             if args.decide:
                 Engine(args.decide)
             if args.key_env and not os.environ.get(args.key_env):
@@ -260,6 +264,8 @@ def main(argv=None):
             Settings(max_action_attempts=args.max_action_attempts)
         if args.command == "resume" and args.max_action_steps is not None:
             Settings(max_action_steps=args.max_action_steps)
+        if args.command == "resume" and args.max_request_tokens is not None:
+            Settings(max_request_tokens=args.max_request_tokens)
         if args.command == "resume" and args.tools is not None:
             Settings(tools=args.tools)
         if args.command == "resume" and args.records_after is not None and args.records_after < 0:
@@ -345,7 +351,8 @@ def main(argv=None):
         elif args.command == "resume":
             send_command(store, "resume", objective=args.objective, review_after_calls=args.review_after_calls,
                          max_action_attempts=args.max_action_attempts, max_action_steps=args.max_action_steps,
-                         caller_context=caller_context, tools=args.tools, continue_scope=args.continue_scope)
+                         max_request_tokens=args.max_request_tokens, caller_context=caller_context, tools=args.tools,
+                         continue_scope=args.continue_scope)
             return wait(store, args.timeout, args.records_after)
         elif args.command in PLAY_ARGUMENTS:
             return play(store, args.command, getattr(args, PLAY_ARGUMENTS[args.command] or "", None))

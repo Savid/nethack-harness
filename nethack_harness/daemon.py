@@ -144,6 +144,8 @@ def run(store):
                 session.settings = replace(session.settings, max_action_attempts=command["max_action_attempts"])
             if command.get("max_action_steps") is not None:
                 session.settings = replace(session.settings, max_action_steps=command["max_action_steps"])
+            if command.get("max_request_tokens") is not None:
+                session.settings = replace(session.settings, max_request_tokens=command["max_request_tokens"])
             if command.get("caller_context") is not None:
                 session.settings = replace(session.settings, caller_context=command["caller_context"])
             if command.get("tools") is not None:

@@ -5,6 +5,9 @@ from dataclasses import dataclass, asdict, field
 
 from .tools import TOOL_NAMES
 
+# Estimated tokens a decision request may use; an engine that accepts 16,384 still has room for its own framing.
+MAX_REQUEST_TOKENS = 14000
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -16,6 +19,7 @@ class Settings:
     max_action_attempts: int = 0
     caller_context: dict = field(default_factory=dict)
     tools: tuple = ()
+    max_request_tokens: int = MAX_REQUEST_TOKENS
 
     def __post_init__(self):
         if not isinstance(self.objective, str) or not self.objective.strip():
@@ -26,6 +30,8 @@ class Settings:
                 raise ValueError("%s must be a positive finite number" % key)
         if type(self.max_action_steps) is not int or not 1 <= self.max_action_steps <= 64:
             raise ValueError("max_action_steps must be an integer from 1 to 64")
+        if type(self.max_request_tokens) is not int or self.max_request_tokens < 1:
+            raise ValueError("max_request_tokens must be a positive integer")
         if type(self.review_after_calls) is not int or self.review_after_calls < 0:
             raise ValueError("review_after_calls must be a nonnegative integer (0 disables the budget)")
         if type(self.max_action_attempts) is not int or self.max_action_attempts < 0:

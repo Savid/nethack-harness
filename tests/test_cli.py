@@ -160,6 +160,14 @@ class DaemonTest(TestCase):
         self.assertEqual(state["status"]["last"]["outcome"]["steps"], 0)
         self.assertEqual(state["observation"]["review_budget"]["limit_calls"], 1)
 
+    def test_request_token_budget_is_set_on_start_and_replaced_on_resume(self):
+        state = json.loads(self.start("--max-request-tokens", "100").stdout)
+        self.assertEqual(state["status"]["reason"], "decision_error")
+        self.assertEqual(self.endpoint.requests, [])
+        state = json.loads(cli(self.state, "resume", "--max-request-tokens", "20000", "--timeout", "5").stdout)
+        self.assertEqual(state["status"]["reason"], "requested_pause")
+        self.assertEqual(len(self.endpoint.requests), 1)
+
     def test_action_attempt_budget_is_renewed_replaced_and_disabled_on_resume(self):
         self.endpoint.close()
 

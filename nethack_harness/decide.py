@@ -55,6 +55,10 @@ GUIDANCE = ("Decide from this state alone; caller_context and objective_progress
             " results. Prefer a choice that has not already failed to make progress.")
 OMITTED_LEVEL = ("known_terrain", "visits", "inferred_floor")
 REQUEST_ATTEMPTS = 8
+REQUEST_MESSAGES = 8
+KEPT_MESSAGES = 2
+NEAREST_DESTINATIONS = 24
+BYTES_PER_TOKEN = 2
 
 
 def visit_counts(observation):
@@ -132,7 +136,7 @@ def request_observation(observation):
         out["navigation_progress"] = dict(out["navigation_progress"], recent_actions=[
             {key: value for key, value in event.items() if key != "decision"} for event in events])
     if "messages" in out:
-        out["messages"] = out["messages"][-8:]
+        out["messages"] = out["messages"][-REQUEST_MESSAGES:]
     for key, field in (("inventory", "items"), ("spells", "items"), ("attributes", "lines"), ("dungeon_overview", "lines")):
         if key not in out:
             continue
@@ -146,7 +150,63 @@ def request_observation(observation):
     return out
 
 
-def request_body(observation, actions, objective, model=None, tool=None, caller_context=None):
+def estimated_tokens(body):
+    """A conservative token count for a request: one token for every two bytes of its JSON."""
+    return -(-len(json.dumps(body, allow_nan=False).encode()) // BYTES_PER_TOKEN)
+
+
+def omit_other_levels(observation, actions):
+    current = (observation.get("level") or {}).get("id")
+    known = observation.get("known_levels") or []
+    if not any(level.get("landmarks") for level in known if level["id"] != current):
+        return None
+    known = [level if level["id"] == current else {key: value for key, value in level.items() if key != "landmarks"}
+             for level in known]
+    return dict(observation, known_levels=known), actions, "landmarks of other levels"
+
+
+def omit_older_messages(observation, actions):
+    messages = (observation.get("messages") or [])[-REQUEST_MESSAGES:]
+    if len(messages) <= KEPT_MESSAGES:
+        return None
+    return dict(observation, messages=messages[-KEPT_MESSAGES:]), actions, \
+        "messages before the latest %d" % KEPT_MESSAGES
+
+
+def omit_far_destinations(observation, actions):
+    targets = list(dict.fromkeys(target for _, target in sorted(
+        (len(action.route), action.target) for action in actions if action.kind in ("travel", "explore"))))
+    if len(targets) <= NEAREST_DESTINATIONS:
+        return None
+    near = set(targets[:NEAREST_DESTINATIONS])
+    actions = [action for action in actions if action.kind not in ("travel", "explore") or action.target in near]
+    return observation, actions, "%d destinations beyond the %d nearest" % (len(targets) - len(near),
+                                                                           NEAREST_DESTINATIONS)
+
+
+# What a request over its token budget leaves out, in this order, until it fits.
+OMISSIONS = (omit_other_levels, omit_older_messages, omit_far_destinations)
+
+
+def request_body(observation, actions, objective, model=None, tool=None, caller_context=None, max_tokens=None):
+    """One stateless decision request, within max_tokens when that is given.
+
+    A request over the budget leaves out, in order, other levels' landmarks, older messages and destinations
+    beyond the nearest; `state.omitted` lists what it left out."""
+    omitted = []
+    body = build_body(observation, actions, objective, model, tool, caller_context, omitted)
+    for omit in OMISSIONS:
+        if max_tokens is None or estimated_tokens(body) <= max_tokens:
+            break
+        trimmed = omit(observation, actions)
+        if trimmed:
+            observation, actions, note = trimmed
+            omitted.append(note)
+            body = build_body(observation, actions, objective, model, tool, caller_context, omitted)
+    return body
+
+
+def build_body(observation, actions, objective, model, tool, caller_context, omitted):
     direct = observation.get("phase") != "play"
     stage = "arguments" if tool else "input" if direct else "tool"
     if stage == "tool":
@@ -160,6 +220,8 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
         instructions += " " + GUIDANCE
     visits = visit_counts(observation)
     state = {"decision": {"stage": stage, "tool": tool}, "objective": objective, "caller_context": caller_context or {}}
+    if omitted:
+        state["omitted"] = list(omitted)
     if stage == "tool":
         state["navigation"] = {
             "source": "offered routes through remembered terrain; not a guarantee of passage",

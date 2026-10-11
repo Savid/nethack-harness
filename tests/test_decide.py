@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 from helpers import Endpoint
 from nethack_harness.actions import Action
 from nethack_harness import decide
-from nethack_harness.decide import Engine, DecisionError, request_body
+from nethack_harness.decide import Engine, DecisionError, estimated_tokens, request_body
 
 
 class EngineTest(TestCase):
@@ -98,6 +98,35 @@ class EngineTest(TestCase):
         self.assertEqual(sent["spells"], {"items": {"a": "force bolt"}, "age_turns": 1, "complete": True})
         self.assertNotIn("fingerprint", sent)
         self.assertEqual(sent["map"], ["@"])
+
+    def test_a_request_over_its_budget_omits_in_a_fixed_order_and_says_what(self):
+        def landmarks(level):
+            return [{"position": [x, 5], "kind": "fountain", "glyph": "{", "observed_turn": 3, "source": level}
+                    for x in range(1, 40)]
+        observation = {"phase": "play", "level": {"id": "level-2", "label": "Dlvl:2"},
+                       "messages": [{"turn": n, "text": "Message %d." % n} for n in range(20)],
+                       "known_levels": [{"id": "level-1", "label": "Dlvl:1", "landmarks": landmarks("level-1"),
+                                         "connections": []},
+                                        {"id": "level-2", "label": "Dlvl:2", "landmarks": landmarks("level-2"),
+                                         "connections": []}]}
+        actions = [Action("travel:%d,1" % length, "Move toward a corridor endpoint", "travel", steps=8,
+                          target=(1, length), route=tuple((1, x) for x in range(1, length + 1)),
+                          subject="corridor endpoint") for length in range(30, 0, -1)]
+        actions.append(Action("pause", "Return control", "pause", steps=0))
+        # Each budget is one token under the previous request, so each request omits one thing more.
+        budget, expected = None, []
+        for omission in (None, "landmarks of other levels", "messages before the latest 2",
+                         "6 destinations beyond the 24 nearest"):
+            expected += [omission] if omission else []
+            body = request_body(observation, actions, "Explore", max_tokens=budget)
+            self.assertEqual(body["state"].get("omitted", []), expected)
+            self.assertLessEqual(estimated_tokens(body), budget or estimated_tokens(body))
+            budget = estimated_tokens(body) - 1
+        sent = body["state"]["observation"]
+        self.assertEqual([level.get("landmarks") is not None for level in sent["known_levels"]], [False, True])
+        self.assertEqual([m["text"] for m in sent["messages"]], ["Message 18.", "Message 19."])
+        self.assertEqual([d["path_length"] for d in body["state"]["navigation"]["destinations"]],
+                         list(range(24, 0, -1)))
 
     def test_exact_choice_is_used_without_confidence_gate(self):
         endpoint = Endpoint(lambda _: {"answers": {"action": {"choice": "attack:l", "confidence": 0.01}}})

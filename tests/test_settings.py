@@ -8,7 +8,8 @@ class SettingsTest(TestCase):
                        {"max_action_steps": 0}, {"max_action_steps": True}, {"objective": " "},
                        {"review_after_calls": -1}, {"review_after_calls": True}, {"review_after_calls": 1.5},
                        {"max_action_attempts": -1}, {"max_action_attempts": True}, {"max_action_attempts": 1.5},
-                       {"caller_context": []}, {"caller_context": {"unknown": float("nan")}}):
+                       {"caller_context": []}, {"caller_context": {"unknown": float("nan")}},
+                       {"max_request_tokens": 0}, {"max_request_tokens": 1.5}, {"max_request_tokens": True}):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 Settings(**values)
         settings = Settings(objective="Explore", max_action_steps=3)

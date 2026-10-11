@@ -280,6 +280,14 @@ class SessionTest(TestCase):
                          [(503, {"error": "restarting"})])
         self.assertEqual(record["response"], {"answers": {"action": {"choice": "pause"}}})
 
+    def test_a_request_over_its_budget_after_every_omission_pauses_without_a_request(self):
+        session, endpoint = self.session(lambda _: {"answers": {"action": {"choice": "pause"}}})
+        session.settings = replace(session.settings, max_request_tokens=100)
+        self.assertEqual(session.step(), "decision_error")
+        record, = session.store.records()
+        self.assertIn("over --max-request-tokens 100", record["outcome"]["error"])
+        self.assertEqual((endpoint.requests, session.calls, session.term.sent), ([], 0, []))
+
     def test_invalid_response_is_recorded_without_sending_input(self):
         response = {"answers": {"action": {"choice": "unavailable"}}}
         session, _ = self.session(lambda _: response)

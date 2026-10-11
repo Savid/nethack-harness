@@ -3,7 +3,7 @@ import json
 
 from .actions import catalogue
 from .base import Paused
-from .decide import request_body, DecisionError
+from .decide import DecisionError, estimated_tokens, request_body
 from .execute import Boundary, Executor
 from .perceive import Observer
 from .progress import NavigationProgress, ObjectiveProgress
@@ -83,8 +83,9 @@ class Session:
         if self.pending_tool and self.pending_tool[0] == selection_key and source == "engine":
             tool = self.pending_tool[1]
         self.pending_tool = None
+        budget = self.settings.max_request_tokens if source == "engine" else None
         request = request_body(before, actions, self.settings.objective, self.engine and self.engine.model, tool,
-                               self.settings.caller_context)
+                               self.settings.caller_context, budget)
         number = self.store.begin(source, request)
         attempt = None
         sent = {}
@@ -119,6 +120,10 @@ class Session:
             elif source == "protocol":
                 action, response, latency = actions[0], None, 0
             else:
+                tokens = estimated_tokens(request)
+                if tokens > budget:
+                    raise DecisionError("the request is estimated at %d tokens, over --max-request-tokens %d, even "
+                                        "without what it omits" % (tokens, budget), latency=0)
                 self.review_calls += 1
                 try:
                     choice, response, latency, retries = self.engine.choose(request)
