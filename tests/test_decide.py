@@ -173,6 +173,9 @@ class EngineTest(TestCase):
         self.assertEqual([m["text"] for m in sent["messages"]], ["Message 18.", "Message 19."])
         self.assertEqual([d["path_length"] for d in body["state"]["navigation"]["destinations"]],
                          list(range(24, 0, -1)))
+        arguments = request_body(observation, actions, "Explore", tool="travel", max_tokens=1)["state"]
+        self.assertEqual(arguments["omitted"], expected + ["argument facts"])
+        self.assertNotIn("argument_facts", arguments)
 
     def test_exact_choice_is_used_without_confidence_gate(self):
         endpoint = Endpoint(lambda _: {"answers": {"action": {"choice": "attack:l", "confidence": 0.01}}})

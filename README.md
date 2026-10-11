@@ -628,9 +628,10 @@ estimated size of each request sent to the engine, counting one token for every
 two bytes of its JSON, which overstates typical JSON, so an engine with a
 16,384-token limit keeps room for its own framing. A request over the budget
 leaves out, in this order and only as far as needed, the landmarks of other
-levels, the messages before the latest two, and the destinations beyond the 24
-nearest by route, with their travel and exploration choices. `state.omitted`
-lists what was left out, for example `["landmarks of other levels"]`. A request
+levels, the messages before the latest two, the destinations beyond the 24
+nearest by route with their travel and exploration choices, and, in a separate
+argument request, its `argument_facts`. `state.omitted` lists what was left out,
+for example `["landmarks of other levels"]`. A request
 still over the budget is not sent: the decision pauses with `decision_error`.
 
 ## Caller commands

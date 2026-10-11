@@ -381,6 +381,8 @@ class SessionTest(TestCase):
         self.assertEqual(session.term.sent, ["s"])
         self.assertEqual([r["state"]["decision"] for r in endpoint.requests],
                          [{"stage": "tool", "tool": None}, {"stage": "arguments", "tool": "search"}])
+        self.assertEqual(set(endpoint.requests[1]["state"]["argument_facts"]),
+                         set(endpoint.requests[1]["questions"]["action"]["criteria"]))
         self.assertEqual([r["choice"] for r in session.store.records()], ["search", "search:1"])
 
     def test_argument_failure_records_both_calls_without_input(self):

@@ -59,6 +59,7 @@ REQUEST_ATTEMPTS = 8
 REQUEST_MESSAGES = 8
 KEPT_MESSAGES = 2
 NEAREST_DESTINATIONS = 24
+ARGUMENT_FACTS = "argument facts"
 BYTES_PER_TOKEN = 2
 
 
@@ -156,7 +157,7 @@ def estimated_tokens(body):
     return -(-len(json.dumps(body, allow_nan=False).encode()) // BYTES_PER_TOKEN)
 
 
-def omit_other_levels(observation, actions):
+def omit_other_levels(observation, actions, tool):
     current = (observation.get("level") or {}).get("id")
     known = observation.get("known_levels") or []
     if not any(level.get("landmarks") for level in known if level["id"] != current):
@@ -166,7 +167,7 @@ def omit_other_levels(observation, actions):
     return dict(observation, known_levels=known), actions, "landmarks of other levels"
 
 
-def omit_older_messages(observation, actions):
+def omit_older_messages(observation, actions, tool):
     messages = (observation.get("messages") or [])[-REQUEST_MESSAGES:]
     if len(messages) <= KEPT_MESSAGES:
         return None
@@ -174,7 +175,7 @@ def omit_older_messages(observation, actions):
         "messages before the latest %d" % KEPT_MESSAGES
 
 
-def omit_far_destinations(observation, actions):
+def omit_far_destinations(observation, actions, tool):
     targets = list(dict.fromkeys(target for _, target in sorted(
         (len(action.route), action.target) for action in actions if action.kind in ("travel", "explore"))))
     if len(targets) <= NEAREST_DESTINATIONS:
@@ -185,8 +186,13 @@ def omit_far_destinations(observation, actions):
                                                                            NEAREST_DESTINATIONS)
 
 
+def omit_argument_facts(observation, actions, tool):
+    """The facts of a separate argument request, which the observation and the descriptions also carry."""
+    return (observation, actions, ARGUMENT_FACTS) if tool else None
+
+
 # What a request over its token budget leaves out, in this order, until it fits.
-OMISSIONS = (omit_other_levels, omit_older_messages, omit_far_destinations)
+OMISSIONS = (omit_other_levels, omit_older_messages, omit_far_destinations, omit_argument_facts)
 
 
 def argument_options(actions):
@@ -207,14 +213,14 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
     tool whose question did not fit are asked in a request of their own. A request for one tool's arguments asks
     only that, and one at a prompt asks for the answer.
 
-    A request over the budget leaves out, in order, other levels' landmarks, older messages and destinations
-    beyond the nearest; `state.omitted` lists what it left out."""
+    A request over the budget leaves out, in order, other levels' landmarks, older messages, destinations beyond
+    the nearest and the facts of a separate argument request; `state.omitted` lists what it left out."""
     omitted = []
     body = build_body(observation, actions, objective, model, tool, caller_context, omitted)
     for omit in OMISSIONS:
         if max_tokens is None or estimated_tokens(body) <= max_tokens:
             break
-        trimmed = omit(observation, actions)
+        trimmed = omit(observation, actions, tool)
         if trimmed:
             observation, actions, note = trimmed
             omitted.append(note)
@@ -251,7 +257,7 @@ def build_body(observation, actions, objective, model, tool, caller_context, omi
                          "showed a glyph and was never beside the hero"),
             "destinations": [dict(action=action.id, **destination(action, visits))
                              for action in actions if action.kind in ("travel", "explore") and action.route]}
-    elif stage == "arguments":
+    elif stage == "arguments" and ARGUMENT_FACTS not in omitted:
         state["argument_facts"] = {action.id: argument_facts(observation, action, visits)
                                    for action in actions if action.id in criteria}
     state["observation"] = request_observation(observation)
