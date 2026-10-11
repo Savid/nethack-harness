@@ -306,7 +306,7 @@ Remembered green or cyan `#` tiles are structural obstacles rather than corridor
 connections and remain visible in `level.structural_obstacles`. Direct movement
 commands remain available for the engine to choose.
 
-`explore:row,column` selects a known corridor frontier. It follows the route to
+`explore:x,y` selects a known corridor frontier. It follows the route to
 that square, then follows newly revealed corridor tiles within the same command
 budget. Ordinary corridor and wall discoveries do not interrupt this action.
 It returns on a newly discovered room (terrain where no glyph had shown) or
@@ -379,9 +379,11 @@ inventory window management, configuration-file writes and fork-specific
 diagnostics are outside the gameplay interface. Synonyms and menu conveniences
 do not require separate tools when the same capability is already available.
 
-Positions in JSON observations and action IDs are **1-based screen row,column**.
-The direct-play view instead prints x,y, the column and row numbers it shows.
-Action IDs encode direction or target, for example `attack:l`, `travel:8,24`, `explore:8,24`,
+Every position is **x,y**, the numbers the direct-play view prints: x is the
+terminal column (0 to 79) and y the terminal row (the map is rows 1 to 21). JSON
+observations hold `[x, y]`, and action IDs and descriptions write `x,y`; a goal
+condition on `hero.position` can be written from the view. Action IDs encode
+direction or target, for example `attack:l`, `travel:23,7`, `explore:23,7`,
 `search:8` and `input:79` (the character `y`). The offered catalogue is the authority
 for a particular observation. A command being offered does not promise it will
 succeed; some game prerequisites are hidden.

@@ -364,7 +364,7 @@ class DaemonTest(TestCase):
         self.assertEqual(self.endpoint.requests, [])
         records = [json.loads(line) for line in cli(self.state, "export").stdout.splitlines()]
         manual = [record for record in records if record["source"] == "manual"]
-        self.assertEqual([record["choice"] for record in manual], ["manual", "travel:4,24", "search:2"])
+        self.assertEqual([record["choice"] for record in manual], ["manual", "travel:23,3", "search:2"])
         self.assertEqual((manual[1]["outcome"]["reason"], manual[1]["outcome"]["steps"]), ("no_observed_effect", 1))
 
     def test_the_game_over_prompt_is_answered_by_send_and_every_command_then_exits_3(self):

@@ -7,10 +7,11 @@ from collections import deque
 from contextlib import contextmanager
 
 from .knowledge import ITEMS, MON, WARNING, trap_kind
-from .level import FEATURES, Level, door_line, neighbours, position
+from .level import FEATURES, Level, door_line, neighbours, position, square
 from .tools import TOOLS
 
 
+COORDINATES = {"position": "[x, y]", "x": "terminal column, 0 to 79", "y": "terminal row; the map is rows 1 to 21"}
 MENU_ENTRY = re.compile(r"^\s*([!-~])\s+([-+*#])\s+(.+)")
 # Caller-typed keys that are exactly a stair command connect levels like the stair tools do.
 STAIR_KEYS = {prefix + TOOLS[name].keys: name for name in ("ascend", "descend")
@@ -313,7 +314,7 @@ class Observer:
         mode = phase(view)
         out = {"fingerprint": fingerprint(view), "phase": mode,
                "game_result": self.game_result,
-               "coordinates": {"base": 1, "map_origin": [2, 1], "map_size": [21, 80]}, "hero": dict(view.st, position=position(view.hero),
+               "coordinates": COORDINATES, "hero": dict(view.st, position=position(view.hero),
                title=view.title, conditions=list(view.cond), engulfed=view.engulfed),
                "messages": list(self.messages), "entities": self.entities(view),
                "inventory": dict(items=self.inventory, **self.query_metadata("inventory", view)),
@@ -323,7 +324,7 @@ class Observer:
                "prayers": list(self.prayers), "recent_actions": self.recent_actions(),
                "repetition": self.repetition()}
         if mode == "play":
-            occupied = {tuple(x - 1 for x in entity["position"]) for entity in out["entities"]
+            occupied = {square(entity["position"]) for entity in out["entities"]
                         if entity["kind"] in ("monster", "unseen")}
             out["navigation_obstacles"] = {
                 "source": "map navigation unavailable while engulfed" if view.engulfed else

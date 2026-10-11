@@ -18,7 +18,17 @@ def on_map(p):
 
 
 def position(p):
-    return [p[0] + 1, p[1] + 1] if p is not None else None
+    """The [x, y] of a (row, column) square: x is the terminal column, y the terminal row, as the view prints them."""
+    return [p[1], p[0]] if p is not None else None
+
+
+def square(xy):
+    """The (row, column) square of an [x, y] position."""
+    return xy[1], xy[0]
+
+
+def xy(p):
+    return "%d,%d" % (p[1], p[0])
 
 
 def neighbours(p):
@@ -222,7 +232,7 @@ class Level:
                 continue
             for key, p in neighbours(door):
                 if key in "hjkl" and p in previous:
-                    label = "square beside closed door at %s" % position(door)
+                    label = "square beside closed door at %s" % xy(door)
                     out[p] = out[p] + "; " + label if p in out else label
         return out
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import string
 
 from .knowledge import DIRECTION_NAMES, MON
-from .level import FEATURES, neighbours, position, cursor_keys
+from .level import FEATURES, cursor_keys, neighbours, position, square, xy
 from .perceive import parse_menu_entries, phase
 from .tools import PAUSE, TOOLS
 
@@ -119,7 +119,7 @@ def catalogue(view, observer, max_steps):
                     if variant and variant.skips_guards and level and level.guarded(target):
                         withheld = WITHHELD % level.guarded(target)
                     label = "%s: %s at %s" % (description + ("; " + withheld if withheld else ""),
-                                              direction, position(target))
+                                              direction, xy(target))
                     if tool.name == "move":
                         notes = [repr(view.ch(*target))]
                         if view.pet(*target) and view.ch(*target) in MON:
@@ -140,20 +140,18 @@ def catalogue(view, observer, max_steps):
     if view.engulfed:
         return actions + [pause]
     entities = observer.entities(view)
-    occupied = {tuple(x - 1 for x in e["position"]) for e in entities if e["kind"] in ("monster", "unseen")}
+    occupied = {square(e["position"]) for e in entities if e["kind"] in ("monster", "unseen")}
     previous = level.paths(view.hero, occupied)
     targets = level.targets(previous)
     inspections = {p: "remembered " + level.kind(p) for p, ch in level.terrain.items() if ch in FEATURES}
     inspections[view.hero] = "the hero's square"
     for entity in entities:
-        p = tuple(x - 1 for x in entity["position"])
+        p = square(entity["position"])
         inspections[p] = entity["glyph"]
         if p in previous and entity["kind"] == "object":
             targets[p] = "object %s" % entity["glyph"]
     for p, description in sorted(inspections.items()):
-        pos = position(p)
-        actions.append(Action("inspect:%d,%d" % tuple(pos), "Inspect %s at %s" % (description, pos), "inspect",
-                              ";", target=p, followups=(("position", cursor_keys(view.hero, p)[1:]),)))
+        actions.append(inspect(view, p, description))
     for target, description in sorted(targets.items()):
         if level.route(previous, target):
             actions.append(travel(level, previous, target, description, max_steps))
@@ -162,20 +160,24 @@ def catalogue(view, observer, max_steps):
     return actions + [pause]
 
 
+def inspect(view, p, description):
+    """Farlook at p: move the cursor there from the hero and select it."""
+    return Action("inspect:" + xy(p), "Inspect %s at %s" % (description, xy(p)), "inspect", ";", target=p,
+                  followups=(("position", cursor_keys(view.hero, p)[1:]),))
+
+
 def travel(level, previous, target, description, max_steps):
     """Bounded movement along the known route to target; `previous` is from `level.paths`."""
     route = level.route(previous, target)
-    pos = position(target)
-    return Action("travel:%d,%d" % tuple(pos), "Move toward %s at %s along %d known squares, at most %d steps" % (
-                      description, pos, len(route), max_steps),
+    return Action("travel:" + xy(target), "Move toward %s at %s along %d known squares, at most %d steps" % (
+                      description, xy(target), len(route), max_steps),
                   "travel", steps=min(max_steps, len(route)), target=target, route=tuple(route),
                   subject=description, frontier=level.frontier(target))
 
 
 def explore(level, previous, target, max_steps):
     """Travel to a corridor endpoint, then follow the corridor newly revealed beyond it."""
-    pos = position(target)
-    return Action("explore:%d,%d" % tuple(pos), "Explore the corridor beyond %s for at most %d steps; stop at a "
-                  "branch, room, feature or encounter" % (pos, max_steps),
+    return Action("explore:" + xy(target), "Explore the corridor beyond %s for at most %d steps; stop at a "
+                  "branch, room, feature or encounter" % (xy(target), max_steps),
                   "explore", steps=max_steps, target=target, route=tuple(level.route(previous, target)),
                   subject="corridor endpoint", frontier=level.frontier(target))

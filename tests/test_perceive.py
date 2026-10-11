@@ -38,7 +38,7 @@ class ObservationTest(TestCase):
                 self.assertEqual(observer.current.inspections, {})
                 restored = observer.observation(normal)
                 self.assertEqual(restored["map_context"], "dungeon")
-                self.assertIn("travel:3,6", {a.id for a in catalogue(normal, observer, 8)})
+                self.assertIn("travel:5,2", {a.id for a in catalogue(normal, observer, 8)})
 
     def test_vibrating_square_message_and_underfoot_details_are_retained(self):
         observer = Observer()
@@ -47,7 +47,7 @@ class ObservationTest(TestCase):
         state = observer.observation(view())
         landmark = state["known_levels"][0]["landmarks"][0]
         self.assertEqual(landmark["kind"], "vibrating square observation")
-        self.assertEqual(landmark["position"], [3, 4])
+        self.assertEqual(landmark["position"], [3, 2])
         after = view(screen("There is a high altar to Tyr (lawful) here.", [" ---- ", " |.@.| ", " ---- "]))
         observer.remember_look(after.hero, initial, after, source="look_here")
         state = observer.observation(view())
@@ -89,7 +89,7 @@ class ObservationTest(TestCase):
         initial = view()
         state = observer.observation(initial)
         self.assertEqual(state["underfoot"]["basis"], "inferred floor placeholder")
-        self.assertEqual(state["level"]["inferred_floor"], [[3, 4]])
+        self.assertEqual(state["level"]["inferred_floor"], [[3, 2]])
         state = observer.observation(view(screen("There is a staircase down here.",
                                                  [" ---- ", " |.@.| ", " ---- "])))
         self.assertEqual(state["underfoot"]["remembered_terrain"], ">")
@@ -111,7 +111,7 @@ class ObservationTest(TestCase):
         observer.remember_look((2, 4), before, after)
         state = observer.observation(after)
         monster = state["entities"][0]
-        self.assertEqual(monster["position"], [3, 5])
+        self.assertEqual(monster["position"], [4, 2])
         self.assertEqual(monster["last_inspection"]["description"], "floating eye")
         self.assertEqual(monster["last_inspection"]["observed_turn"], 400)
         self.assertEqual(monster["last_inspection"]["source"], "inspect")
@@ -167,7 +167,7 @@ class ObservationTest(TestCase):
         self.assertNotIn("fountain", kinds)
         shop = next(entry for entry in known["landmarks"] if entry["kind"] == "shop entry")
         self.assertEqual(shop["observed_turn"], 400)
-        self.assertEqual(shop["position"], [3, 4])
+        self.assertEqual(shop["position"], [3, 2])
         self.assertEqual(known["connections"][0]["destination"], "level-2")
         self.assertEqual(Observer().levels, [])
 
@@ -240,7 +240,7 @@ class ObservationTest(TestCase):
                     observer.observation(frame)
                 self.assertEqual(observer.current.terrain[(2, 3)], "^")
                 self.assertEqual(observer.current.kind((2, 3)), "dart trap")
-                self.assertIn({"position": [3, 4], "kind": "dart trap", "glyph": "^", "observed_turn": 400,
+                self.assertIn({"position": [3, 2], "kind": "dart trap", "glyph": "^", "observed_turn": 400,
                                "source": "terminal map or underfoot message"}, observer.current.landmarks())
 
     def test_what_the_game_says_is_underfoot_is_kept_for_that_square(self):
@@ -261,7 +261,7 @@ class ObservationTest(TestCase):
         state = observer.observation(view(screen("", [" ---+--- ", " |.@.+.| ", " |.....| ", " ------- "]), (2, 3)))
         self.assertEqual(observer.current.terrain[(1, 4)], "+")
         self.assertNotIn((2, 5), observer.current.terrain)
-        self.assertIn({"position": [3, 6], "glyph": "+", "colour": "gray", "bright": False, "kind": "object",
+        self.assertIn({"position": [5, 2], "glyph": "+", "colour": "gray", "bright": False, "kind": "object",
                        "pet_highlight": False}, state["entities"])
         beside = {a.target for a in catalogue(view(screen("", [" ---+--- ", " |.@.+.| ", " |.....| ", " ------- "]),
                                                     (2, 3)), observer, 8) if a.kind == "travel"}

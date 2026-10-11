@@ -9,7 +9,7 @@ from goal_supervisor.runner import step
 
 def observed(column=4, level="level-1"):
     return {"fingerprint": "screen-%s-%s" % (level, column), "phase": "play",
-            "hero": {"position": [3, column], "turn": 10 + column}, "level": {"id": level}}
+            "hero": {"position": [column, 3], "turn": 10 + column}, "level": {"id": level}}
 
 
 def equals(path, value):
@@ -18,7 +18,7 @@ def equals(path, value):
 
 def destination(identifier="destination", column=5, parent=None, attempts=3):
     return {"id": identifier, "objective": "Reach the caller-selected destination.", "parent_id": parent,
-            "success": [equals(["level", "id"], "level-1"), equals(["hero", "position"], [3, column])],
+            "success": [equals(["level", "id"], "level-1"), equals(["hero", "position"], [column, 3])],
             "limits": {"action_attempts": attempts}}
 
 
@@ -167,7 +167,7 @@ class GoalTest(TestCase):
                 self.assertEqual(context["history"]["recent_attempts"], [])
             outcome = {"boundary": "action_budget", "execution_reason": "observation_changed", "attempts": 1,
                        "result": {"reason": "action_budget", "review": {"limit_attempts": 1}, "elapsed_turns": 1,
-                                  "action": {"id": "travel:3,%d" % target, "target": [3, target]},
+                                  "action": {"id": "travel:%d,3" % target, "target": [target, 3]},
                                   "keys": [{"keys": "ml", "source": "action"}], "frames": [{"message": "Observed"}],
                                   "changed_fields": ["entities"]}}
             column += moved
@@ -175,13 +175,13 @@ class GoalTest(TestCase):
         current = board.begin(observed(column), 2)["context"]
         self.assertFalse(current["completion"]["matches"])
         self.assertEqual(current["completion"]["unmet"],
-                         [dict(equals(["hero", "position"], [3, 9]), observed=[3, column])])
+                         [dict(equals(["hero", "position"], [9, 3]), observed=[column, 3])])
         self.assertEqual(current["goal"]["attempts_remaining"], 5)
         prior = current["history"]["recent_attempts"]
-        self.assertEqual(prior[0], {"action": "travel:3,7", "from": [3, 4], "to": [3, 5],
+        self.assertEqual(prior[0], {"action": "travel:7,3", "from": [4, 3], "to": [5, 3],
                                     "result": "observation_changed", "turns": 1, "changed": ["entities"]})
         self.assertEqual(current["history"]["repeated_actions"],
-                         [{"action": "travel:3,7", "tries": 2, "moved": 1, "reached_target": 0}])
+                         [{"action": "travel:7,3", "tries": 2, "moved": 1, "reached_target": 0}])
         self.assertNotIn("frames", board.goal("destination")["recent_windows"][0]["outcome"]["result"])
         self.assertEqual(set(current), {"goal", "completion", "history", "execution"})
 

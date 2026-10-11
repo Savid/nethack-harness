@@ -27,13 +27,13 @@ def frame(column, turn):
 def spec(identifier, column, attempts=4, parent=None):
     return {"id": identifier, "parent_id": parent, "objective": "Reach the selected position, then pause.",
             "success": [{"path": ["level", "id"], "op": "eq", "value": "level-1"},
-                        {"path": ["hero", "position"], "op": "eq", "value": [4, column]}],
+                        {"path": ["hero", "position"], "op": "eq", "value": [column - 1, 3]}],
             "limits": {"action_attempts": attempts}}
 
 
 class SupervisorBridgeTest(TestCase):
     def test_foreign_context_and_protocol_looks_cannot_trap_recovery_or_consume_owned_attempts(self):
-        observation = {"phase": "play", "hero": {"position": [4, 22]}, "level": {"id": "level-1"}}
+        observation = {"phase": "play", "hero": {"position": [21, 3]}, "level": {"id": "level-1"}}
         for context in ({}, {"execution": None}, {"execution": 1}, {"execution": "other"}, {"execution": []}):
             with self.subTest(context=context):
                 board = GoalBoard()
@@ -144,7 +144,7 @@ class SupervisorIntegrationTest(TestCase):
             context = request["state"]["caller_context"]
             self.assertEqual(context["goal"]["id"], "right")
             self.assertEqual(context["parents"][0]["id"], "parent")
-            self.assertEqual(context["goal"]["success"][-1]["value"], [4, 23])
+            self.assertEqual(context["goal"]["success"][-1]["value"], [22, 3])
         self.supervise("add", "--file", "-", payload=spec("already_there", 23))
         self.assertEqual(self.supervise("activate", "already_there")["reason"], "completed")
         self.assertEqual(self.game.inputs, [b"\x12", b"l"])

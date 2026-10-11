@@ -28,7 +28,7 @@ class SessionTest(TestCase):
     def alternating_moves(request):
         state = request["state"]
         choice = "move" if state["decision"]["stage"] == "tool" else (
-            "move:l" if state["observation"]["hero"]["position"][1] == 4 else "move:h")
+            "move:l" if state["observation"]["hero"]["position"][0] == 3 else "move:h")
         return {"answers": {"action": {"choice": choice}}}
 
     def session(self, response, frames=None):
@@ -48,7 +48,7 @@ class SessionTest(TestCase):
         self.assertEqual(session.term.sent, ["l", "h", "l", "h"])
         record = list(session.store.records())[-1]
         review = record["outcome"]["review"]
-        self.assertEqual(review["cycle"], [[3, 4], [3, 5], [3, 4]])
+        self.assertEqual(review["cycle"], [[3, 2], [4, 2], [3, 2]])
         self.assertEqual(len(review["actions"]), 4)
         self.assertEqual(record["outcome"]["execution_reason"], "completed")
         for request in endpoint.requests[2:]:
@@ -108,7 +108,7 @@ class SessionTest(TestCase):
             self.assertEqual(progress["attempts_used"], 1)
             event, = progress["recent_attempts"]
             self.assertEqual(event["action"]["id"], "move:l")
-            self.assertEqual(event["after"]["position"], [3, 5])
+            self.assertEqual(event["after"]["position"], [4, 2])
             self.assertEqual(event["after"]["turn"], 401)
         session.resume()
         session.step()
@@ -180,7 +180,7 @@ class SessionTest(TestCase):
             with self.subTest(kind=kind):
                 initial = view(screen("", ["  #@##"]), (1, 3))
                 session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                    kind if request["state"]["decision"]["stage"] == "tool" else kind + ":2,6"}}}, [initial])
+                    kind if request["state"]["decision"]["stage"] == "tool" else kind + ":5,1"}}}, [initial])
                 for _ in range(3):
                     self.assertIsNone(session.step())
                 self.assertEqual(session.step(), "repeated_no_effect")

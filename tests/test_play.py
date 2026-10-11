@@ -100,6 +100,9 @@ class PlayTest(TestCase):
         self.assertEqual(lines[0], "Dlvl:1 $:0 HP:14(14) Pw:5(5) AC:4 Xp:1 T:1")
         self.assertEqual([column(lines, x, y) for x, y in ((32, 6), (32, 5), (36, 6), (30, 5), (33, 4))],
                          ["@", "d", "d", "+", "/"])
+        observation = play.session.observe()
+        self.assertEqual(observation["hero"]["position"], [32, 6])
+        self.assertEqual([e["position"] for e in observation["entities"]], [[33, 4], [32, 5], [36, 6]])
         self.assertFalse(any("a dog or other canine" in line for line in lines))
         play.view(inquire=True)
         self.assertEqual(len(play.session.term.sent), 5)
@@ -198,7 +201,7 @@ class PlayTest(TestCase):
         self.assertEqual(play.session.term.sent, ["ml", "ml"])
         self.assertEqual((outcome["reason"], outcome["changed_fields"], outcome["steps"]),
                          ("observation_changed", ["message"], 2))
-        self.assertEqual(outcome["action"]["target"], [3, 7])
+        self.assertEqual(outcome["action"]["target"], [6, 2])
         self.assertIn("msg: You hear a door open.", play.view(report).splitlines())
         for target, error in (("altar", "no remembered"), ("99,1", "off the map"), ("4,2", "already at"),
                               ("9,9", "has not been seen")):
@@ -211,7 +214,7 @@ class PlayTest(TestCase):
         play = self.play([start()], engine=Engine())
         play.observer.observation(start())
         play.go("door")
-        self.assertEqual(play.session.last["outcome"]["action"]["target"], [6, 32])
+        self.assertEqual(play.session.last["outcome"]["action"]["target"], [31, 5])
 
     def test_go_names_the_monster_blocking_the_only_route(self):
         play = self.play([view(screen("", ["", " >##F#@"]), (2, 6))])
@@ -241,6 +244,7 @@ class PlayTest(TestCase):
         frontier = next(line for line in lines if line.startswith("frontier: "))
         self.assertRegex(frontier, r"^frontier: 13,[56] \(\d+\)$")
         play.go("frontier")
+        self.assertEqual(play.session.last["outcome"]["action"]["target"], [int(n) for n in frontier[10:15].split(",")])
         self.assertEqual(play.session.term.sent[:1], ["mk"])
 
     def test_a_corridor_bend_the_walk_cut_across_is_no_frontier(self):

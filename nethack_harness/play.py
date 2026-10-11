@@ -3,9 +3,9 @@
 Coordinates are x,y as printed: x is the terminal column, y the terminal row."""
 import re
 
-from .actions import Action, explore, travel
+from .actions import Action, explore, inspect, travel
 from .knowledge import DIRECTION_NAMES
-from .level import FEATURES, cursor_keys, neighbours, on_map, position
+from .level import FEATURES, neighbours, on_map, square, xy
 from .perceive import fingerprint, parse_menu_entries, phase
 
 FARLOOKS = 8
@@ -25,16 +25,8 @@ STOPS = {"step_limit": "it reached its step limit", "prompt": "a prompt opened",
          "observation_changed": "the screen changed"}
 
 
-def xy(p):
-    return "%d,%d" % (p[1], p[0])
-
-
 def chebyshev(p, q):
     return max(abs(p[0] - q[0]), abs(p[1] - q[1]))
-
-
-def square(entity):
-    return tuple(x - 1 for x in entity["position"])
 
 
 def squash(row):
@@ -206,7 +198,7 @@ class Play:
 
     def occupied(self, view):
         """Squares monsters block. A route step into the highlighted pet swaps places with it, so it blocks none."""
-        return {square(entity) for entity in self.observer.entities(view)
+        return {square(entity["position"]) for entity in self.observer.entities(view)
                 if entity["kind"] in ("monster", "unseen") and not entity["pet_highlight"]}
 
     def places(self, target, view, level, previous):
@@ -259,7 +251,7 @@ class Play:
             facts.append("monsters in the way or on unexplored squares: " + ", ".join(xy(q) for q in blocking[:3]))
         boulders = [e for e in self.observer.entities(view) if e["kind"] == "object" and e["glyph"] in "0`"]
         if boulders:
-            facts.append("boulders: " + ", ".join("%s %s" % (e["glyph"], xy(square(e))) for e in boulders[:LISTED]))
+            facts.append("boulders: " + ", ".join("%s %s" % (e["glyph"], xy(square(e["position"]))) for e in boulders[:LISTED]))
         ends = sorted(p for p in level.visits if level.corridor(p) and len(level.corridor_links(p)) <= 1)
         if ends:
             facts.append("corridor ends: " + ", ".join("%s (searched %d)" % (xy(p), level.searches.get(p, 0))
@@ -279,7 +271,7 @@ class Play:
         out += [(p, "", kind, (p,)) for (p, kind) in sorted(level.landmark_messages)]
         for entity in self.observer.entities(view):
             if entity["kind"] == "object":
-                p = square(entity)
+                p = square(entity["position"])
                 out.append((p, entity["glyph"], "statue" if entity.get("statue") else "item", (p,)))
         return out
 
@@ -324,9 +316,7 @@ class Play:
     def farlook(self, view, p):
         """The game's own farlook description of the monster at p, or None."""
         self.observer.current.inspections.pop(p, None)
-        action = Action("inspect:%d,%d" % tuple(position(p)), "Inspect %s at %s" % (view.ch(*p), position(p)),
-                        "inspect", ";", target=p, followups=(("position", cursor_keys(view.hero, p)[1:]),))
-        done = self.protocol(action)
+        done = self.protocol(inspect(view, p, view.ch(*p)))
         seen = self.observer.current.inspections.get(p)
         if done and seen and seen["glyph"] == view.ch(*p) and seen["colour"] == view.col(*p):
             return seen["description"]
@@ -338,13 +328,13 @@ class Play:
         level, turn = self.observer.current, view.st.get("turn")
         names, budget = {}, FARLOOKS
         monsters = [e for e in self.observer.entities(view) if e["kind"] == "monster" and e["glyph"] != "~"]
-        for entity in sorted(monsters, key=lambda e: chebyshev(square(e), view.hero)):
-            key = (level.id, square(entity), entity["glyph"], entity["colour"], entity["bright"],
+        for entity in sorted(monsters, key=lambda e: chebyshev(square(e["position"]), view.hero)):
+            key = (level.id, square(entity["position"]), entity["glyph"], entity["colour"], entity["bright"],
                    entity["pet_highlight"])
             named = self.names.get(key)
             if named is None and budget and self.plain(self.term.view()):
                 budget -= 1
-                name = self.farlook(view, square(entity))
+                name = self.farlook(view, square(entity["position"]))
                 if self.term.view().st.get("turn") != turn:
                     break
                 named = (name, turn) if name else None
@@ -443,10 +433,10 @@ class Play:
 
         lines = ["you: %s  here: %s" % (xy(hero), self.underfoot(level, hero))]
         shown = []
-        for entity in sorted(self.observer.entities(view), key=lambda e: chebyshev(square(e), hero)):
+        for entity in sorted(self.observer.entities(view), key=lambda e: chebyshev(square(e["position"]), hero)):
             if entity["kind"] == "object":
                 continue
-            p = square(entity)
+            p = square(entity["position"])
             key = (level.id, p, entity["glyph"], entity["colour"], entity["bright"], entity["pet_highlight"])
             name, looked = self.names.get(key, (None, None))
             label = name or ("unseen" if entity["kind"] == "unseen" else "")

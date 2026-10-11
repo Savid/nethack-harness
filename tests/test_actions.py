@@ -18,17 +18,17 @@ class ActionCatalogueTest(TestCase):
                 initial.fgs[2][4] = colour
                 state = observer.observation(initial)
                 self.assertEqual(state["level"]["structural_obstacles"], [
-                    {"position": [3, 5], "glyph": "#", "colour": colour, "source": "remembered terminal terrain"}])
+                    {"position": [4, 2], "glyph": "#", "colour": colour, "source": "remembered terminal terrain"}])
                 choices = {a.id for a in catalogue(initial, observer, 8)}
-                self.assertNotIn("travel:3,6", choices)
+                self.assertNotIn("travel:5,2", choices)
                 self.assertIn("move:l", choices)
                 obscured = view(screen("", ["", "   @ >"]), (2, 3))
                 observer.observation(obscured)
-                self.assertNotIn("travel:3,6", {a.id for a in catalogue(obscured, observer, 8)})
+                self.assertNotIn("travel:5,2", {a.id for a in catalogue(obscured, observer, 8)})
                 corridor = view(screen("", ["", "   @#>"]), (2, 3))
                 observer.observation(corridor)
                 self.assertEqual(observer.current.structural_obstacles(), [])
-                route = next(a for a in catalogue(corridor, observer, 8) if a.id == "travel:3,6")
+                route = next(a for a in catalogue(corridor, observer, 8) if a.id == "travel:5,2")
                 self.assertEqual(route.route, ((2, 4), (2, 5)))
 
     def test_occupied_corridor_explains_unavailable_destinations_until_it_clears(self):
@@ -38,12 +38,12 @@ class ActionCatalogueTest(TestCase):
         blocked = view(screen("", ["", " >####f@"]), (2, 7))
         observation = observer.observation(blocked)
         self.assertEqual(observation["navigation_obstacles"]["unavailable_destinations"], [
-            {"position": [3, 2], "description": "down stairs", "terrain_path_length": 6,
-             "occupied_on_terrain_path": [[3, 7]]}])
-        self.assertNotIn("travel:3,2", {a.id for a in catalogue(blocked, observer, 8)})
+            {"position": [1, 2], "description": "down stairs", "terrain_path_length": 6,
+             "occupied_on_terrain_path": [[6, 2]]}])
+        self.assertNotIn("travel:1,2", {a.id for a in catalogue(blocked, observer, 8)})
         clear = observer.observation(first)
         self.assertEqual(clear["navigation_obstacles"]["unavailable_destinations"], [])
-        self.assertIn("travel:3,2", {a.id for a in catalogue(first, observer, 8)})
+        self.assertIn("travel:1,2", {a.id for a in catalogue(first, observer, 8)})
 
     def test_occupied_square_does_not_hide_a_destination_with_an_alternative_route(self):
         observer = Observer()
@@ -51,8 +51,8 @@ class ActionCatalogueTest(TestCase):
         occupied = view(screen("", [" ------- ", " |@f>..| ", " |.....| ", " ------- "]), (2, 2))
         observation = observer.observation(occupied)
         blocked = observation["navigation_obstacles"]["unavailable_destinations"]
-        self.assertNotIn([3, 5], [entry["position"] for entry in blocked])
-        travel = next(action for action in catalogue(occupied, observer, 8) if action.id == "travel:3,5")
+        self.assertNotIn([4, 2], [entry["position"] for entry in blocked])
+        travel = next(action for action in catalogue(occupied, observer, 8) if action.id == "travel:4,2")
         self.assertEqual(travel.route[-1], (2, 4))
         self.assertNotIn((2, 3), travel.route)
 
@@ -63,11 +63,11 @@ class ActionCatalogueTest(TestCase):
 
     def test_inspection_includes_terrain_features_and_the_hero_square(self):
         choices = self.choices(view(screen("", [" -------- ", " |.@_^.>| ", " -------- "])))
-        for name in ("inspect:3,4", "inspect:3,5", "inspect:3,6", "inspect:3,8"):
+        for name in ("inspect:3,2", "inspect:4,2", "inspect:5,2", "inspect:7,2"):
             self.assertIn(name, choices)
             self.assertEqual(choices[name].followups[0][0], "position")
-        self.assertIn("altar", choices["inspect:3,5"].description)
-        self.assertIn("trap", choices["inspect:3,6"].description)
+        self.assertIn("altar", choices["inspect:4,2"].description)
+        self.assertIn("trap", choices["inspect:5,2"].description)
 
     def test_targets_are_explicit_even_at_low_health(self):
         v = view(screen("", [" ------- ", " |.@e..| ", " ------- "],
@@ -82,7 +82,7 @@ class ActionCatalogueTest(TestCase):
     def test_travel_routes_have_named_targets_and_step_bounds(self):
         v = view(screen("", [" ----------- ", " |.@......>| ", " ----------- "]))
         choices = self.choices(v)
-        travel = choices["travel:3,11"]
+        travel = choices["travel:10,2"]
         self.assertEqual(travel.target, (2, 10))
         self.assertEqual(travel.route[-1], travel.target)
         self.assertLessEqual(travel.steps, 8)
@@ -90,14 +90,14 @@ class ActionCatalogueTest(TestCase):
     def test_travel_reaches_door_approach_and_retains_final_step(self):
         rows = [" --------- ", " |.@.....| ", " |....*..| ", " ----+---- "]
         choices = self.choices(view(screen("", rows)))
-        target = choices["travel:4,6"]
+        target = choices["travel:5,3"]
         self.assertEqual(target.target, (3, 5))
-        self.assertIn("closed door at [5, 6]", target.description)
+        self.assertIn("closed door at 5,4", target.description)
         rows[1] = " |.......| "
         rows[2] = " |..@....| "
         near = self.choices(view(screen("", rows), (3, 4)))
-        self.assertEqual(near["travel:4,6"].route, ((3, 5),))
-        self.assertEqual(near["travel:4,6"].steps, 1)
+        self.assertEqual(near["travel:5,3"].route, ((3, 5),))
+        self.assertEqual(near["travel:5,3"].steps, 1)
 
     def test_frontier_ignores_squares_shown_under_monsters_or_objects_and_visited_edges(self):
         observer = Observer()
@@ -113,7 +113,7 @@ class ActionCatalogueTest(TestCase):
         self.assertEqual(travel, {(3, 4): ("object $", False)})
 
     def test_routes_never_cross_remembered_water_or_lava(self):
-        # A recorded game where the shortest route to the door beside [6, 34] began on a lava square.
+        # A recorded game where the shortest route to the door beside 33,5 began on a lava square.
         recorded = View(**json.loads((FIXTURES / "lava-room.json").read_text()))
         observer = Observer()
         state = observer.observation(recorded)
@@ -124,11 +124,11 @@ class ActionCatalogueTest(TestCase):
         routes = [a for a in choices.values() if a.kind in ("travel", "explore")]
         self.assertGreater(len(routes), 10)
         self.assertEqual([a.id for a in routes if liquid & set(a.route) or a.target in liquid], [])
-        self.assertEqual(choices["travel:6,35"].route[0], (12, 56))
+        self.assertEqual(choices["travel:34,5"].route[0], (12, 56))
         self.assertIn("move:h", choices)
         pool = view(screen("", ["", "   @}>"]), (2, 3))
         pool.fgs[2][4] = "blue"
-        self.assertNotIn("travel:3,6", self.choices(pool))
+        self.assertNotIn("travel:5,2", self.choices(pool))
         self.assertEqual(Observer().observation(pool)["known_levels"][0]["landmarks"][0]["kind"], "water")
 
     def test_moves_toward_guarded_terrain_name_it_and_keep_the_games_own_check(self):
@@ -167,22 +167,22 @@ class ActionCatalogueTest(TestCase):
         observer.observation(recorded)
         trap = (8, 59)
         choices = {a.id: a for a in catalogue(recorded, observer, 64)}
-        self.assertEqual(choices["travel:9,60"].route, (trap,))
-        south = choices["travel:20,61"]
+        self.assertEqual(choices["travel:59,8"].route, (trap,))
+        south = choices["travel:60,19"]
         self.assertEqual(len(south.route), 12)
         self.assertNotIn(trap, south.route)
         corridor = self.choices(view(screen("", ["", "   @#^#>"]), (2, 3)))
-        self.assertEqual(corridor["travel:3,8"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
+        self.assertEqual(corridor["travel:7,2"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
 
     def test_routes_cross_squares_seen_only_under_objects(self):
         choices = self.choices(view(screen("", ["", "   @#$#>"]), (2, 3)))
-        self.assertEqual(choices["travel:3,8"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
+        self.assertEqual(choices["travel:7,2"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
 
     def test_diagonal_corridor_steps_connect_unless_a_cardinal_path_joins_them(self):
         choices = self.choices(view(screen("", ["", "   @#", "     #", "      ##"]), (2, 3)))
         travel = {a.target: a.subject for a in choices.values() if a.kind == "travel"}
         self.assertEqual(travel, {(4, 7): "corridor endpoint"})
-        self.assertIn("explore:5,8", choices)
+        self.assertIn("explore:7,4", choices)
         bend = self.choices(view(screen("", ["", "   @##", "     ##"]), (2, 3)))
         self.assertEqual({a.target for a in bend.values() if a.kind == "travel"}, {(3, 6)})
 
@@ -194,7 +194,7 @@ class ActionCatalogueTest(TestCase):
 
     def test_exploration_names_a_corridor_frontier_and_bound(self):
         choices = self.choices(view(screen("", ["", "   @##"])))
-        action = choices["explore:3,6"]
+        action = choices["explore:5,2"]
         self.assertEqual((action.kind, action.target, action.steps), ("explore", (2, 5), 8))
         self.assertEqual(action.route, ((2, 4), (2, 5)))
         self.assertFalse(any(k.startswith("explore:") for k in self.choices(view())))
@@ -204,8 +204,8 @@ class ActionCatalogueTest(TestCase):
         choices = self.choices(view(screen("", rows)))
         targets = {a.target for a in choices.values() if a.kind == "travel"}
         self.assertEqual(targets, {(2, 9), (2, 15), (4, 9)})
-        self.assertIn("junction", choices["travel:3,10"].description)
-        self.assertIn("explore:3,16", choices)
+        self.assertIn("junction", choices["travel:9,2"].description)
+        self.assertIn("explore:15,2", choices)
 
     def test_item_ranges_and_text_entry(self):
         v = view(screen("What do you want to eat? [a-c or ?*]"), (0, 40))

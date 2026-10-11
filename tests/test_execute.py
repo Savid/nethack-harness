@@ -52,7 +52,7 @@ class ExecutionTest(TestCase):
 
     def test_bounded_travel_executes_exact_route(self):
         executor, records = self.executor([room(3), room(4, turn=401), room(5, turn=402)])
-        result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2, target=(2, 5),
+        result = executor.run(Action("travel:5,2", "Go east", "travel", steps=2, target=(2, 5),
                                      route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml", "ml"])
         self.assertEqual((result["reason"], result["steps"], result["elapsed_turns"]), ("completed", 2, 2))
@@ -62,7 +62,7 @@ class ExecutionTest(TestCase):
         tiles = {(2, 4): "#", (2, 5): "^", (2, 6): "#"}
         confirm = view(screen("Really step onto that bear trap? [yn] (n)", corridor((2, 4), tiles).rows[1:22]), (0, 40))
         executor, _ = self.executor([corridor((2, 3), tiles), corridor((2, 4), tiles, turn=401), confirm])
-        result = executor.run(Action("travel:3,7", "Go east", "travel", steps=3, target=(2, 6),
+        result = executor.run(Action("travel:6,2", "Go east", "travel", steps=3, target=(2, 6),
                                      route=((2, 4), (2, 5), (2, 6))), fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml", "l"])
         self.assertEqual((result["reason"], result["steps"]), ("prompt", 2))
@@ -93,7 +93,7 @@ class ExecutionTest(TestCase):
         targeting = room(message="Pick a monster, object or location.", monster=4)
         identified = room(message="d  a jackal (jackal)", monster=4)
         executor, _ = self.executor([before, targeting, identified])
-        action = next(a for a in catalogue(before, executor.observer, 8) if a.id == "inspect:3,5")
+        action = next(a for a in catalogue(before, executor.observer, 8) if a.id == "inspect:4,2")
         with mock.patch.object(executor.observer, "remember_look", wraps=executor.observer.remember_look) as remember:
             result = executor.run(action, fingerprint(before))
         self.assertEqual(executor.term.sent, [";", "@l."])
@@ -127,7 +127,7 @@ class ExecutionTest(TestCase):
                                (room(4, turn=401, message="You hear a sound."), "message")):
             with self.subTest(change=changed.msg or changed.st):
                 executor, _ = self.executor([room(3), changed, room(5, turn=402)])
-                result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
+                result = executor.run(Action("travel:5,2", "Go east", "travel", steps=2,
                                              route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
                 self.assertEqual(executor.term.sent, ["ml"])
                 self.assertEqual(result["reason"], "observation_changed")
@@ -154,7 +154,7 @@ class ExecutionTest(TestCase):
         targeting = room(message="Move cursor to a monster, object or location:", monster=4)
         identified = room(message="d        a dog or other canine (jackal)", monster=4)
         executor, _ = self.executor([before, tip, targeting, identified])
-        action = next(a for a in catalogue(before, executor.observer, 8) if a.id == "inspect:3,5")
+        action = next(a for a in catalogue(before, executor.observer, 8) if a.id == "inspect:4,2")
         result = executor.run(action, fingerprint(before))
         self.assertEqual(executor.term.sent, [";", "\x1b", "@l."])
         self.assertEqual(result["reason"], "completed")
@@ -164,7 +164,7 @@ class ExecutionTest(TestCase):
                                      room(4, turn=402, message="You stop.  Your little dog is in the way!"),
                                      room(5, turn=403), room(6, turn=404)])
         executor.observer.pets.add("little dog")
-        result = executor.run(Action("travel:3,7", "Go east", "travel", steps=3, route=((2, 4), (2, 5), (2, 6))),
+        result = executor.run(Action("travel:6,2", "Go east", "travel", steps=3, route=((2, 4), (2, 5), (2, 6))),
                               fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml", "ml", "ml", "ml"])
         self.assertEqual(result["reason"], "completed")
@@ -200,7 +200,7 @@ class ExecutionTest(TestCase):
         observation = executor.observer.observation(executor.term.view())
         self.assertEqual(observation["repetition"], {"action": "move:h", "consecutive_in_recent_history": 4,
                                                    "elapsed_turns": 0, "position_unchanged": True})
-        self.assertEqual(observation["recent_actions"][-1]["target"], [3, 3])
+        self.assertEqual(observation["recent_actions"][-1]["target"], [2, 2])
         self.assertEqual(len(observation["recent_actions"]), 1)
         self.assertEqual(observation["recent_actions"][0]["repetitions"], 4)
         self.assertEqual(len(executor.observer.history), 4)
@@ -226,19 +226,19 @@ class ExecutionTest(TestCase):
             tiles[new] = "#"
             frames.append(corridor(hero, tiles, turn))
         executor, _ = self.executor(frames)
-        result = executor.run(Action("explore:3,5", "Explore corridor", "explore", steps=3,
+        result = executor.run(Action("explore:4,2", "Explore corridor", "explore", steps=3,
                                      target=(2, 4), route=((2, 4),)), fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml", "mj", "mj"])
         self.assertEqual((result["reason"], result["elapsed_turns"]), ("step_limit", 3))
-        self.assertEqual(result["position"], [5, 5])
-        self.assertIn({"position": [6, 5], "glyph": "#"}, result["new_terrain"])
+        self.assertEqual(result["position"], [4, 4])
+        self.assertIn({"position": [4, 5], "glyph": "#"}, result["new_terrain"])
 
     def test_exploration_follows_a_diagonal_corridor_step(self):
         tiles = {(2, 3): "#", (2, 4): "#"}
         turned = {**tiles, (3, 5): "#"}
         executor, _ = self.executor([corridor((2, 3), tiles), corridor((2, 4), turned, 401),
                                      corridor((3, 5), turned, 402)])
-        result = executor.run(Action("explore:3,5", "Explore corridor", "explore", steps=8, target=(2, 4),
+        result = executor.run(Action("explore:4,2", "Explore corridor", "explore", steps=8, target=(2, 4),
                                      route=((2, 4),)), fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml", "mn"])
         self.assertEqual(result["reason"], "exploration_boundary")
@@ -248,7 +248,7 @@ class ExecutionTest(TestCase):
         junction = dict(initial)
         junction.update({(1, 4): "#", (3, 4): "#"})
         executor, _ = self.executor([corridor((2, 3), initial), corridor((2, 4), junction, 401)])
-        result = executor.run(Action("explore:3,5", "Explore corridor", "explore", steps=8,
+        result = executor.run(Action("explore:4,2", "Explore corridor", "explore", steps=8,
                                      target=(2, 4), route=((2, 4),)), fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml"])
         self.assertEqual(result["reason"], "branch_discovered")
@@ -263,7 +263,7 @@ class ExecutionTest(TestCase):
                 if glyph == "+":
                     revealed.update({(1, 5): "|", (3, 5): "|"})
                 executor, _ = self.executor([corridor((2, 3), initial), corridor((2, 4), revealed, 401, hp)])
-                result = executor.run(Action("explore:3,5", "Explore corridor", "explore", steps=8,
+                result = executor.run(Action("explore:4,2", "Explore corridor", "explore", steps=8,
                                              target=(2, 4), route=((2, 4),)), fingerprint(executor.term.view()))
                 self.assertEqual(executor.term.sent, ["ml"])
                 self.assertEqual(result["reason"], reason)
@@ -288,7 +288,7 @@ class ExecutionTest(TestCase):
                                               fingerprint(executor.term.view()))
                         self.assertEqual(executor.term.sent, ["ml"])
                         self.assertEqual(result["reason"], "feature_discovered" if kind == "explore" else "observation_changed")
-                        self.assertEqual(executor.observer.current.structural_obstacles()[0]["position"], [3, 6])
+                        self.assertEqual(executor.observer.current.structural_obstacles()[0]["position"], [5, 2])
 
     def test_search_inside_engulfment_does_not_credit_dungeon_searches(self):
         initial = view(screen("You are swallowed!", ["  /-\\", "  |@|", "  \\-/"]))
@@ -307,7 +307,7 @@ class ExecutionTest(TestCase):
                 revealed = room(4, turn=401)
                 revealed.rows[4] = ("   -" + glyph + "-").ljust(80)
                 executor, _ = self.executor([room(3), revealed, room(5, turn=402)])
-                result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
+                result = executor.run(Action("travel:5,2", "Go east", "travel", steps=2,
                                              route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
                 self.assertEqual(result["reason"], reason)
                 self.assertEqual(executor.term.sent, sent)
@@ -315,13 +315,13 @@ class ExecutionTest(TestCase):
     def test_monsters_already_in_view_moving_about_do_not_end_bounded_movement(self):
         executor, _ = self.executor([room(3, monster=6), room(4, turn=401, monster=8), room(5, turn=402, monster=9),
                                      room(6, turn=403, monster=9)])
-        result = executor.run(Action("travel:3,7", "Go east", "travel", steps=3,
+        result = executor.run(Action("travel:6,2", "Go east", "travel", steps=3,
                                      route=((2, 4), (2, 5), (2, 6))), fingerprint(executor.term.view()))
         self.assertEqual((result["reason"], executor.term.sent), ("completed", ["ml", "ml", "ml"]))
 
     def test_monster_coming_adjacent_ends_bounded_movement(self):
         executor, _ = self.executor([room(3, monster=9), room(4, turn=401, monster=5), room(5, turn=402)])
-        result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
+        result = executor.run(Action("travel:5,2", "Go east", "travel", steps=2,
                                      route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
         self.assertEqual((result["reason"], result["changed_fields"]), ("observation_changed", ["entities"]))
         self.assertEqual(executor.term.sent, ["ml"])
@@ -331,7 +331,7 @@ class ExecutionTest(TestCase):
         for frame, column in zip(frames, (9, 5, 4)):
             frame.revs[2][column] = True
         executor, _ = self.executor(frames)
-        result = executor.run(Action("travel:3,6", "Go east", "travel", steps=2,
+        result = executor.run(Action("travel:5,2", "Go east", "travel", steps=2,
                                      route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
         self.assertEqual((result["reason"], executor.term.sent), ("completed", ["ml", "l"]))
 
@@ -339,7 +339,7 @@ class ExecutionTest(TestCase):
         start, moved = room(3, monster=6), room(4, turn=401, monster=8)
         moved.fgs[2][2] = "blue"
         executor, _ = self.executor([start, moved, room(5, turn=402, monster=9)])
-        result = executor.run(Action("explore:3,6", "Explore", "explore", steps=8, target=(2, 5),
+        result = executor.run(Action("explore:5,2", "Explore", "explore", steps=8, target=(2, 5),
                                      route=((2, 4), (2, 5))), fingerprint(executor.term.view()))
         self.assertEqual(executor.term.sent, ["ml", "ml"])
         self.assertEqual(result["reason"], "exploration_boundary")

@@ -5,7 +5,7 @@ from collections import Counter
 
 from .base import Paused
 from .knowledge import DIRS, MON
-from .level import FEATURES, position
+from .level import FEATURES, position, square
 from .perceive import fingerprint, more_window, parse_menu_entries, phase
 from .transport import Closed, Held
 from .tools import TOOLS
@@ -42,7 +42,7 @@ def monsters(view, observer):
             continue
         key = (entity["glyph"], entity["colour"], entity["bright"])
         visible[key] += 1
-        r, c = (x - 1 for x in entity["position"])
+        r, c = square(entity["position"])
         if hero and max(abs(r - hero[0]), abs(c - hero[1])) <= 1:
             adjacent[key] += 1
     return visible, adjacent

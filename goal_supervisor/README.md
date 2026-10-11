@@ -48,15 +48,16 @@ python3 -m goal_supervisor --dir /tmp/goals run --max-windows 8
 python3 -m goal_supervisor --dir /tmp/goals status
 ```
 
-Example `goal.json` (the caller supplies the actual level ID and destination):
+Example `goal.json` (the caller supplies the actual level ID and destination;
+positions are `[x, y]`, the x,y the harness view prints):
 
 ```json
 {
   "id": "reach-location",
-  "objective": "Reach [8,24] on level-1. Continue until the destination is reached, then pause.",
+  "objective": "Reach 23,7 on level-1. Continue until the destination is reached, then pause.",
   "success": [
     {"path": ["level", "id"], "op": "eq", "value": "level-1"},
-    {"path": ["hero", "position"], "op": "eq", "value": [8, 24]}
+    {"path": ["hero", "position"], "op": "eq", "value": [23, 7]}
   ],
   "valid_while": [
     {"path": ["level", "id"], "op": "eq", "value": "level-1"}
