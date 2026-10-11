@@ -154,7 +154,8 @@ class Executor:
             result["error"] = error
         return result
 
-    def run(self, action, expected, cancelled=lambda: False):
+    def run(self, action, expected, cancelled=lambda: False, remember=True):
+        """Execute action; `remember` adds it to the observer's recent actions."""
         self.keys, self.frames = [], []
         self.steps, self.started = 0, time.monotonic()
         self.before, self.cancelled = self.term.view(), cancelled
@@ -172,7 +173,7 @@ class Executor:
             result = self.snapshot("execution_paused", str(e))
         except Exception as e:
             result = self.snapshot("execution_error", type(e).__name__)
-        if self.action_started:
+        if self.action_started and remember:
             after = self.term.view()
             event = {"action": action.id, "reason": result["reason"], "steps": result["steps"],
                      "turn": after.st.get("turn"), "elapsed_turns": result["elapsed_turns"],

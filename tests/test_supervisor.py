@@ -32,7 +32,7 @@ def spec(identifier, column, attempts=4, parent=None):
 
 
 class SupervisorBridgeTest(TestCase):
-    def test_foreign_context_cannot_trap_recovery_or_consume_owned_attempts(self):
+    def test_foreign_context_and_protocol_looks_cannot_trap_recovery_or_consume_owned_attempts(self):
         observation = {"phase": "play", "hero": {"position": [4, 22]}, "level": {"id": "level-1"}}
         for context in ({}, {"execution": None}, {"execution": 1}, {"execution": "other"}, {"execution": []}):
             with self.subTest(context=context):
@@ -47,7 +47,11 @@ class SupervisorBridgeTest(TestCase):
                      "outcome": {"reason": "action_budget"}},
                     {"id": 2, "type": "decision", "source": "engine", "request": {"state": {"caller_context": context}},
                      "inputs": [{"source": "action", "status": "completed", "keys": "h"}],
-                     "outcome": {"reason": "action_budget"}}]
+                     "outcome": {"reason": "action_budget"}},
+                    {"id": 3, "type": "decision", "source": "protocol", "request": {"state": {"caller_context": {
+                        "execution": {"id": execution["id"]}}}},
+                     "inputs": [{"source": "action", "status": "completed", "keys": ";"}],
+                     "outcome": {"reason": "completed"}}]
 
                 class Client(HarnessClient):
                     def __init__(self):
@@ -70,6 +74,7 @@ class SupervisorBridgeTest(TestCase):
                 self.assertEqual(result["reason"], "review")
                 self.assertEqual(result["outcome"]["foreign_decisions"], [2])
                 self.assertEqual(result["outcome"]["attempts"], 1)
+                self.assertEqual(result["outcome"]["execution_reason"], "action_budget")
                 self.assertIsNone(recovered.state["inflight"])
                 self.assertEqual(recovered.goal("destination")["status"], "suspended")
                 self.assertEqual(recovered.goal("destination")["attempts_used"], 1)

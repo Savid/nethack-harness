@@ -119,7 +119,8 @@ python3 nethack_harness.py --dir /tmp/game-session resume \
 
 An attempt is consumed immediately before its first gameplay input, even if the
 move is blocked or the write result is uncertain. Tool/argument selection,
-`pause`, pagination and redraws do not consume attempts. A bounded travel or
+`pause` and protocol records (pagination, redraws and the information looks of
+the direct-play view) do not consume attempts. A bounded travel or
 search action counts once and retains its own step limit; built-in command
 follow-ups belong to that same attempt. A separately selected prompt answer is
 another action, so the limit can return control at an unresolved prompt.
@@ -237,9 +238,11 @@ whose terrain was never seen or where an object lay, the view asks the game with
 name is kept only while that monster stays on its square with the same glyph
 and colour at every view, and shows `(looked T:n)` once that turn has passed; a
 monster that moved or arrived is looked at again, at most eight looks per view.
-Naming and `:` happen only in sessions without a decision endpoint and only
-while the game verifiably waits for a command: no prompt, the cursor on the
-hero's `@` and the status lines shown. A farlook that names a statue keeps that
+Naming and `:` happen only while the caller holds control, which is always in a
+session without a decision endpoint and while a session with one is paused, and
+only while the game verifiably waits for a command: no prompt, the cursor on the
+hero's `@` and the status lines shown. A `look` while the engine plays sends
+nothing. A farlook that names a statue keeps that
 square an object. `adjacent K` is the movement key toward a monster or feature
 beside the hero. `seen:` lists remembered stairs, traps (by kind when a message
 named them), altars, fountains, doors and message landmarks; `items:` remembered
@@ -257,7 +260,11 @@ own prompts, such as leaving the dungeon from level 1, are shown in full and
 answered by the caller.
 
 Every command, including each farlook and `:`, is a decision record with source
-`manual` or `protocol`, so `export` contains the complete input history.
+`manual` or `protocol`, so `export` contains the complete input history. A
+protocol record is no action attempt or recent action and leaves the no-effect
+and movement evidence as it was, and the answers to the view's looks stay out
+of the remembered messages, so a paused engine session resumes with the evidence
+it had.
 
 ## Actions and observations
 
@@ -418,8 +425,9 @@ messages and omit inventory, spell, attribute and overview snapshots that were
 never queried. The full decision trace is written to SQLite. Starting a fresh harness session resets
 the observer; memory is not carried between games or restored from old traces.
 
-The last eight executed actions include their
-targets, starting and ending positions, elapsed turns and stopping reasons.
+The last eight executed engine and caller actions (protocol steps such as
+pagination are left out) include their targets, starting and ending positions,
+elapsed turns and stopping reasons.
 Identical consecutive history entries are represented once with a repetition
 count. Every attempt remains separate in the full decision log.
 Prompt input history includes the literal keys and their descriptions, including

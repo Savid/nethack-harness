@@ -54,7 +54,10 @@ class Session:
 
     def step(self, cancelled=lambda: False, manual=None, protocol=None, expected=None):
         """One decision and its execution. `expected` is the screen fingerprint a supplied action was built from;
-        if the screen has changed since, nothing is sent."""
+        if the screen has changed since, nothing is sent.
+
+        A protocol step (pagination, a redraw, an information look for the caller's view) is recorded but is no
+        action attempt, no recent action, and leaves the no-effect and movement evidence as it was."""
         self.term.poll()
         before = self.observe()
         if before["phase"] == "ended" and not (manual and manual.kind == "manual"):
@@ -92,7 +95,7 @@ class Session:
                 if self.objective_progress.exhausted(self.settings.max_action_attempts):
                     raise Boundary("action_budget")
             input_number = self.store.input(number, keys, src)
-            if src == "action" and attempt is None:
+            if src == "action" and attempt is None and source != "protocol":
                 # Reserve before I/O: a write with an uncertain result still consumes an attempt.
                 attempt = self.objective_progress.begin(number, source, action, before)
             if attempt is not None:
@@ -145,7 +148,8 @@ class Session:
                                           "objective": self.settings.objective, "selected_action": action.id}}
                     self.pending_tool = None
                 else:
-                    outcome = executor.run(action, expected or before["fingerprint"], cancelled)
+                    outcome = executor.run(action, expected or before["fingerprint"], cancelled,
+                                           remember=source != "protocol")
                 outcome["action"] = action.as_dict()
                 self.actions += int(outcome["steps"] > 0 and source != "protocol")
                 self.turns += max(0, outcome.get("elapsed_turns") or 0)
@@ -174,7 +178,7 @@ class Session:
                 outcome["reason"] = "navigation_cycle"
                 outcome["review"] = review
             after["navigation_progress"] = self.navigation.snapshot()
-        elif outcome.get("steps"):
+        elif outcome.get("steps") and source != "protocol":
             self.navigation.reset()
             self.navigation.sync(after, self.settings.objective)
             after["navigation_progress"] = self.navigation.snapshot()
@@ -205,7 +209,7 @@ class Session:
                 observation_fingerprint=after["fingerprint"])
         if outcome.get("execution_reason", outcome["reason"]) == "no_observed_effect" and source == "engine":
             self.failed_action = ((after["fingerprint"], self.settings.objective, action), number)
-        elif outcome.get("steps", 0) > 0:
+        elif outcome.get("steps", 0) > 0 and source != "protocol":
             self.failed_action = None
         outcome["terminal"] = after["phase"] == "ended"
         self.store.finish(number, outcome, after)

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import TestCase
 
 from helpers import FakeTerm, screen, view
+from nethack_harness.actions import Action
 from nethack_harness.perceive import parse_menu_entries
 from nethack_harness.play import Play, hint, messages
 from nethack_harness.screen import View
@@ -89,7 +90,7 @@ class PlayTest(TestCase):
 
     def test_look_names_monsters_and_underfoot_once_and_coordinates_read_off_the_map(self):
         play = self.play([start()] + farlook("tame little dog") + farlook("jackal") + [STAIRS])
-        text = play.view()
+        text = play.view(inquire=True)
         lines = text.splitlines()
         self.assertEqual(play.session.term.sent, [";", "@k.", ";", "@llll.", ":"])
         self.assertIn("monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away", lines)
@@ -100,7 +101,7 @@ class PlayTest(TestCase):
         self.assertEqual([column(lines, x, y) for x, y in ((32, 6), (32, 5), (36, 6), (30, 5), (33, 4))],
                          ["@", "d", "d", "+", "/"])
         self.assertFalse(any("a dog or other canine" in line for line in lines))
-        play.view()
+        play.view(inquire=True)
         self.assertEqual(len(play.session.term.sent), 5)
 
     def test_a_farlook_answer_that_runs_to_more_is_recorded_in_full(self):
@@ -109,23 +110,23 @@ class PlayTest(TestCase):
         prompt = recorded("seed4242-start.json", "Pick a monster, object or location.")
         zombie = recorded("seed4242-start.json", "Z        a zombie (kobold zombie)")
         play = self.play([before, prompt, result, before, prompt, zombie, before])
-        lines = play.view().splitlines()
+        lines = play.view(inquire=True).splitlines()
         self.assertEqual(play.session.term.sent[:5], [";", "@l.", " ", ";", "@j."])
         self.assertIn("monsters: d tame little dog 19,6 adjacent l; Z kobold zombie 18,7 adjacent j", lines)
 
     def test_names_never_come_from_another_monster_square_or_turn(self):
         later = moved(json.loads((FIXTURES / "seed1001-start.json").read_text()), (6, 36), (6, 37), 2)
         play = self.play([start()] + farlook("tame little dog") + farlook("jackal") + [STAIRS])
-        play.view()
+        play.view(inquire=True)
         unlooked = View(**later)
         play.session.term.views = [unlooked]
-        lines = play.view().splitlines()
+        lines = play.view(inquire=True).splitlines()
         self.assertIn("monsters: d tame little dog (looked T:1) 32,5 adjacent k; d 37,6 5 away", lines)
         self.assertEqual(play.session.term.sent[5:], [";"])
         play.observer.current.inspections[(6, 37)] = {"description": "jackal", "observed_turn": 1, "glyph": "d",
                                                        "colour": unlooked.col(6, 37), "source": "inspect"}
         play.session.term.views = [unlooked]
-        self.assertNotIn("jackal", play.view())
+        self.assertNotIn("jackal", play.view(inquire=True))
 
     def test_naming_waits_until_the_game_is_verifiably_waiting_for_a_command(self):
         cursor = start("floor of a room", cursor=(6, 34))
@@ -133,21 +134,35 @@ class PlayTest(TestCase):
         for unsure in (cursor, start(cursor=(5, 32))):
             with self.subTest(cursor=unsure.cursor):
                 play = self.play([unsure])
-                play.view()
+                play.view(inquire=True)
                 self.assertEqual(play.session.term.sent, [])
 
-    def test_look_in_a_decision_engine_session_sends_nothing_and_keeps_its_evidence(self):
+    def test_look_while_the_engine_plays_sends_nothing(self):
         play = self.play([start()], engine=Engine())
-        session = play.session
-        session.failed_action = marker = (("fingerprint", "objective", None), 7)
-        session.observe()
-        history = list(play.observer.history)
         text = play.view()
-        self.assertEqual(session.term.sent, [])
-        self.assertIs(session.failed_action, marker)
-        self.assertEqual(list(play.observer.history), history)
+        self.assertEqual(play.session.term.sent, [])
         self.assertIn("monsters: d pet 32,5 adjacent k; d 36,6 4 away", text.splitlines())
-        self.assertEqual(list(session.store.records()), [])
+        self.assertEqual(list(play.session.store.records()), [])
+
+    def test_looks_in_a_paused_engine_session_keep_the_engines_evidence(self):
+        play = self.play([start()] + farlook("tame little dog") + farlook("jackal") + [STAIRS], engine=Engine())
+        session = play.session
+        session.step(manual=Action("manual", "Caller-supplied keys", "manual", "s"))
+        session.term.views = [start()] + farlook("tame little dog") + farlook("jackal") + [STAIRS]
+        session.failed_action = marker = (("fingerprint", "objective", None), 7)
+        before = session.observe()
+        messages = list(play.observer.messages)
+        lines = play.view(inquire=True).splitlines()
+        self.assertEqual(session.term.sent[1:], [";", "@k.", ";", "@llll.", ":"])
+        self.assertIn("monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away", lines)
+        self.assertIn("you: 32,6  here: < up stairs; There is a staircase up out of the dungeon here.", lines)
+        after = session.observe()
+        self.assertIs(session.failed_action, marker)
+        self.assertEqual(list(play.observer.messages), messages)
+        for key in ("recent_actions", "repetition", "navigation_progress"):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual(after["objective_progress"]["recent_attempts"], before["objective_progress"]["recent_attempts"])
+        self.assertEqual([r["source"] for r in session.store.records()], ["manual"] + ["protocol"] * 3)
 
     def test_command_messages_include_paged_windows_and_repeats_but_not_unchanged_text(self):
         frames = [{"phase": "more", "message": "You miss the jackal.--More--"},

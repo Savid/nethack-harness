@@ -305,19 +305,20 @@ class Play:
     def plain(self, view):
         """Whether the game is verifiably waiting for a command: no prompt, the cursor on the hero, status shown.
 
-        Naming sends keys, so it happens only then, and only in sessions without a decision engine."""
+        Naming sends keys, so it happens only then."""
         prompts = getattr(self.term, "prompts", None)
-        return (self.session.engine is None and phase(view) == "play" and not view.engulfed and view.hero
+        return (phase(view) == "play" and not view.engulfed and view.hero
                 and tuple(view.cursor) == view.hero and view.ch(*view.hero) == "@"
                 and not (prompts and prompts.position)
                 and all(view.st.get(key) is not None for key in ("hp", "turn", "location")))
 
     def protocol(self, action):
         """Run a free information command; True when it completed without spending game time."""
-        self.session.step(protocol=action)
-        outcome = self.session.last["outcome"]
-        if phase(self.term.view()) == "position":
-            self.session.step(protocol=Action("input:1b", "Cancel the farlook", "input", "\x1b"))
+        with self.observer.aside():
+            self.session.step(protocol=action)
+            outcome = self.session.last["outcome"]
+            if phase(self.term.view()) == "position":
+                self.session.step(protocol=Action("input:1b", "Cancel the farlook", "input", "\x1b"))
         return outcome["reason"] == "completed" and not outcome.get("elapsed_turns")
 
     def farlook(self, view, p):
@@ -365,15 +366,18 @@ class Play:
             level.underfoot[hero] = {"notes": messages(self.session.last["outcome"].get("frames", [])),
                                      "observed_turn": turn}
 
-    def view(self, report=None):
-        """The compact view: status, new messages, any prompt, the map and what is remembered around it."""
+    def view(self, report=None, inquire=False):
+        """The compact view: status, new messages, any prompt, the map and what is remembered around it.
+
+        With `inquire`, while the caller holds control, it names monsters and looks underfoot with the game's own
+        information commands, which take no game time."""
         self.session.observe()
         if self.observer.message_total > self.reported:
             fresh = min(self.observer.message_total - self.reported, len(self.observer.messages))
             self.fresh += [message["text"].replace("--More--", "").strip()
                            for message in list(self.observer.messages)[-fresh:]]
         view = self.term.view()
-        if self.plain(view):
+        if inquire and self.plain(view):
             self.name_monsters(view)
             if self.plain(self.term.view()):
                 self.look_underfoot(self.term.view())

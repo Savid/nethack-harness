@@ -92,9 +92,12 @@ class HarnessClient:
         records = [record for record in records if record["type"] == "decision"]
         related = [record for record in records if belongs(record)]
         foreign = [record["id"] for record in records if record["source"] != "protocol" and record not in related]
-        attempts = sum(any(item["source"] == "action" for item in record["inputs"]) for record in related)
+        # Protocol records (pagination, redraws, information looks for a caller's view) are neither attempts
+        # nor the window's result, though they carry the context of the window before them.
+        acted = [record for record in related if record["source"] != "protocol"]
+        attempts = sum(any(item["source"] == "action" for item in record["inputs"]) for record in acted)
         uncertain = bool(foreign or any(item["status"] != "completed" for record in related for item in record["inputs"]))
-        last = next((record["outcome"] for record in reversed(related) if record["outcome"]), {})
+        last = next((record["outcome"] for record in reversed(acted or related) if record["outcome"]), {})
         outcome = {"boundary": status.get("reason"), "execution_reason": last.get("execution_reason", last.get("reason")),
                    "attempts": attempts, "uncertain": uncertain,
                    "decisions": [record["id"] for record in related], "foreign_decisions": foreign,

@@ -4,6 +4,7 @@ import json
 import re
 import string
 from collections import deque
+from contextlib import contextmanager
 
 from .knowledge import ITEMS, MON, WARNING, trap_kind
 from .level import FEATURES, Level, door_line, neighbours, position
@@ -86,6 +87,8 @@ class Observer:
         self.previous = None
         self.messages = deque(maxlen=20)
         self.message_total = 0
+        self.setting_aside = False
+        self.aside_message = None
         self.notes = []
         self.noted = None
         self.pets = set()
@@ -110,6 +113,16 @@ class Observer:
         self.last_play_message = None
         self.game_result = None
 
+    @contextmanager
+    def aside(self):
+        """Keep the messages shown meanwhile, and one still on screen afterwards, out of the remembered messages:
+        the answers to information looks made for the caller's view, which a decision engine did not ask for."""
+        self.setting_aside = True
+        try:
+            yield
+        finally:
+            self.setting_aside = False
+
     def begin(self, action, view):
         self.last_action = (action, self.current, view.hero)
         tool = TOOLS.get(action.kind)
@@ -129,8 +142,13 @@ class Observer:
         if view.ended and (self.game_result is None or view.result):
             self.game_result = {"outcome": view.result or "unknown", "observed_turn": view.st.get("turn"),
                                 "source": "terminal end-of-game text", "message": view.msg}
-        new_message = view.msg and (not self.messages or self.messages[-1]["text"] != view.msg)
-        if new_message:
+        if not self.setting_aside and view.msg != self.aside_message:
+            self.aside_message = None
+        new_message = view.msg and view.msg != self.aside_message and (
+            not self.messages or self.messages[-1]["text"] != view.msg)
+        if new_message and self.setting_aside:
+            self.aside_message = view.msg
+        elif new_message:
             self.messages.append({"turn": view.st.get("turn"), "text": view.msg})
             self.message_total += 1
         self.collect_notes(view)

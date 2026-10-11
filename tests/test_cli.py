@@ -322,9 +322,11 @@ class DaemonTest(TestCase):
         records = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual([(row["type"], row["source"]) for row in records], [
             ("intent", "caller"), ("decision", "protocol"), ("decision", "engine"), ("decision", "manual"),
-            ("intent", "caller"), ("decision", "engine")])
-        self.assertEqual([records[i]["intent"]["objective"] for i in (0, 4)], ["Play NetHack.", "Explore the dungeon"])
+            ("decision", "protocol"), ("intent", "caller"), ("decision", "engine")])
+        self.assertEqual([records[i]["intent"]["objective"] for i in (0, 5)], ["Play NetHack.", "Explore the dungeon"])
         self.assertEqual(records[1]["inputs"], [{"keys": "\x12", "source": "protocol", "status": "completed"}])
+        # The paused session's view looked underfoot after the caller's keys.
+        self.assertEqual(records[4]["outcome"]["action"]["kind"], "look_here")
         self.assertEqual(cli(self.state, "stop").returncode, 0)
         store = Store(self.state)
         try:

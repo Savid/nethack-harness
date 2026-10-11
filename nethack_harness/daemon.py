@@ -158,7 +158,7 @@ def run(store):
             return observation
         if name == "look":
             refresh()
-            text = play.view()
+            text = play.view(inquire=status["state"] == "paused")
             store.write("observation", session.observe())
             return {"view": text, "ended": status["state"] == "ended"}
         if name in ("send", "go", "rest"):
@@ -178,7 +178,8 @@ def run(store):
             report, reason, refused = getattr(play, name)(command["argument"], interrupted)
             if reason:
                 pause(reason)
-            return {"view": play.view(report), "ended": status["state"] == "ended", "failed": bool(refused)}
+            return {"view": play.view(report, inquire=status["state"] == "paused"), "ended": status["state"] == "ended",
+                    "failed": bool(refused)}
         raise ValueError("unknown command")
 
     store.intent({"record": "goal", "transition": "set", "objective": settings.objective,

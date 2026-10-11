@@ -205,6 +205,8 @@ An execution reservation is saved before requesting game input. If the superviso
 crashes or loses a response, later execution and edits require `recover`. Recovery
 pauses the harness, reconciles the recorded inputs by execution ID, counts uncertain
 input attempts, and suspends the goal for caller review. It never resends the action.
+Protocol records, such as the information looks of a direct-play view taken
+between windows, are not counted as attempts or taken as the window's result.
 Use one supervisor as the owner of a harness session while it is running goals;
 manual inputs are reported as interference when reconciling a window.
 
