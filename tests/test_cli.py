@@ -13,7 +13,7 @@ import threading
 import time
 from unittest import mock
 
-from helpers import Endpoint, FakeGame
+from helpers import Endpoint, FakeGame, choosing
 from nethack_harness import __version__, control, daemon
 from nethack_harness.settings import Settings
 from nethack_harness.store import Store
@@ -142,8 +142,7 @@ class DaemonTest(TestCase):
 
     def test_review_budget_pauses_daemon_and_can_be_replaced_on_resume(self):
         self.endpoint.close()
-        self.endpoint = Endpoint(lambda request: {"answers": {"action": {"choice":
-                                 "search" if request["state"]["decision"]["stage"] == "tool" else "search:1"}}})
+        self.endpoint = Endpoint(choosing("search", "search:1"))
         result = self.start("--review-after-calls", "2")
         state = json.loads(result.stdout)
         self.assertEqual(state["status"]["reason"], "review_budget")
@@ -157,7 +156,7 @@ class DaemonTest(TestCase):
         state = json.loads(result.stdout)
         self.assertEqual(state["status"]["reason"], "review_budget")
         self.assertEqual(state["status"]["calls"], 5)
-        self.assertEqual(state["status"]["last"]["outcome"]["steps"], 0)
+        self.assertEqual(state["status"]["last"]["outcome"]["execution_reason"], "completed")
         self.assertEqual(state["observation"]["review_budget"]["limit_calls"], 1)
 
     def test_request_token_budget_is_set_on_start_and_replaced_on_resume(self):
@@ -172,27 +171,25 @@ class DaemonTest(TestCase):
         self.endpoint.close()
 
         def choose(request):
-            state = request["state"]
-            tool = "wait" if state["observation"]["objective_progress"]["attempts_used"] else "search"
-            choice = tool if state["decision"]["stage"] == "tool" else tool + ":1"
-            return {"answers": {"action": {"choice": choice}}}
+            tool = "wait" if request["state"]["observation"]["objective_progress"]["attempts_used"] else "search"
+            return choosing(tool, tool + ":1")(request)
 
         self.endpoint = Endpoint(choose)
         state = json.loads(self.start("--max-action-attempts", "1").stdout)
         self.assertEqual(state["status"]["reason"], "action_budget")
         initial = state["observation"]["objective_progress"]
-        self.assertEqual(state["status"]["calls"], 2)
+        self.assertEqual(state["status"]["calls"], 1)
         result = cli(self.state, "resume", "--timeout", "5")
         state = json.loads(result.stdout)
         self.assertEqual(state["status"]["reason"], "action_budget")
-        self.assertEqual(state["status"]["calls"], 4)
+        self.assertEqual(state["status"]["calls"], 2)
         renewed = state["observation"]["objective_progress"]
         self.assertNotEqual(initial["id"], renewed["id"])
         self.assertEqual(renewed["attempts_used"], 1)
         result = cli(self.state, "resume", "--max-action-attempts", "2", "--timeout", "5")
         state = json.loads(result.stdout)
         self.assertEqual(state["status"]["reason"], "action_budget")
-        self.assertEqual(state["status"]["calls"], 8)
+        self.assertEqual(state["status"]["calls"], 4)
         self.assertEqual(state["observation"]["objective_progress"]["attempts_used"], 2)
         result = cli(self.state, "resume", "--max-action-attempts", "0", "--review-after-calls", "1", "--timeout", "5")
         state = json.loads(result.stdout)
@@ -202,11 +199,7 @@ class DaemonTest(TestCase):
     def test_paused_start_waits_for_caller_and_resume_limits_tools_and_reports_its_records(self):
         self.endpoint.close()
 
-        def choose(request):
-            stage = request["state"]["decision"]["stage"]
-            return {"answers": {"action": {"choice": "search" if stage == "tool" else "search:1"}}}
-
-        self.endpoint = Endpoint(choose)
+        self.endpoint = Endpoint(choosing("search", "search:1"))
         state = json.loads(self.start("--paused").stdout)
         self.assertEqual((state["status"]["reason"], state["observation"]["phase"]), ("caller_pause", "play"))
         self.assertEqual(self.endpoint.requests, [])
@@ -216,18 +209,17 @@ class DaemonTest(TestCase):
         self.assertEqual(state["status"]["reason"], "action_budget")
         self.assertEqual(set(self.endpoint.requests[0]["questions"]["action"]["criteria"]), {"search", "wait", "pause"})
         engine = [record for record in state["records"] if record["source"] == "engine"]
-        self.assertEqual([record["choice"] for record in engine], ["search", "search:1"])
+        self.assertEqual([record["choice"] for record in engine], ["search:1"])
         self.assertEqual(state["records"], [json.loads(line) for line in cli(self.state, "export").stdout.splitlines()])
         cli(self.state, "resume", "--tools", "all", "--max-action-attempts", "1", "--timeout", "5")
-        self.assertIn("move", self.endpoint.requests[2]["questions"]["action"]["criteria"])
+        self.assertIn("move", self.endpoint.requests[1]["questions"]["action"]["criteria"])
         result = cli(self.state, "resume", "--tools", "search,flarp")
         self.assertEqual(result.returncode, 64)
         self.assertIn("unknown tools: flarp", result.stderr)
 
     def test_continued_scope_keeps_no_effect_evidence_and_a_new_scope_permits_another_try(self):
         self.endpoint.close()
-        self.endpoint = Endpoint(lambda request: {"answers": {"action": {"choice":
-                                 "move" if request["state"]["decision"]["stage"] == "tool" else "move:k"}}})
+        self.endpoint = Endpoint(choosing("move", "move:k"))
         self.start("--paused")
 
         def window(*extra):

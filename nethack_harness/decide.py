@@ -10,7 +10,7 @@ import urllib.request
 from .base import Paused
 from .knowledge import DIRECTION_NAMES
 from .level import position
-from .tools import TOOLS, tool_description
+from .tools import PAUSE, TOOLS, tool_description
 
 RESPONSE_LIMIT = 1024 * 1024
 # Statuses and connection failures that a later attempt can outlive: a full queue, a gateway or engine restarting.
@@ -51,6 +51,7 @@ def reject_constant(value):
     raise ValueError("non-finite JSON number: " + value)
 
 
+ARGUMENTS = "If action is %s, choose its concrete arguments."
 GUIDANCE = ("Decide from this state alone; caller_context and objective_progress list earlier attempts and their"
             " results. Prefer a choice that has not already failed to make progress.")
 OMITTED_LEVEL = ("known_terrain", "visits", "inferred_floor")
@@ -188,8 +189,23 @@ def omit_far_destinations(observation, actions):
 OMISSIONS = (omit_other_levels, omit_older_messages, omit_far_destinations)
 
 
+def argument_options(actions):
+    """The offered actions of every tool that has several, by tool in catalogue order."""
+    options = {}
+    for action in actions:
+        if action.kind != "pause":
+            options.setdefault(action.tool, []).append(action)
+    return {tool: listed for tool, listed in options.items() if len(listed) > 1}
+
+
 def request_body(observation, actions, objective, model=None, tool=None, caller_context=None, max_tokens=None):
     """One stateless decision request, within max_tokens when that is given.
+
+    In normal play it asks the tool question and, for each offered tool with several actions, which of them to
+    use if that tool is chosen: the engine answers all of them together and the answer for the chosen tool is
+    used. These argument questions take the room the budget leaves, in catalogue order; the arguments of a chosen
+    tool whose question did not fit are asked in a request of their own. A request for one tool's arguments asks
+    only that, and one at a prompt asks for the answer.
 
     A request over the budget leaves out, in order, other levels' landmarks, older messages and destinations
     beyond the nearest; `state.omitted` lists what it left out."""
@@ -203,6 +219,12 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
             observation, actions, note = trimmed
             omitted.append(note)
             body = build_body(observation, actions, objective, model, tool, caller_context, omitted)
+    if body["state"]["decision"]["stage"] == "tool":
+        for name, options in argument_options(actions).items():
+            body["questions"][name] = {"type": "choice", "instructions": ARGUMENTS % name, "criteria": dict(
+                {action.id: action.description for action in options}, pause=PAUSE)}
+            if max_tokens is not None and estimated_tokens(body) > max_tokens:
+                del body["questions"][name]
     return body
 
 
@@ -238,6 +260,13 @@ def build_body(observation, actions, objective, model, tool, caller_context, omi
     if model:
         body["model"] = model
     return body
+
+
+def offered(answer, questions, name):
+    choice = answer["answers"][name]["choice"]
+    if not isinstance(choice, str) or choice not in questions[name]["criteria"]:
+        raise ValueError(name)
+    return choice
 
 
 class Engine:
@@ -303,12 +332,20 @@ class Engine:
                 wait = min(wait * 2, BACKOFF[1])
 
     def choose(self, request):
+        """The answer to the action question and, when the request asked about the chosen tool's arguments, the
+        answer to that question, keyed by question. Answers about tools not chosen are only recorded."""
         answer, latency, retries = self.ask(request)
+        questions = request["questions"]
         try:
-            choice = answer["answers"]["action"]["choice"]
-            if not isinstance(choice, str) or choice not in request["questions"]["action"]["criteria"]:
-                raise ValueError()
+            choices = {"action": offered(answer, questions, "action")}
         except (KeyError, TypeError, ValueError):
             raise DecisionError("decision response must contain answers.action.choice naming an offered action",
                                 answer, latency, retries) from None
-        return choice, answer, latency, retries
+        tool = choices["action"]
+        if tool != "action" and tool in questions:
+            try:
+                choices[tool] = offered(answer, questions, tool)
+            except (KeyError, TypeError, ValueError):
+                raise DecisionError("decision response must contain answers.%s.choice naming an offered %s action"
+                                    % (tool, tool), answer, latency, retries) from None
+        return choices, answer, latency, retries

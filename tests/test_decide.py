@@ -61,6 +61,51 @@ class EngineTest(TestCase):
         self.assertNotIn("navigation", arguments)
         self.assertEqual(arguments["argument_facts"]["travel:6,2"]["visits"], 2)
 
+    def test_one_request_asks_the_tool_and_the_arguments_of_each_tool_with_several(self):
+        actions = [Action("move:l", "Move east", "move", "l", target=(2, 4)),
+                   Action("move:h", "Move west", "move", "h", target=(2, 2)),
+                   Action("pray", "Pray", "pray", "#pray\r"),
+                   Action("travel:5,2", "Travel to an endpoint", "travel", target=(2, 5), route=((2, 4), (2, 5)),
+                          subject="corridor endpoint"),
+                   Action("travel:9,2", "Travel to stairs", "travel", target=(2, 9), route=((2, 4),) * 6,
+                          subject="down stairs"),
+                   Action("pause", "Return control to the caller", "pause", steps=0)]
+        request = request_body({"phase": "play"}, actions, "Explore")
+        questions = request["questions"]
+        self.assertEqual(list(questions), ["action", "move", "travel"])
+        self.assertEqual(set(questions["action"]["criteria"]), {"move", "pray", "travel", "pause"})
+        self.assertEqual(questions["move"]["criteria"],
+                         {"move:l": "Move east", "move:h": "Move west", "pause": "Return control to the caller"})
+        self.assertEqual(set(questions["travel"]["criteria"]), {"travel:5,2", "travel:9,2", "pause"})
+        self.assertEqual([d["action"] for d in request["state"]["navigation"]["destinations"]],
+                         ["travel:5,2", "travel:9,2"])
+        answers = {"action": {"choice": "travel"}, "travel": {"choice": "travel:9,2"}, "move": {"choice": "west"}}
+        for reply, chosen in (({"answers": answers}, {"action": "travel", "travel": "travel:9,2"}),
+                              ({"answers": {"action": {"choice": "pray"}}}, {"action": "pray"}),
+                              ({"answers": {"action": {"choice": "travel"}}}, "answers.travel.choice"),
+                              ({"answers": dict(answers, travel={"choice": "move:l"})}, "answers.travel.choice")):
+            with self.subTest(reply=reply):
+                endpoint = Endpoint(lambda _, reply=reply: reply)
+                try:
+                    if isinstance(chosen, dict):
+                        self.assertEqual(Engine(endpoint.url).choose(request)[0], chosen)
+                    else:
+                        with self.assertRaisesRegex(DecisionError, chosen.replace(".", r"\.")):
+                            Engine(endpoint.url).choose(request)
+                finally:
+                    endpoint.close()
+
+    def test_argument_questions_take_only_the_room_the_budget_leaves(self):
+        actions = [Action("move:" + key, "Move " + key, "move", key, target=(2, 4)) for key in "hjkl"]
+        actions += [Action("search:%d" % n, "Search %d times" % n, "search", "s", n) for n in (1, 8)]
+        actions.append(Action("pause", "Return control to the caller", "pause", steps=0))
+        whole = request_body({"phase": "play", "messages": []}, actions, "Explore")
+        self.assertEqual(list(whole["questions"]), ["action", "move", "search"])
+        budget = estimated_tokens(dict(whole, questions={key: whole["questions"][key] for key in ("action", "move")}))
+        trimmed = request_body({"phase": "play", "messages": []}, actions, "Explore", max_tokens=budget)
+        self.assertEqual(list(trimmed["questions"]), ["action", "move"])
+        self.assertNotIn("omitted", trimmed["state"])
+
     def test_requests_carry_recent_attempts_without_screen_hashes(self):
         point = {"fingerprint": "f" * 64, "phase": "play", "position": [3, 2], "turn": 9, "level": "level-1"}
         attempts = [{"attempt": n, "decision": 100 + n, "source": "engine", "before": point, "after": point,
@@ -113,7 +158,8 @@ class EngineTest(TestCase):
                           target=(1, length), route=tuple((1, x) for x in range(1, length + 1)),
                           subject="corridor endpoint") for length in range(30, 0, -1)]
         actions.append(Action("pause", "Return control", "pause", steps=0))
-        # Each budget is one token under the previous request, so each request omits one thing more.
+        # Each budget is one token under the previous request without its argument questions, which only use
+        # the room left, so each request omits one thing more.
         budget, expected = None, []
         for omission in (None, "landmarks of other levels", "messages before the latest 2",
                          "6 destinations beyond the 24 nearest"):
@@ -121,7 +167,7 @@ class EngineTest(TestCase):
             body = request_body(observation, actions, "Explore", max_tokens=budget)
             self.assertEqual(body["state"].get("omitted", []), expected)
             self.assertLessEqual(estimated_tokens(body), budget or estimated_tokens(body))
-            budget = estimated_tokens(body) - 1
+            budget = estimated_tokens(dict(body, questions={"action": body["questions"]["action"]})) - 1
         sent = body["state"]["observation"]
         self.assertEqual([level.get("landmarks") is not None for level in sent["known_levels"]], [False, True])
         self.assertEqual([m["text"] for m in sent["messages"]], ["Message 18.", "Message 19."])
@@ -134,7 +180,7 @@ class EngineTest(TestCase):
         request = request_body({"hero": {"hp": 1}}, [Action("attack:l", "Attack east", "attack")], "Reach depth 10", tool="attack")
         chosen, reply, seconds, retries = Engine(endpoint.url).choose(request)
         self.assertEqual(retries, [])
-        self.assertEqual(chosen, "attack:l")
+        self.assertEqual(chosen, {"action": "attack:l"})
         self.assertEqual(reply["answers"]["action"]["confidence"], 0.01)
         self.assertEqual(endpoint.requests, [request])
         self.assertGreaterEqual(seconds, 0)
@@ -157,7 +203,7 @@ class EngineTest(TestCase):
         request = request_body({}, [Action("wait:1", "Wait", "wait")], "Play")
         with mock.patch.object(decide.time, "sleep") as sleep:
             chosen, _, _, retries = Engine(endpoint.url, timeout=30).choose(request)
-        self.assertEqual(chosen, "wait:1")
+        self.assertEqual(chosen, {"action": "wait:1"})
         self.assertEqual(len(endpoint.requests), 3)
         self.assertEqual([(r["status"], r["retry_after"], r["response"]) for r in retries],
                          [(429, 2.0, {"error": "queue full"}), (503, None, {"error": "restarting"})])

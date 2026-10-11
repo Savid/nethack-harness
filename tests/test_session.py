@@ -2,10 +2,10 @@ from unittest import TestCase, mock
 import tempfile
 from dataclasses import replace
 
-from helpers import Endpoint, FakeTerm, screen, view
+from helpers import Endpoint, FakeTerm, choosing, screen, view
 from nethack_harness.actions import Action
 from nethack_harness import decide
-from nethack_harness.decide import Engine
+from nethack_harness.decide import Engine, estimated_tokens, request_body
 from nethack_harness.session import Session
 from nethack_harness.settings import Settings
 from nethack_harness.store import Store
@@ -27,10 +27,8 @@ class SessionTest(TestCase):
 
     @staticmethod
     def alternating_moves(request):
-        state = request["state"]
-        choice = "move" if state["decision"]["stage"] == "tool" else (
-            "move:l" if state["observation"]["hero"]["position"][0] == 3 else "move:h")
-        return {"answers": {"action": {"choice": choice}}}
+        x = request["state"]["observation"]["hero"]["position"][0]
+        return choosing("move", "move:l" if x == 3 else "move:h")(request)
 
     def session(self, response, frames=None):
         directory = tempfile.TemporaryDirectory()
@@ -43,7 +41,7 @@ class SessionTest(TestCase):
 
     def test_repeated_navigation_cycle_returns_evidence_to_caller(self):
         session, endpoint = self.session(self.alternating_moves, self.navigation_frames([3, 4, 3, 4, 3]))
-        for _ in range(7):
+        for _ in range(3):
             self.assertIsNone(session.step())
         self.assertEqual(session.step(), "navigation_cycle")
         self.assertEqual(session.term.sent, ["l", "h", "l", "h"])
@@ -52,7 +50,7 @@ class SessionTest(TestCase):
         self.assertEqual(review["cycle"], [[3, 2], [4, 2], [3, 2]])
         self.assertEqual(len(review["actions"]), 4)
         self.assertEqual(record["outcome"]["execution_reason"], "completed")
-        for request in endpoint.requests[2:]:
+        for request in endpoint.requests[1:]:
             self.assertTrue(request["state"]["observation"]["navigation_progress"]["recent_actions"])
         session.resume()
         self.assertEqual(session.observe()["navigation_progress"]["recent_actions"], [])
@@ -62,30 +60,26 @@ class SessionTest(TestCase):
             with self.subTest(reset=reset):
                 session, _ = self.session(self.alternating_moves, self.navigation_frames(
                     [3, 4, 3, 4, 3], discovery_at=2 if reset == "terrain" else None))
-                for index in range(8):
-                    if reset == "objective" and index == 4:
+                for index in range(4):
+                    if reset == "objective" and index == 2:
                         session.settings = replace(session.settings, objective="Return to the previous square")
                     self.assertIsNone(session.step())
 
-    def test_argument_stage_can_handoff_uncertainty_without_game_input(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                                        "move" if request["state"]["decision"]["stage"] == "tool" else "pause"}}})
-        self.assertIsNone(session.step())
+    def test_argument_selection_can_handoff_uncertainty_without_game_input(self):
+        session, endpoint = self.session(choosing("move", "pause"))
         self.assertEqual(session.step(), "requested_pause")
         self.assertEqual(session.term.sent, [])
-        self.assertIn("pause", endpoint.requests[1]["questions"]["action"]["criteria"])
+        self.assertEqual(len(endpoint.requests), 1)
+        self.assertIn("pause", endpoint.requests[0]["questions"]["move"]["criteria"])
         self.assertEqual(session.last["outcome"]["review"]["decision_stage"], "arguments")
         self.assertEqual(session.last["outcome"]["review"]["selected_tool"], "move")
 
     def test_one_attempt_budget_stops_even_when_movement_is_blocked(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                                        "move" if request["state"]["decision"]["stage"] == "tool" else "move:h"}}})
+        session, endpoint = self.session(choosing("move", "move:h"))
         session.settings = replace(session.settings, max_action_attempts=1)
-        self.assertIsNone(session.step())
-        self.assertEqual(session.observe()["objective_progress"]["attempts_used"], 0)
         self.assertEqual(session.step(), "action_budget")
         self.assertEqual(session.step(), "action_budget")
-        self.assertEqual(len(endpoint.requests), 2)
+        self.assertEqual(len(endpoint.requests), 1)
         self.assertEqual(session.term.sent, ["h"])
         outcome = session.last["outcome"]
         self.assertEqual(outcome["execution_reason"], "no_observed_effect")
@@ -96,14 +90,14 @@ class SessionTest(TestCase):
         self.assertEqual(event["inputs"], [{"keys": "h", "source": "action", "status": "completed"}])
         self.assertEqual(event["result"]["reason"], "no_observed_effect")
 
-    def test_scoped_progress_reaches_both_stages_and_same_objective_resume_resets_it(self):
+    def test_scoped_progress_reaches_the_engine_and_same_objective_resume_resets_it(self):
         session, endpoint = self.session(self.alternating_moves, self.navigation_frames([3, 4, 3, 4]))
-        for _ in range(4):
+        for _ in range(2):
             self.assertIsNone(session.step())
         first = endpoint.requests[0]["state"]["observation"]["objective_progress"]
         self.assertEqual(first["attempts_used"], 0)
         self.assertEqual(first["recent_attempts"], [])
-        for request in endpoint.requests[2:4]:
+        for request in endpoint.requests[1:2]:
             progress = request["state"]["observation"]["objective_progress"]
             self.assertEqual(progress["id"], first["id"])
             self.assertEqual(progress["attempts_used"], 1)
@@ -120,8 +114,7 @@ class SessionTest(TestCase):
         self.assertEqual(fresh["start"]["turn"], 402)
 
     def test_uncertain_first_write_consumes_attempt_and_cannot_be_retried(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                                        "move" if request["state"]["decision"]["stage"] == "tool" else "move:l"}}})
+        session, endpoint = self.session(choosing("move", "move:l"))
         session.settings = replace(session.settings, max_action_attempts=1)
 
         def uncertain_send(keys, before_send=None, separately=False):
@@ -129,20 +122,17 @@ class SessionTest(TestCase):
             raise Held("unknown input result")
 
         session.term.send = uncertain_send
-        session.step()
         self.assertEqual(session.step(), "input_held")
         progress = session.observe()["objective_progress"]
         self.assertEqual(progress["attempts_used"], 1)
         self.assertEqual(progress["recent_attempts"][0]["inputs"][0]["status"], "pending")
         self.assertEqual(session.step(), "action_budget")
-        self.assertEqual(len(endpoint.requests), 2)
+        self.assertEqual(len(endpoint.requests), 1)
 
     def test_action_budget_allows_contract_followups_but_not_another_prompt_answer(self):
         frames = [view(), view(screen("In what direction?"), (0, 18)), view()]
-        session, _ = self.session(lambda request: {"answers": {"action": {"choice":
-                                 "open" if request["state"]["decision"]["stage"] == "tool" else "open:h"}}}, frames)
+        session, _ = self.session(choosing("open", "open:h"), frames)
         session.settings = replace(session.settings, max_action_attempts=1)
-        session.step()
         self.assertEqual(session.step(), "action_budget")
         self.assertEqual(session.term.sent, ["o", "h"])
         self.assertEqual(session.observe()["objective_progress"]["attempts_used"], 1)
@@ -157,20 +147,16 @@ class SessionTest(TestCase):
         self.assertEqual(len(endpoint.requests), 1)
 
     def test_repeat_of_failed_action_hands_back_control_without_another_input(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                                        "move" if request["state"]["decision"]["stage"] == "tool" else "move:h"}}})
-        session.step()
-        session.step()
+        session, endpoint = self.session(choosing("move", "move:h"))
         session.step()
         self.assertEqual(session.step(), "repeated_no_effect")
         self.assertEqual(session.term.sent, ["h"])
-        records = list(session.store.records())
-        failed, repeated = records[1], records[3]
+        failed, repeated = session.store.records()
         self.assertEqual(failed["outcome"]["reason"], "no_observed_effect")
         self.assertEqual(repeated["inputs"], [])
         self.assertEqual(repeated["outcome"]["review"]["previous_decision"], failed["id"])
-        self.assertEqual(repeated["response"], {"answers": {"action": {"choice": "move:h"}}})
-        self.assertEqual(len(endpoint.requests), 4)
+        self.assertEqual(repeated["choice"], "move:h")
+        self.assertEqual(len(endpoint.requests), 2)
         session.resume()
         session.step()
         session.step()
@@ -180,20 +166,18 @@ class SessionTest(TestCase):
         for kind in ("travel", "explore"):
             with self.subTest(kind=kind):
                 initial = view(screen("", ["  #@##"]), (1, 3))
-                session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                    kind if request["state"]["decision"]["stage"] == "tool" else kind + ":5,1"}}}, [initial])
-                for _ in range(3):
-                    self.assertIsNone(session.step())
+                session, endpoint = self.session(choosing(kind, kind + ":5,1"), [initial])
+                self.assertIsNone(session.step())
                 self.assertEqual(session.step(), "repeated_no_effect")
                 self.assertEqual(session.term.sent, ["ml"])
-                failed, repeated = list(session.store.records())[1::2]
+                failed, repeated = session.store.records()
                 self.assertEqual(failed["outcome"]["reason"], "no_observed_effect")
                 self.assertEqual(repeated["inputs"], [])
                 self.assertEqual(repeated["outcome"]["review"]["previous_decision"], failed["id"])
-                self.assertEqual(len(endpoint.requests), 4)
+                self.assertEqual(len(endpoint.requests), 2)
 
     def test_call_budget_cannot_be_exceeded_after_an_interrupted_selection(self):
-        session, endpoint = self.session(lambda _: {"answers": {"action": {"choice": "move"}}})
+        session, endpoint = self.session(choosing("move", "move:l"))
         session.settings = replace(session.settings, review_after_calls=1)
         session.step(cancelled=lambda: True)
         self.assertEqual(session.step(), "review_budget")
@@ -205,35 +189,27 @@ class SessionTest(TestCase):
     def test_turn_consuming_stationary_actions_do_not_trigger_no_effect_handoff(self):
         frames = [view(screen("", [" ---- ", " |.@.| ", " ---- "],
                               status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:%d" % t)) for t in (400, 401, 402)]
-        session, _ = self.session(lambda request: {"answers": {"action": {"choice":
-                                 "search" if request["state"]["decision"]["stage"] == "tool" else "search:1"}}}, frames)
-        for _ in range(4):
+        session, _ = self.session(choosing("search", "search:1"), frames)
+        for _ in range(2):
             self.assertIsNone(session.step())
         self.assertEqual(session.term.sent, ["s", "s"])
         self.assertEqual(session.turns, 2)
 
     def test_refused_wait_hands_back_control_instead_of_repeating_a_no_op(self):
-        session, _ = self.session(lambda request: {"answers": {"action": {"choice":
-                                 "wait" if request["state"]["decision"]["stage"] == "tool" else "wait:8"}}})
-        for _ in range(3):
-            self.assertIsNone(session.step())
+        session, _ = self.session(choosing("wait", "wait:8"))
+        self.assertIsNone(session.step())
         self.assertEqual(session.step(), "repeated_no_effect")
         self.assertEqual(session.term.sent, ["."] * 3)
 
     def test_changed_screen_allows_retry_of_failed_action(self):
-        session, _ = self.session(lambda request: {"answers": {"action": {"choice":
-                                 "move" if request["state"]["decision"]["stage"] == "tool" else "move:h"}}})
-        session.step()
+        session, _ = self.session(choosing("move", "move:h"))
         session.step()
         session.term.views = [view(screen("Something changed.", [" ---- ", " |.@.| ", " ---- "]))]
-        session.step()
         self.assertIsNone(session.step())
         self.assertEqual(session.term.sent, ["h", "h"])
 
     def test_unexpected_followup_prompt_returns_control(self):
-        session, _ = self.session(lambda request: {"answers": {"action": {"choice":
-                                 "open" if request["state"]["decision"]["stage"] == "tool" else "open:h"}}})
-        session.step()
+        session, _ = self.session(choosing("open", "open:h"))
         self.assertEqual(session.step(), "unexpected_prompt")
         self.assertEqual(session.term.sent, ["o"])
 
@@ -241,21 +217,17 @@ class SessionTest(TestCase):
         before = view(screen("", [" ------ ", " |.@e.| ", " ------ "],
                              status2="Dlvl:3 $:0 HP:1(16) Pw:2(2) AC:6 Xp:2 T:400"))
         after = view(screen("Do you want your possessions identified? [ynq] (n)"), (0, 10))
-        session, endpoint = self.session(lambda _: {"answers": {"action": {"choice": "attack" if _["state"]["decision"]["stage"] == "tool" else "attack:l", "confidence": 0.01}}},
-                                         [before, after])
-        self.assertIsNone(session.step())
-        self.assertEqual(session.term.sent, [])
+        session, endpoint = self.session(choosing("attack", "attack:l", confidence=0.01), [before, after])
         self.assertEqual(session.step(), "game_over")
         self.assertEqual(session.term.sent, ["Fl"])
-        selection, record = session.store.records()
-        self.assertEqual(selection["choice"], "attack")
-        self.assertEqual(selection["outcome"]["reason"], "tool_selected")
+        record, = session.store.records()
+        self.assertEqual(record["response"]["answers"]["attack"], {"choice": "attack:l", "confidence": 0.01})
         self.assertEqual(record["source"], "engine")
         self.assertEqual(record["choice"], "attack:l")
         self.assertTrue(record["outcome"]["terminal"])
         self.assertEqual(record["after"]["phase"], "ended")
         self.assertEqual(record["inputs"], [{"keys": "Fl", "source": "action", "status": "completed"}])
-        self.assertEqual(record["request"], endpoint.requests[1])
+        self.assertEqual(record["request"], endpoint.requests[0])
 
     def test_endpoint_error_pauses_without_input(self):
         error_body = {"error": "request too large", "request_id": "abc"}
@@ -314,16 +286,14 @@ class SessionTest(TestCase):
         self.assertEqual(record["inputs"][0]["keys"], "s")
 
     def test_caller_input_is_not_refused_by_the_engine_attempt_budget(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                                        "search" if request["state"]["decision"]["stage"] == "tool" else "search:1"}}})
+        session, endpoint = self.session(choosing("search", "search:1"))
         session.settings = replace(session.settings, max_action_attempts=1)
-        self.assertEqual(session.step(), None)
         self.assertEqual(session.step(), "action_budget")
         session.step(manual=Action("manual", "Caller input", "manual", "\x04l"))
         self.assertEqual(session.term.sent, ["s", "\x04l"])
         self.assertEqual(session.last["source"], "manual")
         self.assertEqual(session.step(), "action_budget")
-        self.assertEqual(len(endpoint.requests), 2)
+        self.assertEqual(len(endpoint.requests), 1)
 
     def test_supplied_action_is_revalidated_after_polling(self):
         session, endpoint = self.session(lambda _: {})
@@ -342,8 +312,7 @@ class SessionTest(TestCase):
     def test_partial_execution_failure_preserves_action_frames_and_counters(self):
         frames = [view(screen("", [" ---- ", " |.@.| ", " ---- "],
                               status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:%d" % t)) for t in (400, 401)]
-        session, _ = self.session(lambda request: {"answers": {"action": {"choice":
-                                  "wait" if request["state"]["decision"]["stage"] == "tool" else "wait:8"}}}, frames)
+        session, _ = self.session(choosing("wait", "wait:8"), frames)
         original_send = session.term.send
 
         def fail_second_input(keys, before_send=None, separately=False):
@@ -353,9 +322,8 @@ class SessionTest(TestCase):
             return original_send(keys, before_send=before_send)
 
         session.term.send = fail_second_input
-        session.step()
         self.assertEqual(session.step(), "input_held")
-        _, record = session.store.records()
+        record, = session.store.records()
         self.assertEqual(record["outcome"]["action"]["id"], "wait:8")
         self.assertEqual(record["outcome"]["steps"], 1)
         self.assertEqual(record["outcome"]["elapsed_turns"], 1)
@@ -363,31 +331,26 @@ class SessionTest(TestCase):
         self.assertEqual([item["status"] for item in record["inputs"]], ["completed", "pending"])
         self.assertEqual((session.turns, session.actions), (1, 1))
 
-    def test_tool_and_arguments_execute_one_bounded_action(self):
+    def test_one_request_selects_the_tool_and_arguments_of_one_bounded_action(self):
         frames = [view(screen("", [" ---- ", " |.@.| ", " ---- "],
                               status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:%d" % t)) for t in range(400, 409)]
-        session, endpoint = self.session(lambda _: {"answers": {"action": {"choice": "search" if _["state"]["decision"]["stage"] == "tool" else "search:8"}}}, frames)
+        session, endpoint = self.session(choosing("search", "search:8"), frames)
         session.settings = replace(session.settings, max_action_attempts=1)
-        self.assertIsNone(session.step())
-        self.assertEqual(session.term.sent, [])
         self.assertEqual(session.step(), "action_budget")
-        self.assertEqual(len(endpoint.requests), 2)
-        self.assertEqual(session.calls, 2)
+        self.assertEqual(len(endpoint.requests), 1)
+        self.assertEqual(session.calls, 1)
         self.assertEqual(session.actions, 1)
         self.assertEqual(session.term.sent, ["s"] * 8)
         self.assertEqual(session.turns, 8)
         self.assertEqual(session.observe()["objective_progress"]["attempts_used"], 1)
 
     def test_grouped_command_selects_and_executes_its_concrete_command(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice":
-                                        "command" if request["state"]["decision"]["stage"] == "tool" else "pay"}}})
+        session, endpoint = self.session(choosing("command", "pay"))
         self.assertIsNone(session.step())
-        self.assertEqual(session.term.sent, [])
         offered = {a.id for a in session.offered() if a.tool == "command"}
-        self.assertIsNone(session.step())
         self.assertEqual(session.term.sent, ["#pay\r"])
-        self.assertEqual(set(endpoint.requests[1]["questions"]["action"]["criteria"]), offered | {"pause"})
-        _, record = session.store.records()
+        self.assertEqual(set(endpoint.requests[0]["questions"]["command"]["criteria"]), offered | {"pause"})
+        record, = session.store.records()
         self.assertEqual(record["outcome"]["action"]["kind"], "pay")
         self.assertEqual(record["outcome"]["action"]["tool"], "command")
 
@@ -400,24 +363,46 @@ class SessionTest(TestCase):
         self.assertEqual(session.term.sent, [" "])
         self.assertEqual(session.observe()["objective_progress"]["attempts_used"], 0)
 
+    @staticmethod
+    def without_argument_questions(session):
+        """Give session a token budget that fits its tool question but none of the argument questions."""
+        session.term.poll()
+        request = request_body(session.observe(), session.offered(), session.settings.objective)
+        tokens = estimated_tokens(dict(request, questions={"action": request["questions"]["action"]}))
+        session.settings = replace(session.settings, max_request_tokens=tokens + 30)
+
+    def test_arguments_that_did_not_fit_the_tool_request_are_asked_in_their_own(self):
+        session, endpoint = self.session(choosing("search", "search:1"))
+        self.without_argument_questions(session)
+        self.assertIsNone(session.step())
+        self.assertEqual(list(endpoint.requests[0]["questions"]), ["action"])
+        self.assertEqual(session.last["outcome"]["reason"], "tool_selected")
+        self.assertIsNone(session.step())
+        self.assertEqual(session.term.sent, ["s"])
+        self.assertEqual([r["state"]["decision"] for r in endpoint.requests],
+                         [{"stage": "tool", "tool": None}, {"stage": "arguments", "tool": "search"}])
+        self.assertEqual([r["choice"] for r in session.store.records()], ["search", "search:1"])
+
     def test_argument_failure_records_both_calls_without_input(self):
-        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice": "move"}}}
+        session, endpoint = self.session(lambda request: {"answers": {"action": {"choice": "search"}}}
                                         if request["state"]["decision"]["stage"] == "tool" else (500, {}))
+        self.without_argument_questions(session)
         self.assertIsNone(session.step())
         self.assertEqual(session.step(), "decision_error")
         self.assertEqual(session.calls, 2)
         self.assertEqual(session.term.sent, [])
         selected, failed = session.store.records()
-        self.assertEqual(selected["choice"], "move")
+        self.assertEqual(selected["choice"], "search")
         self.assertEqual(failed["request"], endpoint.requests[1])
-        self.assertEqual(failed["request"]["state"]["decision"]["tool"], "move")
-        self.assertTrue(all(k.startswith("move:") or k == "pause"
+        self.assertEqual(failed["request"]["state"]["decision"]["tool"], "search")
+        self.assertTrue(all(k.startswith("search:") or k == "pause"
                             for k in endpoint.requests[1]["questions"]["action"]["criteria"]))
 
     def test_tool_selection_is_discarded_when_context_changes(self):
         for changed in ("screen", "objective", "context", "interruption"):
             with self.subTest(changed=changed):
                 session, endpoint = self.session(lambda _: {"answers": {"action": {"choice": "move"}}})
+                self.without_argument_questions(session)
                 session.step(cancelled=lambda: changed == "interruption")
                 if changed == "screen":
                     session.term.views = [view(screen("A new message.", [" ---- ", " |.@.| ", " ---- "]))]

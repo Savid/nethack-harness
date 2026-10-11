@@ -87,6 +87,7 @@ class Session:
         request = request_body(before, actions, self.settings.objective, self.engine and self.engine.model, tool,
                                self.settings.caller_context, budget)
         number = self.store.begin(source, request)
+        decided = (request["state"]["decision"]["stage"], tool)
         attempt = None
         sent = {}
 
@@ -126,25 +127,29 @@ class Session:
                                         "without what it omits" % (tokens, budget), latency=0)
                 self.review_calls += 1
                 try:
-                    choice, response, latency, retries = self.engine.choose(request)
+                    choices, response, latency, retries = self.engine.choose(request)
                 except DecisionError as e:
                     self.calls += 1 + len(e.retries)
                     raise
                 self.calls += 1 + len(retries)
-                self.store.choice(number, choice, response, latency)
-                if request["state"]["decision"]["stage"] == "tool":
+                choice, action = choices["action"], None
+                if decided[0] == "tool":
                     matching = [a for a in actions if a.tool == choice]
-                    if len(matching) > 1:
+                    if len(matching) == 1:
+                        action = matching[0]
+                    elif choice in choices:
+                        action = next(a for a in actions if a.id == choices[choice])
+                        decided = ("arguments", choice)
+                    else:
+                        # The request could not carry this tool's arguments; the next step asks for them.
                         interrupted = cancelled()
                         if not interrupted:
                             self.pending_tool = (selection_key, choice)
                         outcome = {"reason": "caller_interrupt" if interrupted else "tool_selected",
                                    "tool": choice, "steps": 0}
-                        action = None
-                    else:
-                        action = matching[0]
                 else:
                     action = next(a for a in actions if a.id == choice)
+                self.store.choice(number, action.id if action else choice, response, latency)
             if source != "engine":
                 self.store.choice(number, action.id, response, latency)
             if action is not None:
@@ -217,9 +222,8 @@ class Session:
             self.pending_tool = None
         if outcome["reason"] in ("requested_pause", "navigation_cycle", "review_budget", "action_budget",
                                  "repeated_no_effect", "unexpected_prompt"):
-            outcome.setdefault("review", {}).update(objective=self.settings.objective,
-                decision_stage=request["state"]["decision"]["stage"], selected_tool=request["state"]["decision"]["tool"],
-                observation_fingerprint=after["fingerprint"])
+            outcome.setdefault("review", {}).update(objective=self.settings.objective, decision_stage=decided[0],
+                                                    selected_tool=decided[1], observation_fingerprint=after["fingerprint"])
         if outcome.get("execution_reason", outcome["reason"]) == "no_observed_effect" and source == "engine":
             self.failed_action = ((after["fingerprint"], self.settings.objective, action), number)
         elif outcome.get("steps", 0) > 0 and source != "protocol":

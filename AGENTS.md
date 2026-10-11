@@ -28,8 +28,11 @@ belongs outside it. Keep these responsibilities separate:
 - Actions name their targets and bounds. Execution may paginate information and
   stop when observations change; it must not choose a different goal or action.
 - Use System One style JSON state and constrained choices. Select a tool, then
-  its concrete arguments when needed. Keep endpoint and model configurable;
-  count and record every request. Prompt answers are direct choices.
+  its concrete arguments when needed: one request asks both, with an argument
+  question per tool that has several actions, and a second request asks the
+  arguments only when the first had no room for them. Keep endpoint and model
+  configurable; count and record every request, retries included. Prompt
+  answers are direct choices.
 - Treat every decision request as stateless: include its objective, observed
   progress and complete choices for that stage. Keep caller handoff available
   when the evidence or choices are insufficient, including argument selection.
@@ -40,8 +43,9 @@ belongs outside it. Keep these responsibilities separate:
   to each explicit resume; consumed budgets and completed actions do not establish
   that an objective succeeded. Goal completion and conditional replanning belong
   to the external caller.
-- Endpoint failures pause play. Record the observation, offered choices, engine
-  response, selected action, attempted input and observed result.
+- Endpoint failures pause play once transient ones have been retried within the
+  decision timeout. Record the observation, offered choices, engine response,
+  selected action, attempted input and observed result.
 - Surface navigation geometry before tool selection. When execution stalls or
   a prompt violates its contract, return control with evidence for the LLM layer;
   do not invent a recovery action or change the objective.

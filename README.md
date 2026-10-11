@@ -15,7 +15,8 @@ the decision cycle below.
 1. Read a structured observation: hero stats, conditions, messages, map, entities,
    remembered terrain, inspected inventory and spells, and recent actions.
 2. Present choices with explicit targets and bounded execution.
-3. Ask the configured decision endpoint for a tool and, when needed, its concrete arguments.
+3. Ask the configured decision endpoint, in one request, for a tool and the concrete
+   arguments of each tool that has several.
 4. Verify the observation is still current, execute the bounded choice, and return
    its result to the decision cycle. New information or a prompt can end the
    action; the daemon continues choosing until a caller handoff or terminal outcome.
@@ -467,8 +468,9 @@ These are the offered routes through remembered terrain, not a ranking
 or guarantee of passage. The observation also identifies remembered terrain
 underfoot. The engine chooses the destination; the executor follows that route
 and returns when its bound or an observed boundary is reached.
-Argument requests include `argument_facts` for every offered choice, with its
-target, bound, modifier when it has one, and the destination facts above for
+A separate argument request, made when the tool request had no room for the
+chosen tool's question, includes `argument_facts` for every offered choice, with
+its target, bound, modifier when it has one, and the destination facts above for
 travel and exploration. Directional actions include their direction, origin,
 coordinate delta and the target square's glyph, colour and remembered terrain,
 naming a remembered feature such as `lava`, `water` or `trap`, and whether the
@@ -543,13 +545,14 @@ model name are configurable.
 
 `state` holds `decision` (stage and selected tool), `objective`, `caller_context`,
 `omitted` when the token budget left something out, then `navigation` (tool
-stage) or `argument_facts` (argument stage), then the `observation`. The stage-specific members are compact; the observation is the
-largest member. Requests in early levels are typically 3 to 7 thousand tokens,
-and the shortened attempt histories keep them near that size during long goals.
-An endpoint that serializes keys in sorted order and truncates long input keeps
-these members ahead of the observation's later keys.
+stage) or `argument_facts` (argument stage), then the `observation`. The
+stage-specific members are compact; the observation is the largest member of the
+state. An endpoint that serializes keys in sorted order and truncates long input
+keeps these members ahead of the observation's later keys.
 
-During normal play the first request selects a tool:
+During normal play one request asks the tool question `action` and, for every
+offered tool with several concrete actions, a question named after that tool
+offering those actions and `pause`:
 
 ```json
 {
@@ -565,33 +568,49 @@ During normal play the first request selects a tool:
       "type": "choice",
       "instructions": "Choose the tool to use next. Objective: Explore the dungeon and survive.",
       "criteria": {"search": "Search here for a selected bounded number of turns.", "pause": "Return control to the caller"}
+    },
+    "search": {
+      "type": "choice",
+      "instructions": "If action is search, choose its concrete arguments.",
+      "criteria": {"search:1": "Search ... for up to 1 turns", "search:8": "Search ... for up to 8 turns",
+                   "pause": "Return control to the caller"}
     }
   }
 }
 ```
 
-An optional top-level `model` selects the engine model. A successful response is:
+An optional top-level `model` selects the engine model. The engine answers every
+question together:
 
 ```json
-{"answers": {"action": {"choice": "search"}}}
+{"answers": {"action": {"choice": "search"}, "search": {"choice": "search:8"}}}
 ```
 
-When the tool has several concrete actions, a second request offers only those
-actions, such as `search:1` and `search:8`. Its decision state is
-`{"stage": "arguments", "tool": "search"}`. The selected tool and objective appear
-in the instructions. Tools with one action execute immediately. Game prompts
-offer their input choices directly with stage `input`.
+The harness executes the chosen tool's action named by that tool's answer; an
+answer of `pause` there returns control as the `pause` tool does. Answers to the
+questions of tools not chosen are recorded and otherwise ignored. A tool with
+one action executes without an argument answer. Game prompts offer their input
+choices directly as one question with stage `input`. The `command` tool's
+question offers the other named commands, such as `pay`, `loot` or `enhance`,
+which keeps infrequent commands out of the tool question without another
+hierarchy or arbitrary generated code. The tool request carries no
+`argument_facts`: `observation.adjacent` describes the square in each direction,
+and `navigation.destinations` describes each travel and exploration choice.
 
-The `command` tool uses the same argument stage to select a named command such
-as `pay`, `loot` or `enhance`. This keeps infrequent commands out of the first
-choice without adding another hierarchy or allowing arbitrary generated code.
+Argument questions use the room that `--max-request-tokens` leaves after the
+tool question, in catalogue order. When the chosen tool's question did not fit,
+the record says `tool_selected` with zero execution steps, and a second request
+with decision `{"stage": "arguments", "tool": "search"}` offers only that tool's
+actions and `pause`, with `argument_facts` for each and the selected tool and
+objective in its instructions. A changed screen, objective, caller context or
+caller interruption invalidates that pending selection.
 
-`choice` must name an offered criterion. Each endpoint call has its own record
-and contributes to the call count. Tool selection records `tool_selected` with
-zero execution steps; argument selection records the executed action and result.
-A changed screen, objective or caller interruption invalidates a pending tool
-selection. Repeated execution within a bounded action and information pagination
-need no additional request.
+Each `choice` must name an offered criterion; a response without an offered
+answer to `action`, or to the chosen tool's question when it was asked, is
+malformed. Each request has its own record and contributes to the call count;
+its `choice` is the executed action, or the selected tool for `tool_selected`.
+Repeated execution within a bounded action and information pagination need no
+additional request.
 
 Additional response metadata, such as probabilities, is recorded but never used
 to override the choice. Transient failures, which are HTTP 429, 502, 503 and 529

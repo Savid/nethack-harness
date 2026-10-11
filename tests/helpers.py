@@ -24,6 +24,19 @@ def view(lines=None, cursor=(2, 3), fg=None, bold=None, rev=None):
                               rev or [[False] * 80 for _ in range(24)], cursor)
 
 
+def choosing(tool, argument=None, **metadata):
+    """An endpoint answer choosing tool and its argument: in the same request when it asks about the tool's
+    arguments, otherwise in the separate argument request."""
+    def answer(request):
+        if request["state"]["decision"]["stage"] == "arguments":
+            return {"answers": {"action": dict(metadata, choice=argument)}}
+        answers = {"action": dict(metadata, choice=tool)}
+        if tool in request["questions"]:
+            answers[tool] = dict(metadata, choice=argument)
+        return {"answers": answers}
+    return answer
+
+
 class FakeTerm:
     def __init__(self, views=None):
         self.views = list(views or [view()])

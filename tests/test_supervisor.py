@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-from helpers import Endpoint, FakeGame
+from helpers import Endpoint, FakeGame, choosing
 from goal_supervisor.goals import GoalBoard
 from goal_supervisor.harness import HarnessClient
 from goal_supervisor.runner import step
@@ -89,11 +89,7 @@ class SupervisorIntegrationTest(TestCase):
         self.goals = str(Path(self.directory.name) / "goals")
         self.game = FakeGame([frame(column, 10 + column - 22) for column in range(22, 26)])
 
-        def choose(request):
-            choice = "move" if request["state"]["decision"]["stage"] == "tool" else "move:l"
-            return {"answers": {"action": {"choice": choice}}}
-
-        self.endpoint = Endpoint(choose)
+        self.endpoint = Endpoint(choosing("move", "move:l"))
         self.harness("start", "--paused", "--socket", self.game.path, "--decide", self.endpoint.url, "--timeout", "5",
                      "--quiet", "0.02")
         self.supervise("init", "--session", self.session)
@@ -125,7 +121,7 @@ class SupervisorIntegrationTest(TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def test_switching_goal_changes_both_stateless_stages_and_verified_success_stops_execution(self):
+    def test_switching_goal_changes_the_stateless_request_and_verified_success_stops_execution(self):
         self.supervise("add", "--file", "-", payload={"id": "parent", "objective": "Inspect the area selected by the caller."})
         self.supervise("add", "--file", "-", payload=spec("left", 21, parent="parent"))
         self.supervise("activate", "left")
@@ -139,7 +135,7 @@ class SupervisorIntegrationTest(TestCase):
         self.assertEqual(state["goals"]["parent"]["status"], "pending")
         self.assertEqual(self.game.inputs, [b"\x12", b"l"])
         requests = self.endpoint.requests
-        self.assertEqual([r["state"]["decision"]["stage"] for r in requests], ["tool", "arguments"])
+        self.assertEqual([r["state"]["decision"]["stage"] for r in requests], ["tool"])
         for request in requests:
             context = request["state"]["caller_context"]
             self.assertEqual(context["goal"]["id"], "right")
@@ -172,7 +168,7 @@ class SupervisorIntegrationTest(TestCase):
         self.assertEqual(state["goals"]["destination"]["attempts_used"], 3)
         self.assertEqual(state["goals"]["destination"]["revision"], 2)
         self.assertEqual(self.game.inputs, [b"\x12", b"l", b"l", b"l"])
-        requests = [r for r in self.endpoint.requests if r["state"]["decision"]["stage"] == "arguments"]
+        requests = self.endpoint.requests
         self.assertEqual([r["state"]["caller_context"]["goal"]["attempts_used"] for r in requests], [0, 1, 2])
         progress = [r["state"]["observation"]["objective_progress"] for r in requests]
         self.assertNotEqual(progress[0]["id"], progress[1]["id"])
