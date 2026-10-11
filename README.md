@@ -284,7 +284,9 @@ shows all of its neighbours, so one still blank after that is rock, and a square
 seen under a monster or object is not unknown. A frontier square is one the hero
 has not stood on with an unknown square beside it in a cardinal direction. The
 game digs corridors one orthogonal step at a time, so the blank square diagonally
-past a corridor bend that a route cut across is not a way on. Routes may cross
+past a corridor bend that a route cut across is not a way on. Visits are those
+this harness session observed: on a level explored before the session started,
+remembered corridors count as frontier until the hero walks them. Routes may cross
 squares seen only under objects. Like the game's own travel, routes never cross
 remembered water or lava (`}`), and cross a
 remembered trap (`^`) only where no other known route exists; a red `}` is
