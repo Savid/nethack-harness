@@ -2,9 +2,11 @@ from unittest import TestCase
 from unittest import mock
 import io
 import json
+import socket
 from urllib.error import HTTPError
 from helpers import Endpoint
 from nethack_harness.actions import Action
+from nethack_harness import decide
 from nethack_harness.decide import Engine, DecisionError, request_body
 
 
@@ -101,7 +103,8 @@ class EngineTest(TestCase):
         endpoint = Endpoint(lambda _: {"answers": {"action": {"choice": "attack:l", "confidence": 0.01}}})
         self.addCleanup(endpoint.close)
         request = request_body({"hero": {"hp": 1}}, [Action("attack:l", "Attack east", "attack")], "Reach depth 10", tool="attack")
-        chosen, reply, seconds = Engine(endpoint.url).choose(request)
+        chosen, reply, seconds, retries = Engine(endpoint.url).choose(request)
+        self.assertEqual(retries, [])
         self.assertEqual(chosen, "attack:l")
         self.assertEqual(reply["answers"]["action"]["confidence"], 0.01)
         self.assertEqual(endpoint.requests, [request])
@@ -117,21 +120,56 @@ class EngineTest(TestCase):
                 finally:
                     endpoint.close()
 
-    def test_http_failure_is_reported_without_retrying_a_decision_request(self):
-        endpoint = Endpoint(lambda _: (503, {"error": "unavailable"}))
+    def test_transient_failures_are_retried_after_retry_after_and_every_attempt_is_kept(self):
+        replies = [(429, {"error": "queue full"}, {"Retry-After": "2"}), (503, {"error": "restarting"}),
+                   {"answers": {"action": {"choice": "wait:1"}}}]
+        endpoint = Endpoint(lambda _: replies.pop(0))
         self.addCleanup(endpoint.close)
-        with self.assertRaisesRegex(DecisionError, "HTTP 503") as failed:
-            Engine(endpoint.url).choose(request_body({}, [Action("wait:1", "Wait", "wait")], "Play"))
-        self.assertEqual(len(endpoint.requests), 1)
-        self.assertEqual(failed.exception.response, {"error": "unavailable"})
+        request = request_body({}, [Action("wait:1", "Wait", "wait")], "Play")
+        with mock.patch.object(decide.time, "sleep") as sleep:
+            chosen, _, _, retries = Engine(endpoint.url, timeout=30).choose(request)
+        self.assertEqual(chosen, "wait:1")
+        self.assertEqual(len(endpoint.requests), 3)
+        self.assertEqual([(r["status"], r["retry_after"], r["response"]) for r in retries],
+                         [(429, 2.0, {"error": "queue full"}), (503, None, {"error": "restarting"})])
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2.0, 1.0])
+
+    def test_retries_stop_at_the_decision_timeout_and_refused_connections_are_retried(self):
+        endpoint = Endpoint(lambda _: (429, {"error": "queue full"}, {"Retry-After": "60"}))
+        self.addCleanup(endpoint.close)
+        request = request_body({}, [Action("wait:1", "Wait", "wait")], "Play")
+        with self.assertRaisesRegex(DecisionError, "HTTP 429") as failed:
+            Engine(endpoint.url, timeout=30).choose(request)
+        self.assertEqual((len(endpoint.requests), failed.exception.retries), (1, []))
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        url = "http://127.0.0.1:%d/choose" % closed.getsockname()[1]
+        closed.close()
+        with self.assertRaisesRegex(DecisionError, "ConnectionRefusedError") as failed:
+            Engine(url, timeout=1.2).choose(request)
+        self.assertEqual([retry["error"] for retry in failed.exception.retries],
+                         ["decision request failed (ConnectionRefusedError)"])
+        self.assertLess(failed.exception.latency, 1.2)
+
+    def test_other_http_failures_are_reported_without_retrying(self):
+        for code in (400, 413, 422, 500):
+            with self.subTest(code=code):
+                endpoint = Endpoint(lambda _, code=code: (code, {"error": "rejected"}))
+                try:
+                    with self.assertRaisesRegex(DecisionError, "HTTP %d" % code) as failed:
+                        Engine(endpoint.url).choose(request_body({}, [Action("wait:1", "Wait", "wait")], "Play"))
+                finally:
+                    endpoint.close()
+                self.assertEqual(len(endpoint.requests), 1)
+                self.assertEqual((failed.exception.response, failed.exception.retries), ({"error": "rejected"}, []))
 
     def test_http_failure_retains_raw_or_bounded_response_evidence(self):
         limit = 1024 * 1024
         for raw in (b"upstream unavailable", b"x" * (limit + 100)):
             with self.subTest(length=len(raw)):
-                error = HTTPError("http://localhost/choose", 502, "Bad Gateway", {}, io.BytesIO(raw))
+                error = HTTPError("http://localhost/choose", 500, "Internal Server Error", {}, io.BytesIO(raw))
                 with mock.patch("urllib.request.urlopen", side_effect=error) as send:
-                    with self.assertRaisesRegex(DecisionError, "HTTP 502") as failed:
+                    with self.assertRaisesRegex(DecisionError, "HTTP 500") as failed:
                         Engine(error.url).choose(request_body({}, [Action("wait:1", "Wait", "wait")], "Play"))
                 self.assertEqual(failed.exception.response, raw[:limit].decode())
                 self.assertEqual("truncated" in str(failed.exception), len(raw) > limit)

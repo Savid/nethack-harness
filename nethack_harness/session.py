@@ -111,6 +111,7 @@ class Session:
 
         executor = Executor(self.term, self.observer, record_send, record_result)
         outcome = None
+        retries = []
         try:
             if supplied:
                 action = supplied
@@ -118,9 +119,13 @@ class Session:
             elif source == "protocol":
                 action, response, latency = actions[0], None, 0
             else:
-                self.calls += 1
                 self.review_calls += 1
-                choice, response, latency = self.engine.choose(request)
+                try:
+                    choice, response, latency, retries = self.engine.choose(request)
+                except DecisionError as e:
+                    self.calls += 1 + len(e.retries)
+                    raise
+                self.calls += 1 + len(retries)
                 self.store.choice(number, choice, response, latency)
                 if request["state"]["decision"]["stage"] == "tool":
                     matching = [a for a in actions if a.tool == choice]
@@ -156,6 +161,7 @@ class Session:
         except DecisionError as e:
             self.store.choice(number, None, e.response, e.latency)
             outcome = {"reason": "decision_error", "error": str(e), "steps": 0}
+            retries = e.retries
         except Held:
             outcome = {"reason": "input_held", "error": "game input is temporarily unavailable"}
         except Closed:
@@ -164,6 +170,8 @@ class Session:
             outcome = {"reason": "execution_paused", "error": str(e)}
         except Exception as e:
             outcome = {"reason": "execution_error", "error": type(e).__name__}
+        if retries:
+            outcome["retries"] = retries
         after = self.observe()
         if attempt is not None:
             attempt["after"] = self.objective_progress.point(after)

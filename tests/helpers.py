@@ -113,9 +113,11 @@ class Endpoint:
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 endpoint.requests.append(request)
                 result = answer(request)
-                code, result = result if isinstance(result, tuple) else (200, result)
+                code, result, *headers = result if isinstance(result, tuple) else (200, result)
                 body = json.dumps(result).encode()
                 self.send_response(code)
+                for name, value in (headers[0] if headers else {}).items():
+                    self.send_header(name, value)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

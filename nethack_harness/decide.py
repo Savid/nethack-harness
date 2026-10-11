@@ -1,5 +1,8 @@
 """System One choices over tools and their concrete arguments."""
+import email.utils
+import http.client
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -9,11 +12,39 @@ from .knowledge import DIRECTION_NAMES
 from .level import position
 from .tools import TOOLS, tool_description
 
+RESPONSE_LIMIT = 1024 * 1024
+# Statuses and connection failures that a later attempt can outlive: a full queue, a gateway or engine restarting.
+TRANSIENT_STATUS = frozenset((429, 502, 503, 529))
+TRANSIENT_ERRORS = (ConnectionRefusedError, ConnectionResetError, TimeoutError, socket.timeout)
+BACKOFF = (0.5, 8.0)
+
 
 class DecisionError(Paused):
-    def __init__(self, message, response=None, latency=None):
+    def __init__(self, message, response=None, latency=None, retries=()):
         super().__init__(message)
-        self.response, self.latency = response, latency
+        self.response, self.latency, self.retries = response, latency, list(retries)
+
+
+class Failure(Exception):
+    """One failed request: its message, response evidence and whether a later attempt may succeed."""
+
+    def __init__(self, message, response=None, status=None, transient=False, retry_after=None):
+        super().__init__(message)
+        self.response, self.status, self.transient, self.retry_after = response, status, transient, retry_after
+
+
+def retry_after(headers):
+    """Seconds from a Retry-After header, given as seconds or as an HTTP date; None when absent or unreadable."""
+    value = (headers or {}).get("Retry-After")
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        return max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def reject_constant(value):
@@ -153,31 +184,21 @@ class Engine:
             raise ValueError("decision endpoint must be an HTTP(S) URL")
         self.url, self.model, self.key, self.timeout = url, model, key, timeout
 
-    def choose(self, request):
+    def post(self, body, timeout):
+        """One request: the parsed response, or a Failure."""
         headers = {"Content-Type": "application/json"}
         if self.key:
             headers["Authorization"] = "Bearer " + self.key
-        started = time.monotonic()
-        answer = None
-
-        def failure(message):
-            return DecisionError(message, answer, time.monotonic() - started)
-
         try:
-            req = urllib.request.Request(self.url, json.dumps(request, allow_nan=False).encode(), headers)
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                raw = response.read(1024 * 1024 + 1)
-                if len(raw) > 1024 * 1024:
-                    raise failure("decision response exceeds 1 MiB")
-                answer = raw.decode("utf-8", "replace")
-                answer = json.loads(raw, parse_constant=reject_constant)
+            with urllib.request.urlopen(urllib.request.Request(self.url, body, headers), timeout=timeout) as response:
+                raw = response.read(RESPONSE_LIMIT + 1)
         except urllib.error.HTTPError as e:
-            message = "decision endpoint returned HTTP %d" % e.code
+            message, answer = "decision endpoint returned HTTP %d" % e.code, None
             try:
                 with e:
-                    raw = e.read(1024 * 1024 + 1)
-                answer = raw[:1024 * 1024].decode("utf-8", "replace")
-                if len(raw) <= 1024 * 1024:
+                    raw = e.read(RESPONSE_LIMIT + 1)
+                answer = raw[:RESPONSE_LIMIT].decode("utf-8", "replace")
+                if len(raw) <= RESPONSE_LIMIT:
                     try:
                         answer = json.loads(answer, parse_constant=reject_constant)
                     except ValueError:
@@ -186,13 +207,46 @@ class Engine:
                     message += " (response truncated after 1 MiB)"
             except OSError:
                 pass
-            raise failure(message) from None
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            raise failure("decision request failed (%s)" % type(e).__name__) from None
+            raise Failure(message, answer, e.code, e.code in TRANSIENT_STATUS, retry_after(e.headers)) from None
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            reason = e.reason if isinstance(e, urllib.error.URLError) and isinstance(e.reason, Exception) else e
+            raise Failure("decision request failed (%s)" % type(reason).__name__,
+                          transient=isinstance(reason, TRANSIENT_ERRORS)) from None
+        if len(raw) > RESPONSE_LIMIT:
+            raise Failure("decision response exceeds 1 MiB")
+        try:
+            return json.loads(raw, parse_constant=reject_constant)
+        except ValueError as e:
+            raise Failure("decision request failed (%s)" % type(e).__name__, raw.decode("utf-8", "replace")) from None
+
+    def ask(self, request):
+        """Send request, retrying transient failures with backoff and any Retry-After until the decision timeout.
+
+        Returns the response, the seconds taken and the failed attempts before it; raises DecisionError with them."""
+        body = json.dumps(request, allow_nan=False).encode()
+        started = time.monotonic()
+        deadline, wait, retries = started + self.timeout, BACKOFF[0], []
+        while True:
+            attempted = time.monotonic()
+            try:
+                return self.post(body, max(0.001, deadline - attempted)), time.monotonic() - started, retries
+            except Failure as failure:
+                now = time.monotonic()
+                pause = max(wait, failure.retry_after or 0)
+                if not failure.transient or now + pause >= deadline:
+                    raise DecisionError(str(failure), failure.response, now - started, retries) from None
+                retries.append({"error": str(failure), "status": failure.status, "response": failure.response,
+                                "latency": now - attempted, "retry_after": failure.retry_after, "waited": pause})
+                time.sleep(pause)
+                wait = min(wait * 2, BACKOFF[1])
+
+    def choose(self, request):
+        answer, latency, retries = self.ask(request)
         try:
             choice = answer["answers"]["action"]["choice"]
             if not isinstance(choice, str) or choice not in request["questions"]["action"]["criteria"]:
                 raise ValueError()
         except (KeyError, TypeError, ValueError):
-            raise failure("decision response must contain answers.action.choice naming an offered action") from None
-        return choice, answer, time.monotonic() - started
+            raise DecisionError("decision response must contain answers.action.choice naming an offered action",
+                                answer, latency, retries) from None
+        return choice, answer, latency, retries

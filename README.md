@@ -100,11 +100,14 @@ wait for a pause, game over, or `--timeout` (30 seconds by default).
 | 1 | Execution/setup failure |
 | 64 | Invalid CLI arguments |
 
-`--decision-timeout` controls one engine request, `--max-action-steps` bounds a
-selected action (default 8; maximum 64), and `--quiet` controls terminal settling.
-These are execution limits, not gameplay preferences.
+`--decision-timeout` bounds one decision request including its retries,
+`--max-action-steps` bounds a selected action (default 8; maximum 64), and
+`--quiet` controls terminal settling. These are execution limits, not gameplay
+preferences. The status `calls` counts every HTTP request to the endpoint,
+retries included.
 Set `--review-after-calls N` on `start` or `resume` to return control after N
-endpoint calls, including tool and argument selections. The default, 0, disables
+decision requests, including tool and argument selections; a retried request
+counts once. The default, 0, disables
 this budget. It resets on explicit resume and pauses with `review_budget`;
 reaching it requests review without declaring the objective failed. `--timeout`
 only limits how long the CLI waits and does not stop the running session.
@@ -588,9 +591,15 @@ selection. Repeated execution within a bounded action and information pagination
 need no additional request.
 
 Additional response metadata, such as probabilities, is recorded but never used
-to override the choice. Malformed responses, HTTP failures and timeouts pause
-play. The harness does not impose a model-specific option or token limit; the
-endpoint enforces its own request limits.
+to override the choice. Transient failures, which are HTTP 429, 502, 503 and 529
+and refused, reset or timed-out connections, are retried after a backoff that
+starts at 0.5 seconds and doubles up to 8, or after the Retry-After the endpoint
+sends when that is longer, while the retry still fits in `--decision-timeout`.
+Each failed attempt is kept in the record's `outcome.retries` with its error,
+HTTP status, response, latency, Retry-After and wait. Other HTTP failures,
+malformed responses and a transient failure with no time left pause play. The
+harness does not impose a model-specific option or token limit; the endpoint
+enforces its own request limits.
 
 ## Caller commands
 
@@ -663,8 +672,9 @@ Such records are not automatically replayed. A training consumer must distinguis
 these from completed transitions. Terminal disconnection is recorded separately
 from observed game over. No reward function is embedded in the adapter.
 HTTP endpoint failures retain their response as parsed JSON or raw text, capped
-at 1 MiB; the error states when that response was truncated. They pause execution
-without retrying the decision request or sending game input.
+at 1 MiB; the error states when that response was truncated. A failure that is
+not retried pauses execution without sending game input; the record's `latency`
+covers all attempts of its request.
 
 ## Tests and measurements
 

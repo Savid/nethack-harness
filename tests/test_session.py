@@ -1,9 +1,10 @@
-from unittest import TestCase
+from unittest import TestCase, mock
 import tempfile
 from dataclasses import replace
 
 from helpers import Endpoint, FakeTerm, screen, view
 from nethack_harness.actions import Action
+from nethack_harness import decide
 from nethack_harness.decide import Engine
 from nethack_harness.session import Session
 from nethack_harness.settings import Settings
@@ -257,8 +258,8 @@ class SessionTest(TestCase):
         self.assertEqual(record["request"], endpoint.requests[1])
 
     def test_endpoint_error_pauses_without_input(self):
-        error_body = {"error": "model queue full", "request_id": "abc"}
-        session, endpoint = self.session(lambda _: (503, error_body))
+        error_body = {"error": "request too large", "request_id": "abc"}
+        session, endpoint = self.session(lambda _: (413, error_body))
         self.assertEqual(session.step(), "decision_error")
         self.assertEqual(session.term.sent, [])
         record, = session.store.records()
@@ -267,6 +268,17 @@ class SessionTest(TestCase):
         self.assertEqual(record["response"], error_body)
         self.assertEqual(len(endpoint.requests), 1)
         self.assertGreater(record["latency"], 0)
+
+    def test_a_retried_request_is_one_decision_and_every_attempt_is_counted_and_recorded(self):
+        replies = [(503, {"error": "restarting"}), {"answers": {"action": {"choice": "pause"}}}]
+        session, endpoint = self.session(lambda _: replies.pop(0))
+        with mock.patch.object(decide.time, "sleep"):
+            self.assertEqual(session.step(), "requested_pause")
+        record, = session.store.records()
+        self.assertEqual((session.calls, session.review_calls, len(endpoint.requests)), (2, 1, 2))
+        self.assertEqual([(r["status"], r["response"]) for r in record["outcome"]["retries"]],
+                         [(503, {"error": "restarting"})])
+        self.assertEqual(record["response"], {"answers": {"action": {"choice": "pause"}}})
 
     def test_invalid_response_is_recorded_without_sending_input(self):
         response = {"answers": {"action": {"choice": "unavailable"}}}
@@ -382,7 +394,7 @@ class SessionTest(TestCase):
 
     def test_argument_failure_records_both_calls_without_input(self):
         session, endpoint = self.session(lambda request: {"answers": {"action": {"choice": "move"}}}
-                                        if request["state"]["decision"]["stage"] == "tool" else (503, {}))
+                                        if request["state"]["decision"]["stage"] == "tool" else (500, {}))
         self.assertIsNone(session.step())
         self.assertEqual(session.step(), "decision_error")
         self.assertEqual(session.calls, 2)
