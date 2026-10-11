@@ -226,11 +226,18 @@ class Level:
                     out[p] = out[p] + "; " + label if p in out else label
         return out
 
-    def frontier(self, p):
-        """A square the hero has not stood on next to one that never showed a glyph.
+    def unknown(self, q):
+        """A square that never showed a glyph and that the hero never stood beside.
 
         Standing on a square shows all of its neighbours; one still blank afterwards is solid rock."""
-        return p not in self.visits and any(q not in self.seen for _, q in neighbours(p))
+        return q not in self.seen and not any(n in self.visits for _, n in neighbours(q))
+
+    def frontier(self, p):
+        """A square the hero has not stood on with an unknown square beside it in a cardinal direction.
+
+        The game digs corridors one orthogonal step at a time, so the blank square diagonally past a corridor
+        bend that a route cut across is no way on."""
+        return p not in self.visits and any(self.unknown(q) for key, q in neighbours(p) if key in "hjkl")
 
     def rows(self):
         return ["".join(self.terrain.get((r, c), " ") for c in range(80)).rstrip() for r in range(1, 22)]

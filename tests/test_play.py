@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 from pathlib import Path
 from unittest import TestCase
@@ -35,6 +36,25 @@ def farlook(name, turn=None):
 
 
 STAIRS = start("There is a staircase up out of the dungeon here.")
+# A recorded game at T:43: the hero walked the corridor from the stairs room to the lower room, leaving a two-wide
+# stretch at 13,5 and 13,6 unwalked, with the squares east of it never seen. WALK is every square stood on, as x,y.
+CORRIDOR = json.loads((FIXTURES / "corridor-blob.json").read_text())
+WALK = [(4, 4), (5, 4), (6, 3), (6, 5), (6, 6), (6, 7), (6, 8), (6, 9), (6, 10), (6, 11), (6, 12), (6, 13), (6, 14),
+        (6, 15), (6, 16), (6, 17), (6, 18), (7, 3), (7, 6), (8, 4), (8, 6), (9, 4), (9, 6), (10, 4), (10, 6), (11, 4),
+        (11, 6), (12, 4), (12, 5), (7, 19)]
+
+
+def walked(data, x, y, turn=None, under="."):
+    """A copy of a screen with the hero moved to x,y, leaving `under` where it stood."""
+    data = json.loads(json.dumps(data))
+    rows = [list(row) for row in data["rows"]]
+    r, c = data["cursor"]
+    rows[r][c] = under
+    rows[y][x] = "@"
+    if turn is not None:
+        rows[23] = list(re.sub(r"T:\d+", "T:%d" % turn, "".join(rows[23])))
+    data["rows"], data["cursor"] = ["".join(row) for row in rows], [y, x]
+    return View(**data)
 
 
 def column(lines, x, y):
@@ -197,6 +217,30 @@ class PlayTest(TestCase):
         play = self.play([view(screen("", ["", "   @#####"]), (2, 3))], engine=Engine())
         lines = play.view().splitlines()
         self.assertIn("frontier: 8,2 (5)", lines)
+
+    def test_frontier_reaches_a_corridor_stretch_the_hero_never_walked(self):
+        play = self.play([View(**CORRIDOR)], engine=Engine())
+        for x, y in WALK:
+            play.observer.observation(walked(CORRIDOR, x, y))
+        lines = play.view().splitlines()
+        frontier = next(line for line in lines if line.startswith("frontier: "))
+        self.assertRegex(frontier, r"^frontier: 13,[56] \(\d+\)$")
+        play.go("frontier")
+        self.assertEqual(play.session.term.sent[:1], ["mk"])
+
+    def test_a_corridor_bend_the_walk_cut_across_is_no_frontier(self):
+        # The hero stepped diagonally from 4,2 to 5,3; the corner at 5,2 was never stood on.
+        corridor = {"rows": screen("", ["", "   ###", "     #", "     #"]), "cursor": [2, 3],
+                    "fg": [["default"] * 80 for _ in range(24)], "bold": [[False] * 80 for _ in range(24)],
+                    "rev": [[False] * 80 for _ in range(24)]}
+        end = [walked(corridor, 5, 4, turn, "#") for turn in (403, 404, 405)]
+        play = self.play(end, engine=Engine())
+        for turn, (x, y) in enumerate(((3, 2), (4, 2), (5, 3), (5, 4)), start=400):
+            play.observer.observation(walked(corridor, x, y, turn, "#"))
+        self.assertNotIn("frontier:", play.view())
+        play.rest(2)
+        with self.assertRaisesRegex(ValueError, r"corridor ends: 3,2 \(searched 0\), 5,4 \(searched 2\)$"):
+            play.go("frontier")
 
     def test_no_frontier_lists_what_remains(self):
         rows = [" -----", " |...|", " |.@.+", " |...|", " -----"]

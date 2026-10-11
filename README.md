@@ -179,21 +179,21 @@ including text windows such as "Things that are here", is reported.
 (`door`, `open door`, `altar`, `fountain`, `dart trap`, ...) and walks to the
 nearest by known route, skipping one the hero already stands at; for a closed
 door it walks to a square beside it. A named square is the destination even at a
-corridor end. `frontier` takes the nearest group of known squares beside
-never-seen ones and walks to its far side; at the end of a known corridor it
-follows the corridor on, as the exploration action does. A corridor square
-counts as a frontier only at the end of the known corridor, because rock beside
-a corridor never shows. `go` runs the bounded travel or exploration action with
+corridor end. `frontier` takes the nearest group of
+[frontier squares](#actions-and-observations) and walks to its far side; at the
+end of a known corridor it follows the corridor on, as the exploration action
+does. `go` runs the bounded travel or exploration action with
 the session's `--max-action-steps` bound and their stopping rules; messages that
 are only about a tame monster the game has named do not stop it, and a step that
 the pet blocks is tried once more. Routes pass through the highlighted pet,
 swapping places. When no route exists `go` sends nothing and says why: the
 monster blocking the only route, a target that is a door or was never seen, or,
 for `frontier`, the doors, blocking monsters, boulders and corridor ends that
-remain. `rest` is the bounded search; it refuses at a prompt, and when no game
-time passes the game refused to search and the exit code is 1. `go`, `rest`
-and `send` refuse to start while another of them runs on the same session, and
-`go` and `rest` stop between steps on `pause`, `stop` or SIGTERM.
+remain, each corridor end with the number of searches made there. `rest` is
+the bounded search; it refuses at a prompt, and when no game time passes the
+game refused to search and the exit code is 1. `go`, `rest` and `send` refuse to
+start while another of them runs on the same session, and `go` and `rest` stop
+between steps on `pause`, `stop` or SIGTERM.
 
 Exit codes are 0; 3 once the game is over or its process has exited, for every
 command (`send` can still answer the game's closing questions); 1 for a refused
@@ -265,11 +265,15 @@ Normal-play choices include individual moves and attacks, opening or kicking a
 door, using items, casting, engraving, praying, inspecting game information,
 bounded searching/waiting and travel toward explicit known map targets.
 Travel destinations include squares beside closed doors, reachable objects, and
-the edge of known terrain: a known square next to one that has never shown a
-glyph. A square seen under a monster or object is not unknown, and a square the
-hero has stood on is not an edge, because standing there shows all of its
-neighbours. Routes may cross squares seen only under objects. Like the game's
-own travel, routes never cross remembered water or lava (`}`), and cross a
+the edge of known terrain: frontier squares. A square is unknown when it has
+never shown a glyph and the hero has never stood beside it; standing on a square
+shows all of its neighbours, so one still blank after that is rock, and a square
+seen under a monster or object is not unknown. A frontier square is one the hero
+has not stood on with an unknown square beside it in a cardinal direction. The
+game digs corridors one orthogonal step at a time, so the blank square diagonally
+past a corridor bend that a route cut across is not a way on. Routes may cross
+squares seen only under objects. Like the game's own travel, routes never cross
+remembered water or lava (`}`), and cross a
 remembered trap (`^`) only where no other known route exists; a red `}` is
 named lava and a blue one water. A destination remains offered for the final
 step of its route.
@@ -442,8 +446,8 @@ or decision engine. Unknown glyphs remain unidentified until inspected in-game.
 
 Tool-selection requests expose navigation destinations with their kind,
 coordinates, known path lengths, next squares, execution bounds, how often the
-hero has stood on them, and whether they are a frontier: not yet stood on and
-next to a square that never showed a glyph. These are the offered routes through remembered terrain, not a ranking
+hero has stood on them, and whether they are a frontier square as defined above.
+These are the offered routes through remembered terrain, not a ranking
 or guarantee of passage. The observation also identifies remembered terrain
 underfoot. The engine chooses the destination; the executor follows that route
 and returns when its bound or an observed boundary is reached.

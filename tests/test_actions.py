@@ -168,9 +168,9 @@ class ActionCatalogueTest(TestCase):
         trap = (8, 59)
         choices = {a.id: a for a in catalogue(recorded, observer, 64)}
         self.assertEqual(choices["travel:9,60"].route, (trap,))
-        south = [choices[name] for name in ("travel:11,61", "travel:18,61", "travel:20,61")]
-        self.assertEqual([len(a.route) for a in south], [3, 10, 12])
-        self.assertFalse([a.id for a in south if trap in a.route])
+        south = choices["travel:20,61"]
+        self.assertEqual(len(south.route), 12)
+        self.assertNotIn(trap, south.route)
         corridor = self.choices(view(screen("", ["", "   @#^#>"]), (2, 3)))
         self.assertEqual(corridor["travel:3,8"].route, ((2, 4), (2, 5), (2, 6), (2, 7)))
 

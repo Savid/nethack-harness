@@ -132,7 +132,8 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
     if stage == "tool":
         state["navigation"] = {
             "source": "offered routes through remembered terrain; not a guarantee of passage",
-            "frontier": "the hero has not stood there and it borders squares that never showed a glyph",
+            "frontier": ("the hero has not stood there, and a square beside it in a cardinal direction never "
+                         "showed a glyph and was never beside the hero"),
             "destinations": [dict(action=action.id, **destination(action, visits))
                              for action in actions if action.kind in ("travel", "explore") and action.route]}
     elif stage == "arguments":

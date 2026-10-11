@@ -252,7 +252,7 @@ class Play:
                 doors.append("%s (%s)" % (xy(p), min(lengths) if lengths else "no route"))
         if doors:
             facts.append("doors: " + ", ".join(doors[:LISTED]))
-        edges = [p for p in terrain if self.edge(level, p)]
+        edges = [p for p in terrain if level.frontier(p)]
         blocking = sorted({q for p in edges for q in level.route(terrain, p) if q in occupied})
         blocking += sorted(q for q in occupied if q not in level.terrain and q not in blocking)
         if blocking:
@@ -262,7 +262,8 @@ class Play:
             facts.append("boulders: " + ", ".join("%s %s" % (e["glyph"], xy(square(e))) for e in boulders[:LISTED]))
         ends = sorted(p for p in level.visits if level.corridor(p) and len(level.corridor_links(p)) <= 1)
         if ends:
-            facts.append("corridor ends: " + ", ".join(xy(p) for p in ends[:LISTED]))
+            facts.append("corridor ends: " + ", ".join("%s (searched %d)" % (xy(p), level.searches.get(p, 0))
+                                                       for p in ends[:LISTED]))
         return "; ".join(facts)
 
     def landmarks(self, view, level):
@@ -282,15 +283,9 @@ class Play:
                 out.append((p, entity["glyph"], "statue" if entity.get("statue") else "item", (p,)))
         return out
 
-    @staticmethod
-    def edge(level, p):
-        """A square beside never-seen ones. Rock beside a corridor never shows, so a corridor square counts only
-        at an end of the known corridor."""
-        return level.frontier(p) and not (level.corridor(p) and len(level.corridor_links(p)) > 1)
-
     def frontier(self, level, previous):
-        """For each connected group of reachable edge squares, its farthest square, nearest group first."""
-        edge = {p for p in previous if self.edge(level, p)}
+        """For each connected group of reachable frontier squares, its farthest square, nearest group first."""
+        edge = {p for p in previous if level.frontier(p)}
         distance = {p: len(level.route(previous, p)) for p in edge}
         groups = []
         while edge:
