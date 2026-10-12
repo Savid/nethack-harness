@@ -102,8 +102,3 @@ class NavigationProgress:
                         "cycle": tail[:period + 1], "repetitions": 2,
                         "actions": list(self.events)[-2 * period:]}
         return None
-
-    def snapshot(self):
-        return {"scope": "consecutive movement on unchanged remembered terrain under the current objective",
-                "recent_positions": list(self.positions), "recent_actions": list(self.events),
-                "window_actions": 32}

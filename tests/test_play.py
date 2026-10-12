@@ -154,6 +154,7 @@ class PlayTest(TestCase):
         session.term.views = [start()] + farlook("tame little dog") + farlook("jackal") + [STAIRS]
         session.failed_action = marker = (("fingerprint", "objective", None), 7)
         before = session.observe()
+        positions = list(session.navigation.positions)
         messages = list(play.observer.messages)
         lines = play.view(inquire=True).splitlines()
         self.assertEqual(session.term.sent[1:], [";", "@k.", ";", "@llll.", ":"])
@@ -162,9 +163,8 @@ class PlayTest(TestCase):
         after = session.observe()
         self.assertIs(session.failed_action, marker)
         self.assertEqual(list(play.observer.messages), messages)
-        for key in ("recent_actions", "repetition", "navigation_progress"):
-            self.assertEqual(after[key], before[key])
         self.assertEqual(after["objective_progress"]["recent_attempts"], before["objective_progress"]["recent_attempts"])
+        self.assertEqual(list(session.navigation.positions), positions)
         self.assertEqual([r["source"] for r in session.store.records()], ["manual"] + ["protocol"] * 3)
 
     def test_command_messages_include_paged_windows_and_repeats_but_not_unchanged_text(self):

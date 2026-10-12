@@ -27,14 +27,19 @@ belongs outside it. Keep these responsibilities separate:
 - Use System One style JSON state and constrained choices. Select a tool, then
   its concrete arguments when needed: one request asks both, with an argument
   question per tool that has several actions, and a second request asks the
-  arguments only when the first had no room for them. Keep endpoint and model
-  configurable; count and record every request, retries included. Prompt
-  answers are direct choices.
+  arguments only when the first had no room for them or the tool is the
+  named-command group, whose question is asked once it is chosen. Keep endpoint
+  and model configurable; count and record every request, retries included.
+  Prompt answers are direct choices.
+- Requests state each fact once, in compact lines where a fact is one of a list;
+  options refer to facts in the state by action ID or direction key rather than
+  repeating them. The observation and the decision log keep full detail. Measure
+  request size changes in real engine tokens and choices.
 - Treat every decision request as stateless: include its objective, observed
   progress and complete choices for that stage. Keep caller handoff available
   when the evidence or choices are insufficient, including argument selection.
-  Argument facts must come from the same actions and observation as their choice
-  descriptions. Preserve targets, bounds, modifier meanings and observation
+  Choices and the facts that describe them come from the same actions and
+  observation. Preserve targets, bounds, modifier meanings and observation
   provenance; a command target is not a guaranteed resulting hero position.
 - Enforce caller-specified action bounds mechanically. Scope observed progress
   to each explicit resume; consumed budgets and completed actions do not establish

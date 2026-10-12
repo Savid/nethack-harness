@@ -192,32 +192,6 @@ class ExecutionTest(TestCase):
         self.assertEqual(executor.term.sent, [])
         self.assertEqual(records, [])
 
-    def test_repeated_failed_moves_are_summarized_and_reset_by_another_action(self):
-        executor, _ = self.executor([room()])
-        action = Action("move:h", "Move west", "move", "h", target=(2, 2))
-        for _ in range(4):
-            executor.run(action, fingerprint(executor.term.view()))
-        observation = executor.observer.observation(executor.term.view())
-        self.assertEqual(observation["repetition"], {"action": "move:h", "consecutive_in_recent_history": 4,
-                                                   "elapsed_turns": 0, "position_unchanged": True})
-        self.assertEqual(observation["recent_actions"][-1]["target"], [2, 2])
-        self.assertEqual(len(observation["recent_actions"]), 1)
-        self.assertEqual(observation["recent_actions"][0]["repetitions"], 4)
-        self.assertEqual(len(executor.observer.history), 4)
-        executor.run(Action("look_here", "Look here", "look_here", ":"), fingerprint(executor.term.view()))
-        self.assertEqual(executor.observer.repetition()["consecutive_in_recent_history"], 1)
-
-    def test_noecho_prompt_inputs_remain_literal_recent_facts(self):
-        prompt = view(screen("What do you want to drop? [a-z or ?*]"), (0, 38))
-        executor, _ = self.executor([prompt])
-        for digit in "12":
-            executor.run(Action("input:%02x" % ord(digit), "Type quantity digit " + digit, "input", digit),
-                         fingerprint(executor.term.view()))
-        events = executor.observer.observation(executor.term.view())["recent_actions"]
-        self.assertEqual([event["keys"] for event in events], ["1", "2"])
-        self.assertEqual([event["description"] for event in events], ["Type quantity digit 1", "Type quantity digit 2"])
-        self.assertEqual(executor.term.sent, ["1", "2"])
-
     def test_exploration_follows_new_corridor_around_a_corner_within_bound(self):
         tiles = {(2, 3): "#", (2, 4): "#"}
         frames = [corridor((2, 3), tiles)]

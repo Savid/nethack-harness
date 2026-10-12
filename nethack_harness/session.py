@@ -40,7 +40,6 @@ class Session:
         self.objective_progress.sync(observation, self.settings.objective)
         observation["objective_progress"] = self.objective_progress.snapshot(self.settings.max_action_attempts)
         self.navigation.sync(observation, self.settings.objective)
-        observation["navigation_progress"] = self.navigation.snapshot()
         limit = self.settings.review_after_calls
         observation["review_budget"] = {"limit_calls": limit, "calls_used": self.review_calls,
                                         "calls_remaining": max(0, limit - self.review_calls) if limit else None}
@@ -163,8 +162,7 @@ class Session:
                                           "objective": self.settings.objective, "selected_action": action.id}}
                     self.pending_tool = None
                 else:
-                    outcome = executor.run(action, expected or before["fingerprint"], cancelled,
-                                           remember=source != "protocol")
+                    outcome = executor.run(action, expected or before["fingerprint"], cancelled)
                 outcome["action"] = action.as_dict()
                 self.actions += int(outcome["steps"] > 0 and source != "protocol")
                 self.turns += max(0, outcome.get("elapsed_turns") or 0)
@@ -195,11 +193,9 @@ class Session:
                 outcome["execution_reason"] = outcome["reason"]
                 outcome["reason"] = "navigation_cycle"
                 outcome["review"] = review
-            after["navigation_progress"] = self.navigation.snapshot()
         elif outcome.get("steps") and source != "protocol":
             self.navigation.reset()
             self.navigation.sync(after, self.settings.objective)
-            after["navigation_progress"] = self.navigation.snapshot()
         normal_boundary = outcome["reason"] in ("completed", "observation_changed", "step_limit", "tool_selected",
                                                 "exploration_boundary", "branch_discovered", "feature_discovered", "prompt",
                                                 "movement_interrupted", "route_changed", "no_observed_effect")

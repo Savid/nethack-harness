@@ -84,12 +84,12 @@ class ObservationTest(TestCase):
         observer = Observer()
         initial = view()
         state = observer.observation(initial)
-        self.assertEqual(state["underfoot"]["basis"], "inferred floor placeholder")
+        self.assertTrue(state["underfoot"]["inferred"])
         self.assertEqual(state["level"]["inferred_floor"], [[3, 2]])
         state = observer.observation(view(screen("There is a staircase down here.",
                                                  [" ---- ", " |.@.| ", " ---- "])))
         self.assertEqual(state["underfoot"]["remembered_terrain"], ">")
-        self.assertEqual(state["underfoot"]["basis"], "observed map or underfoot message")
+        self.assertFalse(state["underfoot"]["inferred"])
         self.assertEqual(state["level"]["inferred_floor"], [])
 
     def test_level_identity_remains_present_at_prompts(self):

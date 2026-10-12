@@ -13,7 +13,7 @@ the decision cycle below.
 ## Decision cycle
 
 1. Read a structured observation: hero stats, conditions, messages, map, entities,
-   remembered terrain, inspected inventory and spells, and recent actions.
+   remembered terrain, inspected inventory and spells, and this objective's attempts.
 2. Present choices with explicit targets and bounded execution.
 3. Ask the configured decision endpoint, in one request, for a tool and the concrete
    arguments of each tool that has several.
@@ -142,8 +142,17 @@ decision records, allowing a caller to reconcile a specific execution window.
 `resume --records-after ID` adds those records to the status and observation it
 prints once paused, so one command can run and report a bounded window.
 `resume --continue-scope` keeps the current objective scope described below, so
-a caller running one action per resume keeps the repetition and movement-cycle
-evidence across its windows; budgets still renew.
+a caller running one action per resume keeps the attempts its requests show and
+the repetition and movement-cycle evidence across those resumes; budgets still
+renew. For example, a caller that gives the engine one action at a time for a
+window of play resumes the window's first action without it and the rest with it:
+
+```sh
+python3 nethack_harness.py --dir /tmp/game-session resume --objective 'Explore this level.' \
+  --max-action-attempts 1
+python3 nethack_harness.py --dir /tmp/game-session resume --objective 'Explore this level.' \
+  --max-action-attempts 1 --continue-scope
+```
 
 The terminal should use an 80×24 TTY with standard keyboard bindings, letter
 movement, standard menu selection markers, colour, the turn counter and pet
@@ -300,9 +309,8 @@ guarded terrain: it refuses a step into known water or lava, and asks before a
 step onto a known trap or into a visible gas cloud (a coloured `#`). Toward a
 remembered `}`, `^` or coloured `#`, these moves are sent without the prefix,
 and the refusal or confirmation prompt returns to the engine like any other
-result. The choice says so in its description and in
-`argument_facts.modifier.withheld`. Entering known water or lava on purpose
-therefore needs caller input.
+result. The choice says so in its description. Entering known water or lava on
+purpose therefore needs caller input.
 Remembered green or cyan `#` tiles are structural obstacles rather than corridor
 connections and remain visible in `level.structural_obstacles`. Direct movement
 commands remain available for the engine to choose.
@@ -382,8 +390,8 @@ do not require separate tools when the same capability is already available.
 
 Every position is **x,y**, the numbers the direct-play view prints: x is the
 terminal column (0 to 79) and y the terminal row (the map is rows 1 to 21). JSON
-observations hold `[x, y]`, and action IDs and descriptions write `x,y`; a goal
-condition on `hero.position` can be written from the view. Action IDs encode
+observations hold `[x, y]`; action IDs, descriptions and decision requests write
+`x,y`; a goal condition on `hero.position` can be written from the view. Action IDs encode
 direction or target, for example `attack:l`, `travel:23,7`, `explore:23,7`,
 `search:8` and `input:79` (the character `y`). The offered catalogue is the authority
 for a particular observation. A command being offered does not promise it will
@@ -414,31 +422,19 @@ is attached to a visible entity only on the inspected turn with matching display
 attributes: the terminal provides no stable monster identity. Prayer requests
 remain recorded throughout the session, without assuming they succeeded.
 
-Retaining information is separate from including it in every request. Every
-decision receives the current screen map, which shows remembered terrain, the
-current level's inspections, searches and structural obstacles, and a compact
-landmark and connection index for all known levels. The remembered terrain grid,
-visit counts and inferred-floor list stay in `observe` and the decision log;
-requests carry visit counts on each navigation destination instead. Other levels'
-full terrain stays in the observer until revisited. Requests carry the last eight
-messages and omit inventory, spell, attribute and overview snapshots that were
-never queried; a request over its token budget omits more, as described under
-[Decision endpoint](#decision-endpoint). The full decision trace is written to SQLite. Starting a fresh harness session resets
-the observer; memory is not carried between games or restored from old traces.
-
-The last eight executed engine and caller actions (protocol steps such as
-pagination are left out) include their targets, starting and ending positions,
-elapsed turns and stopping reasons.
-Identical consecutive history entries are represented once with a repetition
-count. Every attempt remains separate in the full decision log.
-Prompt input history includes the literal keys and their descriptions, including
-quantity digits that the game does not echo. This records attempted input, not
-an inferred accepted quantity.
-A repetition summary counts consecutive identical actions within that history
-and reports whether they consumed turns or changed position. It is an observed
-fact, not a rule that changes or blocks the engine's choices. The last twenty
-messages, terrain memory, visits and search counts are also supplied on every
-decision. The complete decision log is stored separately.
+Retaining information is separate from including it in every request. The
+observation (`observe`, and `after` in the decision log) keeps the last twenty
+messages, the remembered terrain grid, visit counts, the inferred-floor list and
+the inputs of the recent attempts. A request states each fact once, mostly as one short line
+(see [Decision endpoint](#decision-endpoint)): the current screen map, which shows
+remembered terrain; the current level's inspections, searches and structural
+obstacles; a landmark and connection index for the known levels; the last eight
+messages; inventory, spell, attribute and overview snapshots that were queried;
+and this scope's latest attempts. Visit counts travel with each destination.
+Other levels' full terrain stays in the observer until revisited. A request over
+its token budget omits more. The full decision trace is written to SQLite.
+Starting a fresh harness session resets the observer; memory is not carried
+between games or restored from old traces.
 
 Level identity is inferred from status labels
 and traversed staircase connections, including stairs taken with caller-sent `<`
@@ -453,28 +449,23 @@ The adapter exposes observations and mechanical capabilities. Game reference
 knowledge, species statistics, tactical advice and strategy belong to the caller
 or decision engine. Unknown glyphs remain unidentified until inspected in-game.
 
-Tool-selection requests expose navigation destinations with their kind,
-coordinates, known path lengths, next squares, execution bounds, how often the
-hero has stood on them, and whether they are a frontier square as defined above.
-These are the offered routes through remembered terrain, not a ranking
-or guarantee of passage. The observation also identifies remembered terrain
-underfoot. The engine chooses the destination; the executor follows that route
-and returns when its bound or an observed boundary is reached.
-A separate argument request, made when the tool request had no room for the
-chosen tool's question, includes `argument_facts` for every offered choice, with
-its target, bound, modifier when it has one, and the destination facts above for
-travel and exploration. Directional actions include their direction, origin,
-coordinate delta and the target square's glyph, colour and remembered terrain,
-naming a remembered feature such as `lava`, `water` or `trap`, and whether the
-terminal highlights a monster there as the pet. The target
-is the square addressed by the command, not a guaranteed resulting position.
-These facts supplement the complete observation and unchanged choice descriptions.
-`navigation_obstacles` preserves destinations excluded because occupied squares
+Requests describe each travel and exploration destination before tool selection,
+in `state.navigation.destinations` under its action ID: its kind, known route
+length, whether it is a frontier square as defined above, how often the hero has
+stood on it, and where a travel bound stops short of it. These are the offered
+routes through remembered terrain, not a ranking or guarantee of passage.
+`observation.adjacent` describes the square in each direction under its direction
+key: position, glyph, colour, the highlighted pet and remembered terrain, naming a
+remembered feature such as `lava`, `water` or `trap`. The target is the square
+addressed by the command, not a guaranteed resulting position. The engine chooses
+the destination; the executor follows that route and returns when its bound or an
+observed boundary is reached. `navigation_obstacles` (in requests,
+`blocked_destinations`) preserves destinations excluded because occupied squares
 block their known routes, including the observed blocking positions. They remain
 evidence even while they are absent from executable choices. Interruptions report
 `changed_fields` when available, such as entities, terrain, status or messages.
-Unknown terrain under the hero uses a floor placeholder for routing; it is
-explicitly marked as inferred until a map glyph or underfoot message is observed.
+Unknown terrain under the hero uses a floor placeholder for routing; `underfoot`
+marks it as inferred until a map glyph or underfoot message is observed.
 
 If the engine selects an action again after it had no observed effect, on the
 same terminal screen and under the same objective, the session pauses with
@@ -483,11 +474,9 @@ includes `review.previous_decision`, the selected action and the evidence.
 Two repetitions of the same cycle of movement action endpoints on unchanged remembered terrain,
 under the same objective, pause with `navigation_cycle`. The outcome preserves
 the original execution reason and includes the cycle positions and decision
-records for review. `observation.navigation_progress` keeps up to 32 recent
-movement actions; requests carry the latest 8 and every recent position. New terrain, level or objective changes,
-nonmovement actions, and a resume that starts a new scope reset this movement
-window. A single
-return through a corridor does not trigger it.
+records for review. New terrain, level or objective changes, nonmovement actions,
+and a resume that starts a new scope reset this movement window. A single return
+through a corridor does not trigger it.
 Intermediate steps inside a bounded action are not used in this cycle signature.
 
 Unexpected follow-up prompts also pause with `unexpected_prompt`. A caller can
@@ -503,9 +492,14 @@ scope, attempts used and remaining under the caller budget since the latest
 resume, and up to 32 recent attempts with omitted-count metadata.
 Each attempt records the selected action, source, attempted inputs and delivery
 status, before/after observations, and execution result. Unknown coordinates or
-turns remain null; a pending input has an uncertain result. Requests carry the
-latest 8 attempts, without screen fingerprints or record numbers; `observe`
-keeps the rest. Full records remain available through `export`.
+turns remain null; a pending input has an uncertain result. Requests carry, as
+`observation.history`, the scope's attempt count and its latest 8 attempts in one
+line each: the action (with its description for a prompt answer, so quantity
+digits the game does not echo stay readable), how it ended, its steps and turns,
+where the hero went, and its source when not the engine; and the attempts and
+calls left under the caller budgets. Inputs, screen fingerprints and record
+numbers stay in `observe` and the decision log, so a request does not grow with
+the keys an attempt sent. Full records remain available through `export`.
 This scope starts fresh on every resume, even with identical objective text,
 unless the resume passes `--continue-scope`, and always on an objective change.
 It is supplied during tool, argument and prompt
@@ -535,12 +529,14 @@ The harness supplies facts and executable options; the model returns an offered
 choice rather than free-form text, reasoning or generated code. Endpoint URL and
 model name are configurable.
 
-`state` holds `decision` (stage and selected tool), `objective`, `caller_context`,
-`omitted` when the token budget left something out, then `navigation` (tool
-stage) or `argument_facts` (argument stage), then the `observation`. The
-stage-specific members are compact; the observation is the largest member of the
-state. An endpoint that serializes keys in sorted order and truncates long input
-keeps these members ahead of the observation's later keys.
+`state` holds `decision` (stage and selected tool), `objective`, `caller_context`
+when the caller set one, `omitted` when the token budget left something out,
+`navigation` when travel or exploration is offered, and the `observation`. Each
+fact appears once. Destinations are described in `navigation.destinations` and
+adjacent squares in `observation.adjacent`, under the action IDs and direction keys
+the questions offer, so those options need no description of their own; facts
+that are lists of one kind of thing (entities, messages, attempts, landmarks,
+inspections) are one short line each, with positions written `x,y`.
 
 During normal play one request asks the tool question `action` and, for every
 offered tool with several concrete actions, a question named after that tool
@@ -551,21 +547,29 @@ offering those actions and `pause`:
   "state": {
     "decision": {"stage": "tool", "tool": null},
     "objective": "Explore the dungeon and survive.",
-    "caller_context": {},
-    "navigation": {"destinations": []},
-    "observation": {"phase": "play", "hero": {"hp": 12}}
+    "navigation": {"destinations": {"travel:34,3": "edge of known terrain, 11 steps, frontier",
+                                    "explore:43,14": "corridor endpoint, 2 steps, frontier"}},
+    "observation": {"phase": "play", "hero": {"hp": 12, "position": "43,12"},
+                    "adjacent": {"h": "west 42,12 'd' yellow"},
+                    "history": {"attempts": 1, "recent": ["explore:43,10: branch_discovered, 3 steps, 3 turns, 43,9 to 43,12"]}}
   },
   "questions": {
     "action": {
       "type": "choice",
-      "instructions": "Choose the tool to use next. Objective: Explore the dungeon and survive.",
-      "criteria": {"search": "Search here for a selected bounded number of turns.", "pause": "Return control to the caller"}
+      "instructions": "Choose the tool to use next. ... Objective: Explore the dungeon and survive.",
+      "criteria": {"search": "Search for traps and secret doors for a selected bounded number of turns",
+                   "travel": "Follow a route to a selected known destination without attacking; bounded movement",
+                   "pause": "Return control to the caller"}
     },
     "search": {
       "type": "choice",
       "instructions": "If action is search, choose its concrete arguments.",
-      "criteria": {"search:1": "Search ... for up to 1 turns", "search:8": "Search ... for up to 8 turns",
-                   "pause": "Return control to the caller"}
+      "criteria": {"search:1": "up to 1 turn", "search:8": "up to 8 turns", "pause": "Return control to the caller"}
+    },
+    "travel": {
+      "type": "choice",
+      "instructions": "If action is travel, choose its concrete arguments.",
+      "criteria": {"travel:34,3": "", "pause": "Return control to the caller"}
     }
   }
 }
@@ -582,20 +586,20 @@ The harness executes the chosen tool's action named by that tool's answer; an
 answer of `pause` there returns control as the `pause` tool does. Answers to the
 questions of tools not chosen are recorded and otherwise ignored. A tool with
 one action executes without an argument answer. Game prompts offer their input
-choices directly as one question with stage `input`. The `command` tool's
-question offers the other named commands, such as `pay`, `loot` or `enhance`,
-which keeps infrequent commands out of the tool question without another
-hierarchy or arbitrary generated code. The tool request carries no
-`argument_facts`: `observation.adjacent` describes the square in each direction,
-and `navigation.destinations` describes each travel and exploration choice.
+choices directly as one question with stage `input`. The `command` tool offers
+the other named commands, such as `pay`, `loot` or `enhance`, which keeps
+infrequent commands out of the tool question without another hierarchy or
+arbitrary generated code; its description lists them, and its own question is
+asked once it is chosen, so the dozens of rarely used commands do not fill every
+request.
 
 Argument questions use the room that `--max-request-tokens` leaves after the
-tool question, in catalogue order. When the chosen tool's question did not fit,
+tool question, in catalogue order. When the chosen tool's question was not asked,
 the record says `tool_selected` with zero execution steps, and a second request
 with decision `{"stage": "arguments", "tool": "search"}` offers only that tool's
-actions and `pause`, with `argument_facts` for each and the selected tool and
-objective in its instructions. A changed screen, objective, caller context or
-caller interruption invalidates that pending selection.
+actions and `pause`, with the selected tool and objective in its instructions. A
+changed screen, objective, caller context or caller interruption invalidates that
+pending selection.
 
 Each `choice` must name an offered criterion; a response without an offered
 answer to `action`, or to the chosen tool's question when it was asked, is
@@ -615,14 +619,14 @@ malformed responses and a transient failure with no time left pause play.
 
 `--max-request-tokens N` on `start` or `resume` (default 14000) bounds the
 estimated size of each request sent to the engine, counting one token for every
-two bytes of its JSON, which overstates typical JSON, so an engine with a
-16,384-token limit keeps room for its own framing. A request over the budget
-leaves out, in this order and only as far as needed, the landmarks of other
-levels, the messages before the latest two, the destinations beyond the 24
-nearest by route with their travel and exploration choices, and, in a separate
-argument request, its `argument_facts`. `state.omitted` lists what was left out,
-for example `["landmarks of other levels"]`. A request
-still over the budget is not sent: the decision pauses with `decision_error`.
+two bytes of its JSON. Requests measured 2.2 to 2.6 bytes per token on the Jev and
+Clef engines, so the estimate overstates their counts and an engine with a
+16,384-token limit keeps room for its own framing. A request over the budget leaves out, in
+this order and only as far as needed, the landmarks of other levels, the messages
+before the latest two, and the destinations beyond the 24 nearest by route with
+their travel and exploration choices. `state.omitted` lists what was left out, for
+example `["landmarks of other levels"]`. A request still over the budget is not
+sent: the decision pauses with `decision_error`.
 
 ## Caller commands
 

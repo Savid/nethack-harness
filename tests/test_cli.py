@@ -151,7 +151,7 @@ class DaemonTest(TestCase):
         state = json.loads(result.stdout)
         self.assertEqual(state["status"]["reason"], "review_budget")
         self.assertEqual(state["status"]["calls"], 4)
-        self.assertEqual(self.endpoint.requests[2]["state"]["observation"]["review_budget"]["calls_used"], 0)
+        self.assertEqual(self.endpoint.requests[2]["state"]["observation"]["history"]["calls_remaining"], 2)
         result = cli(self.state, "resume", "--review-after-calls", "1", "--timeout", "5")
         state = json.loads(result.stdout)
         self.assertEqual(state["status"]["reason"], "review_budget")
@@ -171,7 +171,7 @@ class DaemonTest(TestCase):
         self.endpoint.close()
 
         def choose(request):
-            tool = "wait" if request["state"]["observation"]["objective_progress"]["attempts_used"] else "search"
+            tool = "wait" if request["state"]["observation"]["history"]["recent"] else "search"
             return choosing(tool, tool + ":1")(request)
 
         self.endpoint = Endpoint(choose)

@@ -11,7 +11,6 @@ from .level import FEATURES, Level, door_line, neighbours, position, square
 from .tools import TOOLS
 
 
-COORDINATES = {"position": "[x, y]", "x": "terminal column, 0 to 79", "y": "terminal row; the map is rows 1 to 21"}
 MENU_ENTRY = re.compile(r"^\s*([!-~])\s+([-+*#])\s+(.+)")
 # Caller-typed keys that are exactly a stair command connect levels like the stair tools do.
 STAIR_KEYS = {prefix + TOOLS[name].keys: name for name in ("ascend", "descend")
@@ -93,7 +92,6 @@ class Observer:
         self.notes = []
         self.noted = None
         self.pets = set()
-        self.history = deque(maxlen=8)
         self.inventory = {}
         self.spells = {}
         self.query_turns = {}
@@ -302,28 +300,23 @@ class Observer:
         mode = phase(view)
         out = {"fingerprint": fingerprint(view), "phase": mode,
                "game_result": self.game_result,
-               "coordinates": COORDINATES, "hero": dict(view.st, position=position(view.hero),
+               "hero": dict(view.st, position=position(view.hero),
                title=view.title, conditions=list(view.cond), engulfed=view.engulfed),
                "messages": list(self.messages), "entities": self.entities(view),
                "inventory": dict(items=self.inventory, **self.query_metadata("inventory", view)),
                "spells": dict(items=self.spells, **self.query_metadata("spells", view)),
                "attributes": dict(lines=self.attributes, **self.query_metadata("attributes", view)),
                "dungeon_overview": dict(lines=self.overview, **self.query_metadata("overview", view)),
-               "prayers": list(self.prayers), "recent_actions": self.recent_actions(),
-               "repetition": self.repetition()}
+               "prayers": list(self.prayers)}
         if mode == "play":
             occupied = {square(entity["position"]) for entity in out["entities"]
                         if entity["kind"] in ("monster", "unseen")}
             out["navigation_obstacles"] = {
-                "source": "map navigation unavailable while engulfed" if view.engulfed else
-                          "observed occupied squares exclude routes; terrain paths do not guarantee passage",
                 "occupied_squares": [position(p) for p in sorted(occupied)],
                 "unavailable_destinations": [] if view.engulfed else self.current.blocked_targets(view.hero, occupied)}
             out["underfoot"] = {"position": position(view.hero),
                                 "remembered_terrain": None if view.engulfed else self.current.terrain.get(view.hero),
-                                "basis": "unavailable while engulfed" if view.engulfed else
-                                "inferred floor placeholder" if view.hero in self.current.inferred_floor
-                                else "observed map or underfoot message"}
+                                "inferred": not view.engulfed and view.hero in self.current.inferred_floor}
             out["adjacent"] = [] if view.engulfed else [self.adjacent(view, key, p) for key, p in neighbours(view.hero)]
             out["map"] = [row.rstrip() for row in view.rows[1:22]]
             out["map_context"] = "engulfed overlay" if view.engulfed else "dungeon"
@@ -363,27 +356,3 @@ class Observer:
         return {"observed_turn": turn, "age_turns": now - turn if now is not None and turn is not None else None,
                 "complete": self.query_complete.get(name, False), "source": name + " query",
                 "freshness": "last observed snapshot; intervening actions may have changed it"}
-
-    def recent_actions(self):
-        events, previous = [], None
-        for event in self.history:
-            if event == previous:
-                events[-1]["repetitions"] = events[-1].get("repetitions", 1) + 1
-            else:
-                events.append(dict(event))
-            previous = event
-        return events
-
-    def repetition(self):
-        if not self.history:
-            return None
-        last = self.history[-1]
-        tail = []
-        for entry in reversed(self.history):
-            if entry["action"] != last["action"]:
-                break
-            tail.append(entry)
-        turns = [entry["elapsed_turns"] for entry in tail]
-        return {"action": last["action"], "consecutive_in_recent_history": len(tail),
-                "elapsed_turns": sum(turns) if all(t is not None for t in turns) else None,
-                "position_unchanged": all(entry["position_before"] == entry["position_after"] for entry in tail)}

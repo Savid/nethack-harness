@@ -11,55 +11,44 @@ from nethack_harness.decide import Engine, DecisionError, estimated_tokens, requ
 
 
 class EngineTest(TestCase):
-    def test_argument_facts_preserve_choices_modifiers_and_target_evidence(self):
-        adjacent = {"direction": "u", "position": [71, 7], "glyph": "#", "colour": "gray", "remembered_terrain": "#"}
+    def test_argument_requests_offer_the_tool_and_keep_square_facts_in_the_observation(self):
+        adjacent = {"direction": "u", "position": [71, 7], "glyph": "#", "colour": "default", "remembered_terrain": "#"}
         observation = {"phase": "play", "hero": {"position": [70, 8]}, "adjacent": [adjacent]}
         actions = [Action("move:u", "Move northeast", "move", "u", target=(7, 71)),
                    Action("move:no_pickup:u", "Move northeast without pickup", "move", "mu", target=(7, 71)),
                    Action("open:l", "Open east", "open", "o", target=(8, 71)),
                    Action("pause", "Return control", "pause", steps=0)]
         request = request_body(observation, actions, "Reach 71,7", tool="move")
-        criteria = request["questions"]["action"]["criteria"]
-        facts = request["state"]["argument_facts"]
-        self.assertEqual(set(criteria), {"move:u", "move:no_pickup:u", "pause"})
-        self.assertEqual(set(facts), set(criteria))
-        self.assertEqual(request["state"]["observation"], observation)
-        self.assertEqual(criteria["move:u"], actions[0].description)
-        self.assertEqual(facts["move:u"]["target"], [71, 7])
-        self.assertEqual(facts["move:u"]["origin"], [70, 8])
-        self.assertEqual(facts["move:u"]["delta"], [1, -1])
-        self.assertEqual(facts["move:u"]["direction_key"], "u")
-        self.assertEqual(facts["move:u"]["direction"], "northeast")
-        self.assertEqual(facts["move:u"]["target_observation"],
-                         {"glyph": "#", "colour": "gray", "remembered_terrain": "#"})
-        self.assertNotIn("modifier", facts["move:u"])
-        self.assertEqual(facts["move:no_pickup:u"]["modifier"]["name"], "no_pickup")
+        self.assertEqual(request["state"]["decision"], {"stage": "arguments", "tool": "move"})
+        self.assertEqual(set(request["questions"]["action"]["criteria"]), {"move:u", "move:no_pickup:u", "pause"})
+        square = request["state"]["observation"]["adjacent"]["u"]
+        self.assertIn("71,7", square)
+        self.assertIn("'#'", square)
         lava = dict(adjacent, glyph="}", colour="red", remembered_terrain="}", remembered_feature="lava")
-        withheld = Action("move:no_pickup:u", "Move northeast", "move", "u", target=(7, 71), withheld="toward lava")
-        liquid = request_body(dict(observation, adjacent=[lava]), [withheld], "Go", tool="move")["state"]["argument_facts"]
-        self.assertEqual(liquid["move:no_pickup:u"]["target_observation"]["remembered_feature"], "lava")
-        self.assertEqual(liquid["move:no_pickup:u"]["modifier"]["withheld"], "toward lava")
-        self.assertEqual(facts["pause"]["max_steps"], 0)
-        # Vertical and self directions address the same coordinates but differ mechanically.
-        actions = [Action("open:" + key, "Open", "open", target=(8, 70)) for key in ".<>"]
-        facts = request_body(observation, actions, "Open", tool="open")["state"]["argument_facts"]
-        self.assertEqual([facts[a.id]["direction"] for a in actions], ["self", "up", "down"])
-        self.assertTrue(all(f["delta"] == [0, 0] for f in facts.values()))
-        self.assertTrue(all("target_observation" not in f for f in facts.values()))
+        withheld = Action("move:no_pickup:u", "Move northeast", "move", "u", target=(7, 71),
+                          withheld="modifier withheld toward remembered lava")
+        liquid = request_body(dict(observation, adjacent=[lava]), [withheld], "Go", tool="move")
+        self.assertIn("lava", liquid["state"]["observation"]["adjacent"]["u"])
+        self.assertIn("withheld", liquid["questions"]["action"]["criteria"]["move:no_pickup:u"])
 
-    def test_destinations_are_visible_before_selecting_a_navigation_tool(self):
+    def test_each_destination_is_described_once_under_its_action_id(self):
         route = ((2, 4), (2, 5), (2, 6))
-        action = Action("travel:6,2", "Travel to down stairs", "travel", steps=2, target=(2, 6), route=route,
+        travel = Action("travel:6,2", "Travel to down stairs", "travel", steps=2, target=(2, 6), route=route,
                         subject="down stairs")
+        explore = Action("explore:9,4", "Explore", "explore", steps=8, target=(4, 9), route=route,
+                         subject="corridor endpoint", frontier=True)
+        actions = [travel, explore, Action("pause", "Return control", "pause", steps=0)]
         observation = {"phase": "play", "level": {"id": "level-1", "known_terrain": ["..."], "visits": [[6, 2, 2]]}}
-        request = request_body(observation, [action], "Explore")
-        self.assertEqual(request["state"]["decision"]["stage"], "tool")
-        self.assertEqual(request["state"]["navigation"]["destinations"], [
-            {"action": "travel:6,2", "kind": "down stairs", "position": [6, 2], "path_length": 3,
-             "next_position": [4, 2], "max_steps": 2, "visits": 2, "frontier": False}])
-        arguments = request_body(observation, [action], "Explore", tool="travel")["state"]
-        self.assertNotIn("navigation", arguments)
-        self.assertEqual(arguments["argument_facts"]["travel:6,2"]["visits"], 2)
+        request = request_body(observation, actions, "Explore")
+        destinations = request["state"]["navigation"]["destinations"]
+        self.assertEqual(set(destinations), {"travel:6,2", "explore:9,4"})
+        self.assertIn("down stairs", destinations["travel:6,2"])
+        self.assertIn("frontier", destinations["explore:9,4"])
+        self.assertNotIn("frontier", destinations["travel:6,2"])
+        text = json.dumps(request)
+        self.assertEqual(text.count("down stairs"), 1)
+        arguments = request_body(observation, actions, "Explore", tool="travel")["state"]
+        self.assertEqual(set(arguments["navigation"]["destinations"]), {"travel:6,2"})
 
     def test_one_request_asks_the_tool_and_the_arguments_of_each_tool_with_several(self):
         actions = [Action("move:l", "Move east", "move", "l", target=(2, 4)),
@@ -69,19 +58,19 @@ class EngineTest(TestCase):
                           subject="corridor endpoint"),
                    Action("travel:9,2", "Travel to stairs", "travel", target=(2, 9), route=((2, 4),) * 6,
                           subject="down stairs"),
+                   Action("adjust", "Adjust", "adjust", "#adjust\r"), Action("pay", "Pay", "pay", "#pay\r"),
                    Action("pause", "Return control to the caller", "pause", steps=0)]
         request = request_body({"phase": "play"}, actions, "Explore")
         questions = request["questions"]
+        # The named commands are asked only once the command tool has been chosen.
         self.assertEqual(list(questions), ["action", "move", "travel"])
-        self.assertEqual(set(questions["action"]["criteria"]), {"move", "pray", "travel", "pause"})
-        self.assertEqual(questions["move"]["criteria"],
-                         {"move:l": "Move east", "move:h": "Move west", "pause": "Return control to the caller"})
+        self.assertEqual(set(questions["action"]["criteria"]), {"move", "pray", "travel", "command", "pause"})
+        self.assertEqual(set(questions["move"]["criteria"]), {"move:l", "move:h", "pause"})
         self.assertEqual(set(questions["travel"]["criteria"]), {"travel:5,2", "travel:9,2", "pause"})
-        self.assertEqual([d["action"] for d in request["state"]["navigation"]["destinations"]],
-                         ["travel:5,2", "travel:9,2"])
         answers = {"action": {"choice": "travel"}, "travel": {"choice": "travel:9,2"}, "move": {"choice": "west"}}
         for reply, chosen in (({"answers": answers}, {"action": "travel", "travel": "travel:9,2"}),
                               ({"answers": {"action": {"choice": "pray"}}}, {"action": "pray"}),
+                              ({"answers": {"action": {"choice": "command"}}}, {"action": "command"}),
                               ({"answers": {"action": {"choice": "travel"}}}, "answers.travel.choice"),
                               ({"answers": dict(answers, travel={"choice": "move:l"})}, "answers.travel.choice")):
             with self.subTest(reply=reply):
@@ -94,6 +83,8 @@ class EngineTest(TestCase):
                             Engine(endpoint.url).choose(request)
                 finally:
                     endpoint.close()
+        commands = request_body({"phase": "play"}, actions, "Explore", tool="command")["questions"]["action"]
+        self.assertEqual(set(commands["criteria"]), {"adjust", "pay", "pause"})
 
     def test_argument_questions_take_only_the_room_the_budget_leaves(self):
         actions = [Action("move:" + key, "Move " + key, "move", key, target=(2, 4)) for key in "hjkl"]
@@ -106,28 +97,35 @@ class EngineTest(TestCase):
         self.assertEqual(list(trimmed["questions"]), ["action", "move"])
         self.assertNotIn("omitted", trimmed["state"])
 
-    def test_requests_carry_recent_attempts_without_screen_hashes(self):
+    @staticmethod
+    def attempts(count, keys, action=None):
         point = {"fingerprint": "f" * 64, "phase": "play", "position": [3, 2], "turn": 9, "level": "level-1"}
-        attempts = [{"attempt": n, "decision": 100 + n, "source": "engine", "before": point, "after": point,
-                     "action": {"id": "move:l", "description": "Move east " * 20, "kind": "move"},
-                     "inputs": [{"keys": "l", "source": "action", "status": "completed"}],
-                     "result": {"reason": "no_observed_effect"}} for n in range(1, 21)]
-        movements = [{"decision": n, "action": "travel:8,2", "position_before": [3, 2], "position_after": [8, 2]}
-                     for n in range(20)]
-        observation = {"phase": "play", "objective_progress": {"id": "scope", "start": point, "scope_attempts": 30,
-                                                               "recent_attempts": attempts, "omitted_attempts": 10},
-                       "navigation_progress": {"recent_positions": [[3, 2]], "recent_actions": movements,
-                                               "window_actions": 32}}
-        sent = request_body(observation, [Action("wait:1", "Wait", "wait")], "Wait")["state"]["observation"]
-        progress, navigation = sent["objective_progress"], sent["navigation_progress"]
-        self.assertEqual([a["attempt"] for a in progress["recent_attempts"]], list(range(13, 21)))
-        self.assertEqual(progress["omitted_attempts"], 22)
-        self.assertEqual(progress["recent_attempts"][-1]["action"]["id"], "move:l")
-        self.assertEqual(progress["recent_attempts"][-1]["after"]["position"], [3, 2])
-        self.assertNotIn("fingerprint", json.dumps(sent))
-        self.assertNotIn("decision", json.dumps(sent))
-        self.assertEqual([a["action"] for a in navigation["recent_actions"]], ["travel:8,2"] * 8)
-        self.assertEqual(len(observation["objective_progress"]["recent_attempts"]), 20)
+        moved = dict(point, position=[4, 2], turn=10)
+        action = action or {"id": "travel:8,2", "description": "Move toward a frontier", "kind": "travel"}
+        return [{"attempt": n, "decision": 100 + n, "source": "engine", "before": point, "after": moved,
+                 "action": action, "inputs": [{"keys": "ml", "source": "action", "status": "completed"}] * keys,
+                 "result": {"reason": "completed", "steps": 2, "elapsed_turns": 1}} for n in range(1, count + 1)]
+
+    def test_requests_carry_the_latest_attempts_however_many_keys_they_sent(self):
+        def sent(keys):
+            observation = {"phase": "play", "objective_progress": {
+                "id": "scope", "scope_attempts": 30, "recent_attempts": self.attempts(20, keys),
+                "attempts_remaining": None}}
+            return request_body(observation, [Action("wait:1", "Wait", "wait")], "Wait")
+        one, many = sent(1), sent(32)
+        history = one["state"]["observation"]["history"]
+        self.assertEqual(history["attempts"], 30)
+        self.assertEqual(len(history["recent"]), 8)
+        self.assertTrue(all(line.startswith("travel:8,2") and "3,2 to 4,2" in line for line in history["recent"]))
+        self.assertNotIn("ffff", json.dumps(one))
+        # An attempt's keys stay in the decision log; the request's size does not grow with them.
+        self.assertEqual(len(json.dumps(one)), len(json.dumps(many)))
+        digit = {"id": "input:31", "description": "Type quantity digit 1", "kind": "input"}
+        observation = {"phase": "item", "objective_progress": {"scope_attempts": 1, "recent_attempts": self.attempts(
+            1, 1, digit), "attempts_remaining": None}}
+        line, = request_body(observation, [Action("input:31", "Type 1", "input", "1")], "Drop")["state"][
+            "observation"]["history"]["recent"]
+        self.assertIn("Type quantity digit 1", line)
 
     def test_requests_omit_map_memory_the_screen_shows_but_keep_level_facts(self):
         observation = {"phase": "play", "fingerprint": "f", "messages": [{"text": str(n)} for n in range(20)],
@@ -137,8 +135,8 @@ class EngineTest(TestCase):
                                  "inferred_floor": [], "searches": [[3, 2, 5]], "inspections": []},
                        "map": ["@"]}
         sent = request_body(observation, [Action("wait:1", "Wait", "wait")], "Wait")["state"]["observation"]
-        self.assertEqual(sent["level"], {"id": "level-2", "label": "Dlvl:2", "searches": [[3, 2, 5]]})
-        self.assertEqual([m["text"] for m in sent["messages"]], [str(n) for n in range(12, 20)])
+        self.assertEqual(sent["level"], {"id": "level-2", "label": "Dlvl:2", "searches": {"3,2": 5}})
+        self.assertEqual(sent["messages"], [str(n) for n in range(12, 20)])
         self.assertNotIn("inventory", sent)
         self.assertEqual(sent["spells"], {"items": {"a": "force bolt"}, "age_turns": 1, "complete": True})
         self.assertNotIn("fingerprint", sent)
@@ -154,9 +152,9 @@ class EngineTest(TestCase):
                                          "connections": []},
                                         {"id": "level-2", "label": "Dlvl:2", "landmarks": landmarks("level-2"),
                                          "connections": []}]}
-        actions = [Action("travel:%d,1" % length, "Move toward a corridor endpoint", "travel", steps=8,
+        actions = [Action("travel:%d,1" % length, "Move toward a corridor junction", "travel", steps=8,
                           target=(1, length), route=tuple((1, x) for x in range(1, length + 1)),
-                          subject="corridor endpoint") for length in range(30, 0, -1)]
+                          subject="corridor junction") for length in range(30, 0, -1)]
         actions.append(Action("pause", "Return control", "pause", steps=0))
         # Each budget is one token under the previous request without its argument questions, which only use
         # the room left, so each request omits one thing more.
@@ -169,13 +167,11 @@ class EngineTest(TestCase):
             self.assertLessEqual(estimated_tokens(body), budget or estimated_tokens(body))
             budget = estimated_tokens(dict(body, questions={"action": body["questions"]["action"]})) - 1
         sent = body["state"]["observation"]
-        self.assertEqual([level.get("landmarks") is not None for level in sent["known_levels"]], [False, True])
-        self.assertEqual([m["text"] for m in sent["messages"]], ["Message 18.", "Message 19."])
-        self.assertEqual([d["path_length"] for d in body["state"]["navigation"]["destinations"]],
-                         list(range(24, 0, -1)))
-        arguments = request_body(observation, actions, "Explore", tool="travel", max_tokens=1)["state"]
-        self.assertEqual(arguments["omitted"], expected + ["argument facts"])
-        self.assertNotIn("argument_facts", arguments)
+        self.assertEqual([level["id"] for level in sent["known_levels"]], ["level-2"])
+        self.assertEqual(len(sent["known_levels"][0]["landmarks"]), 39)
+        self.assertEqual(sent["messages"], ["T18: Message 18.", "T19: Message 19."])
+        self.assertEqual(set(body["state"]["navigation"]["destinations"]),
+                         {"travel:%d,1" % length for length in range(1, 25)})
 
     def test_exact_choice_is_used_without_confidence_gate(self):
         endpoint = Endpoint(lambda _: {"answers": {"action": {"choice": "attack:l", "confidence": 0.01}}})

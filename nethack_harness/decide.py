@@ -52,104 +52,193 @@ def reject_constant(value):
 
 
 ARGUMENTS = "If action is %s, choose its concrete arguments."
-GUIDANCE = ("Decide from this state alone; caller_context and objective_progress list earlier attempts and their"
-            " results. Prefer a choice that has not already failed to make progress.")
-OMITTED_LEVEL = ("known_terrain", "visits", "inferred_floor")
+GUIDANCE = ("Decide from this state alone; observation.history lists this objective's earlier attempts and their "
+            "results. Prefer a choice that has not already failed to make progress.")
+POSITIONS = "Positions are x,y: terminal column, then row."
 REQUEST_ATTEMPTS = 8
 REQUEST_MESSAGES = 8
 KEPT_MESSAGES = 2
 NEAREST_DESTINATIONS = 24
-ARGUMENT_FACTS = "argument facts"
 BYTES_PER_TOKEN = 2
+DIRECTIONS = dict(DIRECTION_NAMES, **{".": "here", "<": "up", ">": "down"})
+
+
+def xy_text(point):
+    return "%d,%d" % tuple(point)
 
 
 def visit_counts(observation):
     return {tuple(entry[:2]): entry[2] for entry in (observation.get("level") or {}).get("visits", ())}
 
 
-def destination(action, visits):
-    target = position(action.target)
-    return {"kind": action.subject, "position": target, "path_length": len(action.route),
-            "next_position": position(action.route[0]), "max_steps": action.steps, "visits": visits.get(tuple(target), 0),
-            "frontier": action.frontier}
+def destination_text(action, visits):
+    """A destination in one line: what it is, its known route length, whether it is a frontier square, how often the
+    hero has stood there, and where a travel bound stops short of it."""
+    steps = len(action.route)
+    parts = [action.subject, "%d step%s" % (steps, "" if steps == 1 else "s")]
+    if action.frontier:
+        parts.append("frontier")
+    visited = visits.get(tuple(position(action.target)), 0)
+    if visited:
+        parts.append("visited %d" % visited)
+    if action.kind == "travel" and steps > action.steps:
+        parts.append("stops after %d" % action.steps)
+    return ", ".join(parts)
 
 
-def argument_facts(observation, action, visits):
-    facts = {"target": position(action.target), "max_steps": action.steps}
-    spec = TOOLS.get(action.kind)
-    if action.route:
-        facts.update(destination(action, visits))
-    if not spec:
-        return facts
-    parts = action.id.split(":")
-    variant = next((v for v in spec.variants if v.name in parts[1:]), None)
-    if variant:
-        facts["modifier"] = {"name": variant.name, "description": variant.description}
-        if action.withheld:
-            facts["modifier"]["withheld"] = action.withheld
-    if spec.directions and parts[-1] in spec.directions:
-        key = parts[-1]
-        origin = observation.get("hero", {}).get("position")
-        facts.update(direction=dict(DIRECTION_NAMES, **{".": "self", "<": "up", ">": "down"})[key],
-                     direction_key=key, origin=origin)
-        if origin is not None and facts["target"] is not None:
-            facts["delta"] = [end - start for start, end in zip(origin, facts["target"])]
-        adjacent = next((square for square in observation.get("adjacent", [])
-                         if square["direction"] == key and square["position"] == facts["target"]), None)
-        if adjacent is not None:
-            facts["target_observation"] = {name: adjacent[name] for name in (
-                "glyph", "colour", "remembered_terrain", "remembered_feature", "pet_highlight") if name in adjacent}
-    return facts
+def square_text(square):
+    """An adjacent square in one line: direction, position, glyph, colour, the highlighted pet and remembered terrain."""
+    parts = [DIRECTIONS[square["direction"]], xy_text(square["position"]), repr(square["glyph"])]
+    if square["colour"] != "default":
+        parts.append(square["colour"])
+    if square.get("pet_highlight"):
+        parts.append("pet")
+    if square.get("remembered_feature"):
+        parts.append("remembered " + square["remembered_feature"])
+    elif square["remembered_terrain"] not in (None, square["glyph"]):
+        parts.append("remembered %r" % square["remembered_terrain"])
+    return " ".join(parts)
+
+
+def entity_text(entity):
+    parts = [entity["glyph"], entity["colour"] + (" bright" if entity["bright"] else ""), xy_text(entity["position"]),
+             entity["kind"]]
+    if entity["pet_highlight"]:
+        parts.append("pet")
+    if entity.get("statue"):
+        parts.append("statue")
+    if entity.get("last_inspection"):
+        parts.append("looked: " + entity["last_inspection"]["description"])
+    return " ".join(parts)
+
+
+def attempt_text(attempt):
+    """One attempt in one line: the action, how it ended, its steps and turns, and where the hero went."""
+    action, result = attempt["action"], attempt.get("result") or {}
+    text = action["id"]
+    if action["kind"] == "input":
+        text += " (%s)" % action["description"]
+    reason = result.get("reason", "pending")
+    if result.get("changed_fields"):
+        reason += " (%s)" % ", ".join(result["changed_fields"])
+    text += ": %s, %s steps" % (reason, result.get("steps", "?"))
+    if result.get("elapsed_turns") is not None:
+        text += ", %d turns" % result["elapsed_turns"]
+    before, after = attempt.get("before") or {}, attempt.get("after") or {}
+    if before.get("position") and after.get("position"):
+        text += (", stayed at %s" % xy_text(before["position"]) if before["position"] == after["position"] else
+                 ", %s to %s" % (xy_text(before["position"]), xy_text(after["position"])))
+    if after.get("level") and after["level"] != before.get("level"):
+        text += ", now on " + after["level"]
+    if attempt["source"] != "engine":
+        text += " (%s)" % attempt["source"]
+    if result.get("error"):
+        text += ": " + result["error"]
+    return text
+
+
+def history(observation):
+    """This scope's attempts, the latest of them in one line each, and the caller budgets that remain."""
+    progress = observation.get("objective_progress")
+    if not progress:
+        return None
+    out = {"attempts": progress["scope_attempts"],
+           "recent": [attempt_text(a) for a in progress["recent_attempts"][-REQUEST_ATTEMPTS:]]}
+    if progress.get("attempts_remaining") is not None:
+        out["attempts_remaining"] = progress["attempts_remaining"]
+    budget = observation.get("review_budget") or {}
+    if budget.get("calls_remaining") is not None:
+        out["calls_remaining"] = budget["calls_remaining"]
+    return out
 
 
 def snapshot_summary(snapshot, field):
     return {field: snapshot[field], "age_turns": snapshot["age_turns"], "complete": snapshot["complete"]}
 
 
-def point_summary(point):
-    return {key: value for key, value in point.items() if key != "fingerprint"} if point else point
-
-
-def attempt_summary(attempt):
-    out = {key: value for key, value in attempt.items() if key != "decision"}
-    for key in ("before", "after"):
-        if key in out:
-            out[key] = point_summary(out[key])
-    return out
-
-
-def progress_summary(progress):
-    """Recent scoped attempts without screen hashes or record numbers."""
-    attempts = progress["recent_attempts"][-REQUEST_ATTEMPTS:]
-    return dict(progress, start=point_summary(progress["start"]),
-                recent_attempts=[attempt_summary(attempt) for attempt in attempts],
-                omitted_attempts=progress["omitted_attempts"] + len(progress["recent_attempts"]) - len(attempts))
-
-
 def request_observation(observation):
-    """The observation as sent to the engine: complete facts, without map memory the screen already shows.
-
-    Attempt and movement histories are shortened to their most recent entries; the decision log keeps them whole."""
-    out = {key: value for key, value in observation.items() if key != "fingerprint"}
-    if out.get("objective_progress"):
-        out["objective_progress"] = progress_summary(out["objective_progress"])
-    if out.get("navigation_progress"):
-        events = out["navigation_progress"]["recent_actions"][-REQUEST_ATTEMPTS:]
-        out["navigation_progress"] = dict(out["navigation_progress"], recent_actions=[
-            {key: value for key, value in event.items() if key != "decision"} for event in events])
-    if "messages" in out:
-        out["messages"] = out["messages"][-REQUEST_MESSAGES:]
+    """The observation as sent to the engine: its facts once each, in compact lines, without map memory the screen
+    already shows, values that say nothing, or more than the latest messages and attempts."""
+    o = observation
+    out = {"phase": o.get("phase")}
+    if o.get("game_result"):
+        out["game_result"] = o["game_result"]
+    hero = {key: value for key, value in (o.get("hero") or {}).items()
+            if value is not None and value is not False and value != [] and key != "position"}
+    if (o.get("hero") or {}).get("position"):
+        hero["position"] = xy_text(o["hero"]["position"])
+    out["hero"] = hero
+    out["messages"] = [("T%s: " % m["turn"] if m.get("turn") is not None else "") + m["text"]
+                       for m in (o.get("messages") or [])[-REQUEST_MESSAGES:]]
+    for key in ("prompt", "screen", "menu_entries", "map"):
+        if key in o:
+            out[key] = o[key]
+    if o.get("map_context", "dungeon") != "dungeon":
+        out["map_context"] = o["map_context"]
+    if o.get("entities"):
+        out["entities"] = [entity_text(entity) for entity in o["entities"]]
+    if o.get("underfoot"):
+        underfoot = o["underfoot"]
+        out["underfoot"] = (underfoot["remembered_terrain"] or "unknown") + (
+            " (inferred floor)" if underfoot.get("inferred") else "")
+    if o.get("adjacent"):
+        out["adjacent"] = {square["direction"]: square_text(square) for square in o["adjacent"]}
+    level = o.get("level")
+    if level:
+        out["level"] = {"id": level.get("id"), "label": level.get("label")}
+        looks = {}
+        for look in sorted(level.get("inspections") or [], key=lambda look: look["observed_turn"] or 0):
+            looks[look["description"]] = look
+        if looks:
+            out["level"]["inspections"] = ["T%s %s: %s" % (look["observed_turn"], xy_text(look["position"]),
+                                                           look["description"])
+                                           for look in sorted(looks.values(), key=lambda look: look["position"])]
+        if level.get("searches"):
+            out["level"]["searches"] = {"%d,%d" % tuple(entry[:2]): entry[2] for entry in level["searches"]}
+        if level.get("structural_obstacles"):
+            out["level"]["structural_obstacles"] = ["%s %s #" % (xy_text(cell["position"]), cell["colour"])
+                                                    for cell in level["structural_obstacles"]]
+    known = []
+    for entry in o.get("known_levels") or []:
+        summary = {"id": entry["id"], "label": entry["label"]}
+        if entry.get("landmarks"):
+            summary["landmarks"] = ["%s %s" % (xy_text(mark["position"]), mark["kind"]) for mark in entry["landmarks"]]
+        if entry.get("connections"):
+            summary["connections"] = ["%s %s to %s" % (xy_text(link["position"]), link["action"], link["destination"])
+                                      for link in entry["connections"]]
+        if len(summary) > 2:
+            known.append(summary)
+    if known:
+        out["known_levels"] = known
+    blocked = (o.get("navigation_obstacles") or {}).get("unavailable_destinations")
+    if blocked:
+        out["blocked_destinations"] = ["%s %s, %d steps, occupied %s" % (
+            xy_text(entry["position"]), entry["description"], entry["terrain_path_length"],
+            " ".join(xy_text(p) for p in entry["occupied_on_terrain_path"])) for entry in blocked]
     for key, field in (("inventory", "items"), ("spells", "items"), ("attributes", "lines"), ("dungeon_overview", "lines")):
-        if key not in out:
-            continue
-        if out[key][field] or out[key]["observed_turn"] is not None:
-            out[key] = snapshot_summary(out[key], field)
-        else:
-            del out[key]
-    level = out.get("level")
-    if level and "known_terrain" in level:
-        out["level"] = {key: value for key, value in level.items() if key not in OMITTED_LEVEL and value != []}
+        if key in o and (o[key][field] or o[key]["observed_turn"] is not None):
+            out[key] = snapshot_summary(o[key], field)
+    if o.get("prayers"):
+        out["prayers"] = o["prayers"]
+    attempts = history(o)
+    if attempts:
+        out["history"] = attempts
     return out
+
+
+def choice_text(action):
+    """What tells an argument choice apart from the others of its tool. Destinations and adjacent squares are
+    described once, in state.navigation and observation.adjacent under the same action id and direction key."""
+    spec = TOOLS.get(action.kind)
+    if action.withheld:
+        return action.withheld
+    if action.kind in ("travel", "explore") or spec and spec.directions and action.target is not None:
+        return ""
+    variant = next((v for v in spec.variants if v.name in action.id.split(":")[1:]), None) if spec else None
+    text = variant.description if variant else ""
+    if spec and spec.repeat:
+        text += ("; " if text else "") + "up to %d turn%s" % (action.steps, "" if action.steps == 1 else "s")
+    return text or action.description
 
 
 def estimated_tokens(body):
@@ -186,20 +275,19 @@ def omit_far_destinations(observation, actions, tool):
                                                                            NEAREST_DESTINATIONS)
 
 
-def omit_argument_facts(observation, actions, tool):
-    """The facts of a separate argument request, which the observation and the descriptions also carry."""
-    return (observation, actions, ARGUMENT_FACTS) if tool else None
-
-
 # What a request over its token budget leaves out, in this order, until it fits.
-OMISSIONS = (omit_other_levels, omit_older_messages, omit_far_destinations, omit_argument_facts)
+OMISSIONS = (omit_other_levels, omit_older_messages, omit_far_destinations)
+
+
+# The named-command tool offers dozens of rarely used commands; its question is asked once it has been chosen.
+SEPARATE = ("command",)
 
 
 def argument_options(actions):
-    """The offered actions of every tool that has several, by tool in catalogue order."""
+    """The offered actions of every tool that has several, by tool in catalogue order, but those asked separately."""
     options = {}
     for action in actions:
-        if action.kind != "pause":
+        if action.kind != "pause" and action.tool not in SEPARATE:
             options.setdefault(action.tool, []).append(action)
     return {tool: listed for tool, listed in options.items() if len(listed) > 1}
 
@@ -213,8 +301,8 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
     tool whose question did not fit are asked in a request of their own. A request for one tool's arguments asks
     only that, and one at a prompt asks for the answer.
 
-    A request over the budget leaves out, in order, other levels' landmarks, older messages, destinations beyond
-    the nearest and the facts of a separate argument request; `state.omitted` lists what it left out."""
+    A request over the budget leaves out, in order, other levels' landmarks, older messages and destinations
+    beyond the nearest; `state.omitted` lists what it left out."""
     omitted = []
     body = build_body(observation, actions, objective, model, tool, caller_context, omitted)
     for omit in OMISSIONS:
@@ -228,7 +316,7 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
     if body["state"]["decision"]["stage"] == "tool":
         for name, options in argument_options(actions).items():
             body["questions"][name] = {"type": "choice", "instructions": ARGUMENTS % name, "criteria": dict(
-                {action.id: action.description for action in options}, pause=PAUSE)}
+                {action.id: choice_text(action) for action in options}, pause=PAUSE)}
             if max_tokens is not None and estimated_tokens(body) > max_tokens:
                 del body["questions"][name]
     return body
@@ -240,29 +328,28 @@ def build_body(observation, actions, objective, model, tool, caller_context, omi
     if stage == "tool":
         criteria = {action.tool: tool_description(action.tool, action.description) for action in actions}
         instructions = "Choose the tool to use next."
+    elif stage == "arguments":
+        criteria = {action.id: choice_text(action) for action in actions if action.tool == tool or action.kind == "pause"}
+        instructions = "Selected tool: %s. Choose its concrete arguments." % tool
     else:
-        criteria = {action.id: action.description for action in actions
-                    if tool is None or action.tool == tool or action.kind == "pause"}
-        instructions = "Selected tool: %s. Choose its concrete arguments." % tool if tool else "Answer the current prompt."
+        criteria = {action.id: action.description for action in actions}
+        instructions = "Answer the current prompt."
     if "pause" in criteria:
         instructions += " " + GUIDANCE
-    visits = visit_counts(observation)
-    state = {"decision": {"stage": stage, "tool": tool}, "objective": objective, "caller_context": caller_context or {}}
+    state = {"decision": {"stage": stage, "tool": tool}, "objective": objective}
+    if caller_context:
+        state["caller_context"] = caller_context
     if omitted:
         state["omitted"] = list(omitted)
-    if stage == "tool":
-        state["navigation"] = {
-            "source": "offered routes through remembered terrain; not a guarantee of passage",
-            "frontier": ("the hero has not stood there, and a square beside it in a cardinal direction never "
-                         "showed a glyph and was never beside the hero"),
-            "destinations": [dict(action=action.id, **destination(action, visits))
-                             for action in actions if action.kind in ("travel", "explore") and action.route]}
-    elif stage == "arguments" and ARGUMENT_FACTS not in omitted:
-        state["argument_facts"] = {action.id: argument_facts(observation, action, visits)
-                                   for action in actions if action.id in criteria}
+    routes = [action for action in actions if action.kind in ("travel", "explore") and action.route and (
+        stage == "tool" or action.tool == tool)]
+    if routes:
+        visits = visit_counts(observation)
+        state["navigation"] = {"destinations": {action.id: destination_text(action, visits) for action in routes}}
     state["observation"] = request_observation(observation)
-    body = {"state": state, "questions": {"action": {"type": "choice", "instructions": instructions + " Objective: " + objective,
-                                                      "criteria": criteria}}}
+    body = {"state": state, "questions": {"action": {
+        "type": "choice", "instructions": "%s %s Objective: %s" % (instructions, POSITIONS, objective),
+        "criteria": criteria}}}
     if model:
         body["model"] = model
     return body
