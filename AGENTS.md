@@ -11,14 +11,11 @@ belongs outside it. Keep these responsibilities separate:
   and the caller's objective. It owns gameplay choices, including dangerous ones.
 - **LLM layer:** supply goals, game knowledge and strategy; review failures and
   replan. Model routing and orchestration belong outside the game adapter.
-  The optional `goal_supervisor/` package is a separate caller, connected through
-  the public CLI. Keep its goal lifecycle and conditions out of `nethack_harness/`.
 
 - The intended model split lets a decision engine execute concrete goals between
-  outer-LLM planning calls. Automatic condition checks and bounded execution must
-  not require an outer-LLM call per action. The supervisor currently returns
-  completion/review evidence; the host caller owns the LLM planning loop and
-  selection of the next goal.
+  outer-LLM planning calls. Bounded execution must not require an outer-LLM call
+  per action; the caller owns the LLM planning loop, goal conditions and selection
+  of the next goal.
 - Keep the project generic and independent of external orchestration systems.
   Deployment details, coordination, training objectives and reward functions
   belong outside the game adapter.
@@ -74,11 +71,6 @@ The modules below live in `nethack_harness/`:
 - `control.py`, `daemon.py`, `store.py`, `settings.py`: CLI, process lifecycle,
   fresh SQLite schema and execution limits.
 
-The separate `goal_supervisor/` package contains `goals.py` and `conditions.py`
-for caller-defined goal state and predicates, `harness.py` and `runner.py` for
-bounded CLI execution, and `storage.py` and `__main__.py` for persistence and
-caller commands. It does not call a planning model or automatically choose goals.
-
 ## Verification
 
 Run from the repository root:
@@ -87,7 +79,7 @@ Run from the repository root:
 python3 -m unittest discover -s tests -v
 python3 nethack_harness.py --version
 python3 -m nethack_harness help
-uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness goal_supervisor tests tools
+uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness tests tools
 ```
 
 CI tests Python 3.9 and 3.11. Tests use local sockets, fakes and subprocesses.

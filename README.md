@@ -30,22 +30,14 @@ endpoint fails. Failure pauses the session before another gameplay action.
 A caller supplies the objective and can pause, inspect, change the objective,
 manually act, or resume. Training and rewards live outside this repository.
 
-An optional [caller-side goal supervisor](goal_supervisor/README.md) maintains
-editable goals and subgoals, checks caller-defined completion/review conditions,
-and runs one bounded action per execution window. The LLM can add, update,
-switch, suspend, replace or remove goals while retaining their history.
-This is a separate package using the adapter's public CLI; the adapter does not
-import it or select goals. It is available from the source checkout and is not
-part of the harness zipapp.
-
 ## Goal planning and model calls
 
 The intended use is to reduce expensive planning-model calls by letting a
 decision engine carry out concrete goals. An outer LLM chooses a goal and its
 completion/review conditions. The engine chooses tools and arguments; the
-harness executes them and records the results. The optional supervisor checks
-those conditions and continues the same goal through bounded action windows
-without calling the outer LLM for each check.
+harness executes them and records the results. The caller checks those
+conditions and continues the same goal through bounded action windows without
+calling the outer LLM for each check.
 
 For example, reaching a known destination may take several decision requests
 under one unchanged goal. A bounded travel action can send several movement
@@ -53,12 +45,10 @@ commands without further model requests. Observed completion, a requested
 review or an execution failure returns control to the caller, which decides
 the next goal or recovery plan.
 
-The supervisor does not call an LLM planner or select the next goal automatically.
-Parent/child goals provide context and shared conditions; they do not define an
-ordered execution sequence. A host caller must implement the planning/review
-loop. Compare total planner and decision-engine calls, token usage, latency and
-cost at comparable gameplay progress when evaluating savings. Goal counts and
-action accuracy alone do not establish a cost reduction.
+The harness does not call an LLM planner or select the next goal. Compare total
+planner and decision-engine calls, token usage, latency and cost at comparable
+gameplay progress when evaluating savings. Goal counts and action accuracy alone
+do not establish a cost reduction.
 
 ## Run
 
@@ -667,8 +657,7 @@ sequence as decision records and returned by `export` (including `--after`):
   the objective record `set`. `goal --file FILE` records caller transitions from a
   JSON object or list with `transition` (`set`, `added`, `activated`, `updated`,
   `suspended`, `completed`, `removed` or `replaced`), `objective`, and optional
-  `goal_id`, `parent_id` and `reason`. The goal supervisor records its transitions
-  this way.
+  `goal_id`, `parent_id` and `reason`.
 - `note --kind KIND --text TEXT` (`--text -` reads stdin): a caller note stored
   verbatim, such as a plan, lesson, hypothesis or observation.
 - `purpose --kind KIND [--about TEXT] [--parent ID]`: why this session exists, for
@@ -713,7 +702,7 @@ covers all attempts of its request.
 
 ```sh
 python3 -m unittest discover -s tests -v
-uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness goal_supervisor tests tools
+uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness tests tools
 python3 tools/record_fixtures.py /tmp/game.sock /tmp/observation.json
 ```
 
@@ -737,7 +726,7 @@ Benchmarks stop on a pause, game over, endpoint failure or the time budget. They
 report depth, turns, actions, calls and latency; endpoint failures and truncated
 sessions are reported separately. There is no scripted gameplay fallback.
 This tool measures the decision endpoint under one supplied objective. It does
-not run the goal supervisor or an outer LLM planner, and does not calculate token
+not run an outer LLM planner, and does not calculate token
 usage or monetary cost. A comparison against direct LLM control needs an external
 evaluation that records those calls and uses comparable game conditions.
 
