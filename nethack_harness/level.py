@@ -43,6 +43,24 @@ def door_line(view, r, c):
     return view.ch(r, c - 1) == "-" or view.ch(r, c + 1) == "-" or view.ch(r - 1, c) == "|" or view.ch(r + 1, c) == "|"
 
 
+DOOR, OBJECT, DOOR_OR_OBJECT = "door", "object", "door or object"
+
+
+def plus_kind(view, terrain, r, c):
+    """What a + at (r, c) is: a closed door and a spellbook are both drawn +.
+
+    A door sits in a wall line, so a + with a wall glyph continuing its line, or remembered as a door, is a door.
+    One on remembered ground, or with floor beside it both across and along, is in no wall line: an object. The screen
+    cannot tell the rest, such as a + at a corridor's end whose walls have not been seen."""
+    remembered = terrain.get((r, c))
+    if door_line(view, r, c) or remembered == "+":
+        return DOOR
+    if remembered is not None or ("." in (view.ch(r - 1, c), view.ch(r + 1, c)) and
+                                  "." in (view.ch(r, c - 1), view.ch(r, c + 1))):
+        return OBJECT
+    return DOOR_OR_OBJECT
+
+
 def cursor_keys(start, target):
     dr, dc = target[0] - start[0], target[1] - start[1]
     return ";@" + ("l" * dc if dc > 0 else "h" * -dc) + ("j" * dr if dr > 0 else "k" * -dr) + "."
@@ -56,6 +74,8 @@ class Level:
         self.inferred_floor = set()
         self.seen = set()
         self.object_squares = set()
+        # Squares showing a + that may be a closed door or an object: routes neither enter nor leave them diagonally.
+        self.maybe_doors = set()
         self.open_doors = set()
         self.visits = {}
         self.searches = {}
@@ -93,7 +113,12 @@ class Level:
                         self.seen.add(p)
                     continue
                 self.seen.add(p)
-                if ch in ITEMS or statue or ch == "+" and not door_line(view, r, c):
+                plus = plus_kind(view, self.terrain, r, c) if ch == "+" else None
+                if plus == DOOR_OR_OBJECT:
+                    self.maybe_doors.add(p)
+                else:
+                    self.maybe_doors.discard(p)
+                if ch in ITEMS or statue or plus in (OBJECT, DOOR_OR_OBJECT):
                     if p not in self.terrain:
                         self.object_squares.add(p)
                     continue
@@ -192,7 +217,7 @@ class Level:
                     continue
                 if self.terrain.get(q) == "#" and not self.corridor(q):
                     continue
-                if key in "yubn" and (p in self.open_doors or q in self.open_doors):
+                if key in "yubn" and ({p, q} & self.open_doors or {p, q} & self.maybe_doors):
                     continue
                 step = (traps + (self.terrain.get(q) == "^"), length + 1)
                 if q in cost and cost[q] <= step:

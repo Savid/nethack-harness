@@ -7,7 +7,7 @@ from collections import deque
 from contextlib import contextmanager
 
 from .knowledge import ITEMS, MON, WARNING, trap_kind
-from .level import FEATURES, Level, door_line, neighbours, position, square
+from .level import DOOR_OR_OBJECT, FEATURES, OBJECT, Level, neighbours, plus_kind, position, square
 from .tools import TOOLS
 
 
@@ -277,12 +277,13 @@ class Observer:
         for r in range(1, 22):
             for c in range(80):
                 p, ch = (r, c), view.ch(r, c)
-                book = ch == "+" and not door_line(view, r, c)
-                if p == view.hero or ch not in MON | ITEMS | WARNING | {"I", "0", "`"} and not book:
+                plus = plus_kind(view, self.current.terrain if self.current else {}, r, c) if ch == "+" else None
+                if p == view.hero or ch not in MON | ITEMS | WARNING | {"I", "0", "`"} and plus not in (
+                        OBJECT, DOOR_OR_OBJECT):
                     continue
                 colour, bright = view.col(r, c)
                 statue = bool(self.current) and self.current.statues.get(p) == (ch, (colour, bright))
-                kind = "object" if statue or book else "monster" if ch in MON else \
+                kind = plus if plus else "object" if statue else "monster" if ch in MON else \
                     "unseen" if ch in WARNING | {"I"} else "object"
                 entry = {"position": position(p), "glyph": ch, "colour": colour, "bright": bright,
                          "kind": kind, "pet_highlight": view.pet(r, c)}

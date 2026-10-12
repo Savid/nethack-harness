@@ -206,6 +206,23 @@ class ActionCatalogueTest(TestCase):
         self.assertEqual(routes, {"travel:9,2", "explore:15,2", "explore:9,4"})
         self.assertIn("junction", choices["travel:9,2"].description)
 
+    def test_a_plus_neither_in_a_wall_line_nor_on_floor_is_a_door_or_object_entered_only_cardinally(self):
+        # Captured from a live game: a + beside a corridor's end (26,14) with none of its walls in view, which the
+        # hero next to it on the corridor (25,15) cannot step into diagonally if it is a door.
+        recorded = View(**json.loads((FIXTURES / "live-corridor-plus.json").read_text()))
+        observer = Observer()
+        state = observer.observation(recorded)
+        plus = next(e for e in state["entities"] if e["position"] == [26, 14])
+        self.assertEqual(plus["kind"], "door or object")
+        self.assertEqual(observer.current.terrain[(13, 19)], "+")
+        offered = {a.id: a for a in catalogue(recorded, observer, 8)}
+        self.assertEqual(offered["travel:26,14"].subject, "door or object +")
+        self.assertEqual(offered["travel:26,14"].route, ((14, 25), (14, 26)))
+        floor = view(screen("", [" ------- ", " |.@+..| ", " |.....| ", " ------- "]), (2, 3))
+        observer = Observer()
+        state = observer.observation(floor)
+        self.assertEqual(next(e["kind"] for e in state["entities"] if e["position"] == [4, 2]), "object")
+
     def test_an_unexplored_edge_is_offered_once_by_its_nearest_square(self):
         rows = ["", "   @....", "   .....", "   #", "  ###", "  ###", "   #"]
         observer = Observer()

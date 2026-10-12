@@ -269,9 +269,11 @@ class Play:
             elif p in level.open_doors:
                 out.append((p, ch, "open door", (p,)))
         for entity in self.observer.entities(view):
+            p = square(entity["position"])
             if entity["kind"] == "object":
-                p = square(entity["position"])
                 out.append((p, entity["glyph"], "statue" if entity.get("statue") else "item", (p,)))
+            elif entity["kind"] == "door or object":
+                out.append((p, entity["glyph"], entity["kind"], (p,)))
         return out
 
     def frontier(self, level, previous):
@@ -433,7 +435,7 @@ class Play:
         lines = ["you: %s  here: %s" % (xy(hero), self.underfoot(level, hero))]
         shown = []
         for entity in sorted(self.observer.entities(view), key=lambda e: chebyshev(square(e["position"]), hero)):
-            if entity["kind"] == "object":
+            if entity["kind"] not in ("monster", "unseen"):
                 continue
             p = square(entity["position"])
             key = (level.id, p, entity["glyph"], entity["colour"], entity["bright"], entity["pet_highlight"])

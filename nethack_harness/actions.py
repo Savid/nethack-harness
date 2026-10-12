@@ -148,8 +148,8 @@ def catalogue(view, observer, max_steps):
     for entity in entities:
         p = square(entity["position"])
         inspections[p] = entity["glyph"]
-        if p in previous and entity["kind"] == "object":
-            targets[p] = "object %s" % entity["glyph"]
+        if p in previous and entity["kind"] in ("object", "door or object"):
+            targets[p] = "%s %s" % (entity["kind"], entity["glyph"])
     for p, description in sorted(inspections.items()):
         actions.append(inspect(view, p, description))
     for target, description in sorted(distinct(level, previous, targets).items()):

@@ -250,11 +250,11 @@ hero's `@` and the status lines shown. A `look` while the engine plays sends
 nothing. A farlook that names a statue keeps that
 square an object. `adjacent K` is the movement key toward a monster or feature
 beside the hero. `seen:` lists remembered stairs, traps (by kind when a message
-named them), altars, fountains and doors; `items:` remembered
-objects and statues, each with its known route length in steps; `frontier:` the
-targets of `go frontier`. Lists show the nearest six. A `+` counts as a door only
-in a wall line; elsewhere it is an object, such as a spellbook. Menus,
-`--More--` and the end of the game print the screen rows instead of the map.
+named them), altars, fountains, doors and squares that may be either a door or an
+object (below); `items:` remembered objects and statues, each with its known route
+length in steps; `frontier:` the targets of `go frontier`. Lists show the nearest
+six. Menus, `--More--` and the end of the game print the screen rows instead of the
+map.
 
 Traps that messages report at the hero's square, such as "There is a dart trap
 here" or "A little dart shoots out at you!", are remembered there like a `^`, so
@@ -407,9 +407,14 @@ Memory lasts for the active game session. Known levels retain terrain, landmarks
 (stairs, traps, altars, fountains and other map features), and observed stair
 connections. Messages about the hero's square ("There is a dart trap here", "You
 see here ...", trap announcements) are kept for that square and name its trap or
-stairs. A `+` counts as a door only in a wall line; elsewhere it is an object,
-such as a spellbook. A square a farlook named as a statue stays an object. New
-terrain observations replace contradicted landmarks.
+stairs. A closed door and a spellbook are both drawn `+`. A `+` with a wall glyph
+continuing its line, or remembered as a door, is a door; one on remembered ground,
+or with floor beside it both across and along, is an object. The screen cannot tell
+the rest, such as a `+` at a corridor's end whose walls have not been seen: it is a
+`door or object`, an entity of that kind and a travel destination by that name, and
+routes neither enter nor leave it diagonally, as with a door. A square a farlook
+named as a statue stays an object. New terrain observations replace contradicted
+landmarks.
 While engulfed, `map_context` identifies the raw map as an engulfment overlay.
 The overlay does not update terrain, visits, searches, inspections or map
 entities. Remembered level facts remain available; adjacent and underfoot
