@@ -241,7 +241,7 @@ hero's `@` and the status lines shown. A `look` while the engine plays sends
 nothing. A farlook that names a statue keeps that
 square an object. `adjacent K` is the movement key toward a monster or feature
 beside the hero. `seen:` lists remembered stairs, traps (by kind when a message
-named them), altars, fountains, doors and message landmarks; `items:` remembered
+named them), altars, fountains and doors; `items:` remembered
 objects and statues, each with its known route length in steps; `frontier:` the
 targets of `go frontier`. Lists show the nearest six. A `+` counts as a door only
 in a wall line; elsewhere it is an object, such as a spellbook. Menus,
@@ -397,11 +397,8 @@ Memory lasts for the active game session. Known levels retain terrain, landmarks
 connections. Messages about the hero's square ("There is a dart trap here", "You
 see here ...", trap announcements) are kept for that square and name its trap or
 stairs. A `+` counts as a door only in a wall line; elsewhere it is an object,
-such as a spellbook. A square a farlook named as a statue stays an object. Recognized shop welcome/untended messages retain the position where
-they appeared, their exact text and turn. This is evidence of a shop entry, not
-its boundary, current stock or safety; silent entries may only appear in a queried
-dungeon overview. Vibrating-square discovery messages are also retained at their
-observed location. New terrain observations replace contradicted landmarks.
+such as a spellbook. A square a farlook named as a statue stays an object. New
+terrain observations replace contradicted landmarks.
 While engulfed, `map_context` identifies the raw map as an engulfment overlay.
 The overlay does not update terrain, visits, searches, inspections or map
 entities. Remembered level facts remain available; adjacent and underfoot

@@ -111,7 +111,6 @@ class Observer:
         self.edges = {}
         self.arrivals = {}
         self.last_action = None
-        self.last_play_message = None
         self.game_result = None
 
     @contextmanager
@@ -219,22 +218,11 @@ class Observer:
                 self.edges[edge] = self.current
                 self.arrivals[edge] = view.hero
         if view.engulfed:
-            self.last_play_message = view.msg
             return
         self.current.observe(view)
         if self.notes and view.hero:
             self.current.note_underfoot(view.hero, self.notes, view.st.get("turn"))
             self.notes = []
-        if view.msg != self.last_play_message and view.hero:
-            evidence = {"text": view.msg, "observed_turn": view.st.get("turn")}
-            if (re.search(r"Welcome(?: again)? to .+!", view.msg) or
-                    re.search(r"This shop (?:seems to be|is) (?:deserted|untended)\.", view.msg)):
-                self.current.landmark_messages[(view.hero, "shop entry")] = dict(
-                    evidence, source="entry message", extent="message location; shop boundary and current contents unknown")
-            if re.search(r"You feel a strange vibration (?:under|beneath) ", view.msg):
-                self.current.landmark_messages[(view.hero, "vibrating square observation")] = dict(
-                    evidence, source="underfoot message", extent="message location; current feature not reverified")
-        self.last_play_message = view.msg
         signature = (self.current.id, view.hero, view.st.get("turn"))
         if signature != self.previous:
             self.current.visits[view.hero] = self.current.visits.get(view.hero, 0) + 1

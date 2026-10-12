@@ -40,14 +40,10 @@ class ObservationTest(TestCase):
                 self.assertEqual(restored["map_context"], "dungeon")
                 self.assertIn("travel:5,2", {a.id for a in catalogue(normal, observer, 8)})
 
-    def test_vibrating_square_message_and_underfoot_details_are_retained(self):
+    def test_underfoot_details_are_retained(self):
         observer = Observer()
-        initial = view(screen("You feel a strange vibration under your feet.", [" ---- ", " |.@.| ", " ---- "]))
+        initial = view(screen("", [" ---- ", " |.@.| ", " ---- "]))
         observer.observation(initial)
-        state = observer.observation(view())
-        landmark = state["known_levels"][0]["landmarks"][0]
-        self.assertEqual(landmark["kind"], "vibrating square observation")
-        self.assertEqual(landmark["position"], [3, 2])
         after = view(screen("There is a high altar to Tyr (lawful) here.", [" ---- ", " |.@.| ", " ---- "]))
         observer.remember_look(after.hero, initial, after, source="look_here")
         state = observer.observation(view())
@@ -142,13 +138,12 @@ class ObservationTest(TestCase):
         self.assertEqual(state["level"]["inspections"][0]["description"], "floating eye")
         self.assertEqual(state["level"]["inspections"][0]["observed_turn"], 400)
 
-    def test_landmarks_and_shop_evidence_survive_history_and_level_changes(self):
+    def test_landmarks_survive_history_and_level_changes(self):
         observer = Observer()
-        initial = view(screen('"Hello, Hero! Welcome to Izchak\'s lighting store!"',
-                              [" -------- ", " |.@{_.>| ", " -------- "]))
+        initial = view(screen("", [" -------- ", " |.@{_.>| ", " -------- "]))
         state = observer.observation(initial)
         kinds = {entry["kind"] for entry in state["known_levels"][0]["landmarks"]}
-        self.assertEqual(kinds, {"shop entry", "fountain", "altar", "down stairs"})
+        self.assertEqual(kinds, {"fountain", "altar", "down stairs"})
         action = next(a for a in catalogue(initial, observer, 8) if a.id == "descend")
         observer.begin(action, initial)
         down = view(screen("", [" ---- ", " |.@.| ", " ---- "], status2="Dlvl:4 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:401"))
@@ -165,9 +160,8 @@ class ObservationTest(TestCase):
         self.assertEqual(state["level"]["id"], known["id"])
         kinds = {entry["kind"] for entry in known["landmarks"]}
         self.assertNotIn("fountain", kinds)
-        shop = next(entry for entry in known["landmarks"] if entry["kind"] == "shop entry")
-        self.assertEqual(shop["observed_turn"], 400)
-        self.assertEqual(shop["position"], [3, 2])
+        altar = next(entry for entry in known["landmarks"] if entry["kind"] == "altar")
+        self.assertEqual(altar["position"], [5, 2])
         self.assertEqual(known["connections"][0]["destination"], "level-2")
         self.assertEqual(Observer().levels, [])
 

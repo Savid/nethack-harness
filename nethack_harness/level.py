@@ -61,7 +61,6 @@ class Level:
         self.searches = {}
         self.feature_turns = {}
         self.inspections = {}
-        self.landmark_messages = {}
         self.trap_kinds = {}
         # Statues are drawn as the monster they depict; a farlook that named one keeps its square an object.
         self.statues = {}
@@ -268,6 +267,4 @@ class Level:
     def landmarks(self):
         return [{"position": position(p), "kind": self.kind(p), "glyph": ch,
                  "observed_turn": self.feature_turns.get(p), "source": "terminal map or underfoot message"}
-                for p, ch in sorted(self.terrain.items()) if ch in FEATURES] + [
-                    dict(value, position=position(p), kind=kind)
-                    for (p, kind), value in sorted(self.landmark_messages.items())]
+                for p, ch in sorted(self.terrain.items()) if ch in FEATURES]

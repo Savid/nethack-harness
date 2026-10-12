@@ -268,7 +268,6 @@ class Play:
                 out.append((p, ch, "door", tuple(q for key, q in neighbours(p) if key in "hjkl")))
             elif p in level.open_doors:
                 out.append((p, ch, "open door", (p,)))
-        out += [(p, "", kind, (p,)) for (p, kind) in sorted(level.landmark_messages)]
         for entity in self.observer.entities(view):
             if entity["kind"] == "object":
                 p = square(entity["position"])
