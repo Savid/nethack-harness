@@ -152,12 +152,38 @@ def catalogue(view, observer, max_steps):
             targets[p] = "object %s" % entity["glyph"]
     for p, description in sorted(inspections.items()):
         actions.append(inspect(view, p, description))
-    for target, description in sorted(targets.items()):
-        if level.route(previous, target):
+    for target, description in sorted(distinct(level, previous, targets).items()):
+        if not level.route(previous, target):
+            continue
+        if description == "corridor endpoint":
+            actions.append(explore(level, previous, target, max_steps))
+        else:
             actions.append(travel(level, previous, target, description, max_steps))
-            if description == "corridor endpoint":
-                actions.append(explore(level, previous, target, max_steps))
     return actions + [pause]
+
+
+EDGE = "edge of known terrain"
+
+
+def distinct(level, previous, targets):
+    """The targets with only the nearest by route of each 8-connected group of frontier edge squares: squares along
+    one unexplored edge lead to the same place. A corridor endpoint is offered as exploration, which follows the same
+    route to it."""
+    out = dict(targets)
+    left = {p for p, description in targets.items() if description == EDGE}
+    while left:
+        group, stack = set(), [left.pop()]
+        while stack:
+            p = stack.pop()
+            group.add(p)
+            for _, q in neighbours(p):
+                if q in left:
+                    left.discard(q)
+                    stack.append(q)
+        keep = min(group, key=lambda p: (len(level.route(previous, p) or ()), p))
+        for p in group - {keep}:
+            del out[p]
+    return out
 
 
 def inspect(view, p, description):

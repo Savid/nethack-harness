@@ -268,7 +268,8 @@ Normal-play choices include individual moves and attacks, opening or kicking a
 door, using items, casting, engraving, praying, inspecting game information,
 bounded searching/waiting and travel toward explicit known map targets.
 Travel destinations include squares beside closed doors, reachable objects, and
-the edge of known terrain: frontier squares. A square is unknown when it has
+the edge of known terrain: frontier squares, of which each group that touches is
+offered once, by its square nearest by route. A square is unknown when it has
 never shown a glyph and the hero has never stood beside it; standing on a square
 shows all of its neighbours, so one still blank after that is rock, and a square
 seen under a monster or object is not unknown. A frontier square is one the hero
@@ -282,8 +283,10 @@ remembered water or lava (`}`), and cross a
 remembered trap (`^`) only where no other known route exists; a red `}` is
 named lava and a blue one water. A destination remains offered for the final
 step of its route.
-Corridors expose endpoints and junctions as destinations. Interior corridor
-tiles remain part of routes without each becoming another destination choice.
+Corridors expose junctions as travel destinations and endpoints as exploration,
+which follows the same route to the endpoint and then the corridor beyond it.
+Interior corridor tiles remain part of routes without each becoming another
+destination choice.
 Corridor squares connect cardinally, and diagonally where no cardinal path joins them.
 Move commands can bump into or attack occupants according to game mechanics.
 Travel uses movement without attacks along a shortest known route. Both can

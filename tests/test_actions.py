@@ -180,11 +180,10 @@ class ActionCatalogueTest(TestCase):
 
     def test_diagonal_corridor_steps_connect_unless_a_cardinal_path_joins_them(self):
         choices = self.choices(view(screen("", ["", "   @#", "     #", "      ##"]), (2, 3)))
-        travel = {a.target: a.subject for a in choices.values() if a.kind == "travel"}
-        self.assertEqual(travel, {(4, 7): "corridor endpoint"})
-        self.assertIn("explore:7,4", choices)
+        routes = {a.target: a.kind for a in choices.values() if a.route}
+        self.assertEqual(routes, {(4, 7): "explore"})
         bend = self.choices(view(screen("", ["", "   @##", "     ##"]), (2, 3)))
-        self.assertEqual({a.target for a in bend.values() if a.kind == "travel"}, {(3, 6)})
+        self.assertEqual({a.target for a in bend.values() if a.route}, {(3, 6)})
 
     def test_prompt_choices_preserve_game_answers(self):
         v = view(screen("Really attack the peaceful gnome? [yn] (n)"), (0, 40))
@@ -202,10 +201,26 @@ class ActionCatalogueTest(TestCase):
     def test_mapped_corridors_offer_endpoints_and_junctions(self):
         rows = ["", "   @############", "         #", "         #"]
         choices = self.choices(view(screen("", rows)))
-        targets = {a.target for a in choices.values() if a.kind == "travel"}
-        self.assertEqual(targets, {(2, 9), (2, 15), (4, 9)})
+        routes = {a.id for a in choices.values() if a.route}
+        # A corridor endpoint is reached by exploration, which follows the same route and then the corridor on.
+        self.assertEqual(routes, {"travel:9,2", "explore:15,2", "explore:9,4"})
         self.assertIn("junction", choices["travel:9,2"].description)
-        self.assertIn("explore:15,2", choices)
+
+    def test_an_unexplored_edge_is_offered_once_by_its_nearest_square(self):
+        rows = ["", "   @....", "   .....", "   #", "  ###", "  ###", "   #"]
+        observer = Observer()
+        dark = view(screen("", rows), (2, 3))
+        observer.observation(dark)
+        level = observer.current
+        previous = level.paths(dark.hero)
+        edges = [p for p, kind in level.targets(previous).items() if kind == "edge of known terrain"]
+        offered = [a for a in catalogue(dark, observer, 8) if a.subject == "edge of known terrain"]
+        self.assertGreater(len(edges), 1)
+        self.assertEqual([a.target for a in offered], [min(edges, key=lambda p: (len(level.route(previous, p)), p))])
+        junctions = [p for p, kind in level.targets(previous).items() if kind == "corridor junction"]
+        self.assertGreater(len(junctions), 1)
+        self.assertEqual({a.target for a in catalogue(dark, observer, 8) if a.subject == "corridor junction"},
+                         set(junctions))
 
     def test_item_ranges_and_text_entry(self):
         v = view(screen("What do you want to eat? [a-c or ?*]"), (0, 40))

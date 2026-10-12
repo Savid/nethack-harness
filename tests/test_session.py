@@ -163,10 +163,11 @@ class SessionTest(TestCase):
         self.assertEqual(session.term.sent, ["h", "h"])
 
     def test_unchanged_travel_and_exploration_handoff_before_duplicate_input(self):
-        for kind in ("travel", "explore"):
+        for kind, rows, cursor, target in (("travel", [" |@.{| "], (1, 2), "4,1"),
+                                           ("explore", ["  #@##"], (1, 3), "5,1")):
             with self.subTest(kind=kind):
-                initial = view(screen("", ["  #@##"]), (1, 3))
-                session, endpoint = self.session(choosing(kind, kind + ":5,1"), [initial])
+                initial = view(screen("", rows), cursor)
+                session, endpoint = self.session(choosing(kind, kind + ":" + target), [initial])
                 self.assertIsNone(session.step())
                 self.assertEqual(session.step(), "repeated_no_effect")
                 self.assertEqual(session.term.sent, ["ml"])
