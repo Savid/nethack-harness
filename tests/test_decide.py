@@ -8,6 +8,7 @@ from helpers import Endpoint
 from nethack_harness.actions import Action
 from nethack_harness import decide
 from nethack_harness.decide import Engine, DecisionError, estimated_tokens, request_body
+from nethack_harness.tools import TOOLS
 
 
 class EngineTest(TestCase):
@@ -30,6 +31,24 @@ class EngineTest(TestCase):
         liquid = request_body(dict(observation, adjacent=[lava]), [withheld], "Go", tool="move")
         self.assertIn("lava", liquid["state"]["observation"]["adjacent"]["u"])
         self.assertIn("withheld", liquid["questions"]["action"]["criteria"]["move:no_pickup:u"])
+
+    def test_argument_choices_keep_their_modifier_and_say_here_up_or_down(self):
+        adjacent = {"direction": "u", "position": [71, 7], "glyph": "d", "colour": "yellow", "remembered_terrain": "."}
+        observation = {"phase": "play", "hero": {"position": [70, 8]}, "adjacent": [adjacent]}
+        actions = [Action("move:u", "Move", "move", "u", target=(7, 71)),
+                   Action("move:no_pickup:u", "Move", "move", "mu", target=(7, 71))]
+        actions += [Action("open:" + key, "Open", "open", "o", target=(8, 70)) for key in "u.<>"]
+        actions.append(Action("pause", "Return control to the caller", "pause", steps=0))
+        questions = request_body(observation, actions, "Go")["questions"]
+        # The plain move's square is described in observation.adjacent; what the modifier does is not.
+        self.assertEqual(questions["move"]["criteria"]["move:u"], "")
+        no_pickup = next(v for v in TOOLS["move"].variants if v.name == "no_pickup")
+        self.assertEqual(questions["move"]["criteria"]["move:no_pickup:u"], no_pickup.description)
+        vertical = [questions["open"]["criteria"]["open:" + key] for key in ".<>"]
+        self.assertTrue(all(vertical))
+        self.assertEqual(len(set(vertical)), 3)
+        engulfed = request_body(dict(observation, adjacent=[]), actions, "Go", tool="open")["questions"]["action"]
+        self.assertTrue(engulfed["criteria"]["open:u"])
 
     def test_each_destination_is_described_once_under_its_action_id(self):
         route = ((2, 4), (2, 5), (2, 6))

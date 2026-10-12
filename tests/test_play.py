@@ -262,10 +262,11 @@ class PlayTest(TestCase):
             play.go("frontier")
 
     def test_no_frontier_lists_what_remains(self):
-        rows = [" -----", " |...|", " |.@.+", " |...|", " -----"]
+        # The + at 8,4 is in no wall line the screen shows and on no known floor: a door or an object.
+        rows = [" -----", " |...|", " |.@.+", " |...|  +", " -----"]
         play = self.play([view(screen("", rows), (3, 3))], engine=Engine())
         play.view()
-        with self.assertRaisesRegex(ValueError, r"doors: 5,3 \(1\)"):
+        with self.assertRaisesRegex(ValueError, r"doors: 5,3 \(1\), 8,4 door or object \(no route\)"):
             play.go("frontier")
 
     def test_go_and_rest_stop_when_the_caller_interrupts(self):

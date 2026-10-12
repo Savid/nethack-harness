@@ -240,8 +240,9 @@ class Play:
         doors = []
         for p, _, label, goals in self.landmarks(view, level):
             lengths = [len(level.route(terrain, goal)) for goal in goals if goal in terrain]
-            if label == "door":
-                doors.append("%s (%s)" % (xy(p), min(lengths) if lengths else "no route"))
+            if label in ("door", "door or object"):
+                doors.append("%s%s (%s)" % (xy(p), "" if label == "door" else " " + label,
+                                            min(lengths) if lengths else "no route"))
         if doors:
             facts.append("doors: " + ", ".join(doors[:LISTED]))
         edges = [p for p in terrain if level.frontier(p)]

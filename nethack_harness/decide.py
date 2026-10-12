@@ -226,19 +226,30 @@ def request_observation(observation):
     return out
 
 
-def choice_text(action):
-    """What tells an argument choice apart from the others of its tool. Destinations and adjacent squares are
-    described once, in state.navigation and observation.adjacent under the same action id and direction key."""
+def choice_text(action, described=()):
+    """What tells an argument choice apart from the others of its tool: its modifier, its bound, and its direction
+    unless observation.adjacent describes the square under that key (`described`). Destinations are described once,
+    in state.navigation under the same action ID, so a plain move toward a described square needs no words."""
     spec = TOOLS.get(action.kind)
-    if action.withheld:
-        return action.withheld
-    if action.kind in ("travel", "explore") or spec and spec.directions and action.target is not None:
+    if action.kind in ("travel", "explore"):
         return ""
-    variant = next((v for v in spec.variants if v.name in action.id.split(":")[1:]), None) if spec else None
-    text = variant.description if variant else ""
-    if spec and spec.repeat:
-        text += ("; " if text else "") + "up to %d turn%s" % (action.steps, "" if action.steps == 1 else "s")
-    return text or action.description
+    parts = action.id.split(":")
+    variant = next((v for v in spec.variants if v.name in parts[1:]), None) if spec else None
+    text = [variant.description] if variant else []
+    if spec and spec.directions and parts[-1] in spec.directions:
+        if parts[-1] not in described:
+            text.insert(0, DIRECTIONS[parts[-1]])
+    elif spec and spec.repeat:
+        text.append("up to %d turn%s" % (action.steps, "" if action.steps == 1 else "s"))
+    elif not text:
+        text = [action.description]
+    if action.withheld:
+        text.append(action.withheld)
+    return "; ".join(text)
+
+
+def described_directions(observation):
+    return {square["direction"] for square in observation.get("adjacent") or []}
 
 
 def estimated_tokens(body):
@@ -314,9 +325,10 @@ def request_body(observation, actions, objective, model=None, tool=None, caller_
             omitted.append(note)
             body = build_body(observation, actions, objective, model, tool, caller_context, omitted)
     if body["state"]["decision"]["stage"] == "tool":
+        described = described_directions(observation)
         for name, options in argument_options(actions).items():
             body["questions"][name] = {"type": "choice", "instructions": ARGUMENTS % name, "criteria": dict(
-                {action.id: choice_text(action) for action in options}, pause=PAUSE)}
+                {action.id: choice_text(action, described) for action in options}, pause=PAUSE)}
             if max_tokens is not None and estimated_tokens(body) > max_tokens:
                 del body["questions"][name]
     return body
@@ -329,7 +341,9 @@ def build_body(observation, actions, objective, model, tool, caller_context, omi
         criteria = {action.tool: tool_description(action.tool, action.description) for action in actions}
         instructions = "Choose the tool to use next."
     elif stage == "arguments":
-        criteria = {action.id: choice_text(action) for action in actions if action.tool == tool or action.kind == "pause"}
+        described = described_directions(observation)
+        criteria = {action.id: choice_text(action, described) for action in actions
+                    if action.tool == tool or action.kind == "pause"}
         instructions = "Selected tool: %s. Choose its concrete arguments." % tool
     else:
         criteria = {action.id: action.description for action in actions}

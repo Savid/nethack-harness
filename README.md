@@ -539,9 +539,12 @@ when the caller set one, `omitted` when the token budget left something out,
 `navigation` when travel or exploration is offered, and the `observation`. Each
 fact appears once. Destinations are described in `navigation.destinations` and
 adjacent squares in `observation.adjacent`, under the action IDs and direction keys
-the questions offer, so those options need no description of their own; facts
-that are lists of one kind of thing (entities, messages, attempts, landmarks,
-inspections) are one short line each, with positions written `x,y`.
+the questions offer, so a destination or a plain directional action toward a
+described square needs no description of its own. An option still names what the
+square entry cannot: its modifier (such as `move:no_pickup`), its bound, a modifier
+withheld toward guarded terrain, and here, up or down. Facts that are lists of one
+kind of thing (entities, messages, attempts, landmarks, inspections) are one short
+line each, with positions written `x,y`.
 
 During normal play one request asks the tool question `action` and, for every
 offered tool with several concrete actions, a question named after that tool
