@@ -184,7 +184,7 @@ including text windows such as "Things that are here", is reported.
 `go` takes `x,y`, `<`, `>`, `item`, `frontier` or a kind listed under `seen:`
 (`door`, `open door`, `altar`, `fountain`, `dart trap`, ...) and walks to the
 nearest by known route, skipping one the hero already stands at; for a closed
-door it walks to a square beside it. A named square is the destination even at a
+door, named or given as `x,y`, it walks to a square beside it. A named square is the destination even at a
 corridor end. `frontier` takes the nearest group of
 [frontier squares](#actions-and-observations) and walks to its far side; at the
 end of a known corridor it follows the corridor on, as the exploration action
@@ -193,7 +193,7 @@ the session's `--max-action-steps` bound and their stopping rules; messages that
 are only about a tame monster the game has named do not stop it, and a step that
 the pet blocks is tried once more. Routes pass through the highlighted pet,
 swapping places. When no route exists `go` sends nothing and says why: the
-monster blocking the only route, a target that is a door or was never seen, or,
+monster blocking the only route, a target that was never seen, or,
 for `frontier`, the doors, blocking monsters, boulders and corridor ends that
 remain, each corridor end with the number of searches made there. `rest` is
 the bounded search; it refuses at a prompt, and when no game time passes the

@@ -216,6 +216,14 @@ class PlayTest(TestCase):
         play.go("door")
         self.assertEqual(play.session.last["outcome"]["action"]["target"], [31, 5])
 
+    def test_go_to_a_closed_door_square_walks_beside_it(self):
+        play = self.play([start()], engine=Engine())
+        play.observer.observation(start())
+        play.go("30,5")
+        self.assertEqual(play.session.last["outcome"]["action"]["target"], [31, 5])
+        with self.assertRaisesRegex(ValueError, "already at 32,6"):
+            play.go("32,7")
+
     def test_go_names_the_monster_blocking_the_only_route(self):
         play = self.play([view(screen("", ["", " >##F#@"]), (2, 6))])
         play.observer.observation(view(screen("", ["", " >####@"]), (2, 6)))

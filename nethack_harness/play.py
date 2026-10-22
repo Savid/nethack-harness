@@ -29,6 +29,11 @@ def chebyshev(p, q):
     return max(abs(p[0] - q[0]), abs(p[1] - q[1]))
 
 
+def door_sides(p):
+    """The squares a walk to a closed door ends on: the door's orthogonal neighbours, as doors refuse diagonals."""
+    return tuple(q for key, q in neighbours(p) if key in "hjkl")
+
+
 def squash(row):
     return " ".join(row.split())
 
@@ -208,6 +213,8 @@ class Play:
             p = int(match[2]), int(match[1])
             if not on_map(p):
                 raise ValueError("%s is off the map" % target)
+            if level.terrain.get(p) == "+":
+                return [(p, "+", "door", door_sides(p))]
             return [(p, "", "chosen square", (p,))]
         word = target.strip().lower()
         if word == "frontier":
@@ -229,8 +236,6 @@ class Play:
                 target, " or ".join(xy(q) for q in blockers[:3]))
         if len(places) == 1 and places[0][2] == "chosen square":
             p = places[0][0]
-            if level.terrain.get(p) == "+":
-                return "%s is a door; go door walks beside it" % target
             if p not in level.terrain and p not in level.object_squares:
                 return "%s has not been seen" % target
             return "no known route to %s" % target
@@ -266,7 +271,7 @@ class Play:
             if ch in FEATURES:
                 out.append((p, ch, level.kind(p), (p,)))
             elif ch == "+":
-                out.append((p, ch, "door", tuple(q for key, q in neighbours(p) if key in "hjkl")))
+                out.append((p, ch, "door", door_sides(p)))
             elif p in level.open_doors:
                 out.append((p, ch, "open door", (p,)))
         for entity in self.observer.entities(view):
