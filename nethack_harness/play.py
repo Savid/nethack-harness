@@ -195,6 +195,8 @@ class Play:
             if action.kind == "search" or hero == action.target:
                 return "%s: %s; done" % (label, done)
             why = "it reached its step limit, %d squares short" % (len(action.route) - outcome["steps"])
+        elif outcome.get("refused_step"):
+            why = "step %s->%s refused; routing around it" % tuple("%d,%d" % tuple(p) for p in outcome["refused_step"])
         elif reason == "observation_changed" and outcome.get("changed_fields"):
             why = ", ".join(FIELDS.get(field, field) for field in outcome["changed_fields"])
         else:

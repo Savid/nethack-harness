@@ -25,6 +25,15 @@ def corridor(hero, tiles, turn=400, hp=12):
                        status2="Dlvl:3 $:0 HP:%d(16) Pw:2(2) AC:6 Xp:2 T:%d" % (hp, turn)), hero)
 
 
+def hall(hero, turn=400, message="", monster=None):
+    rows = [list(" |....| "), list(" |....| ")]
+    rows[hero[0] - 2][hero[1]] = "@"
+    if monster:
+        rows[monster[0] - 2][monster[1]] = "d"
+    return view(screen(message, [" ------ "] + ["".join(row) for row in rows] + [" ------ "],
+                       status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:%d" % turn), hero)
+
+
 class ExecutionTest(TestCase):
     def executor(self, frames):
         term, observer = FakeTerm(frames), Observer()
@@ -78,6 +87,19 @@ class ExecutionTest(TestCase):
                                           fingerprint(executor.term.view()))
                     self.assertEqual(executor.term.sent, ["ml"])
                     self.assertEqual((result["reason"], result["steps"]), (reason, 1))
+
+    def test_a_route_step_refused_without_a_turn_passing_is_kept_out_of_later_routes(self):
+        for after, refused in ((hall((2, 2), message="You cannot get through."), True),
+                               (hall((2, 2), turn=401, message="You cannot get through."), False),
+                               (hall((2, 2), monster=(3, 3)), False)):
+            with self.subTest(refused=refused, turn=after.st["turn"]):
+                executor, _ = self.executor([hall((2, 2)), after])
+                result = executor.run(Action("travel:3,3", "Go southeast", "travel", steps=1, target=(3, 3),
+                                             route=((3, 3),)), fingerprint(executor.term.view()))
+                self.assertEqual(executor.term.sent, ["mn"])
+                level = executor.observer.current
+                self.assertEqual(result.get("refused_step"), [[2, 2], [3, 3]] if refused else None)
+                self.assertEqual(len(level.route(level.paths((2, 2)), (3, 3))), 2 if refused else 1)
 
     def test_direction_followup_waits_for_the_expected_prompt(self):
         direction = view(screen("In what direction?"), (0, 18))

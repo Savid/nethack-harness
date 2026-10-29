@@ -63,6 +63,12 @@ def discovery(p, ch, level, known, known_colours, known_seen):
     return ch not in "|-" and p not in known_seen
 
 
+def refused(prior, view, origin, target):
+    """A step that left the hero in place without a turn passing and with no monster shown where it led."""
+    turn = view.st.get("turn")
+    return view.hero == origin and turn is not None and turn == prior.st.get("turn") and view.ch(*target) not in MON
+
+
 def drained(prior, view):
     return any(view.st.get(key) is not None and prior.st.get(key) is not None and view.st[key] < prior.st[key]
                for key in ("hp", "pw"))
@@ -201,6 +207,7 @@ class Executor:
         view = before
         repeat = bool(TOOLS.get(action.kind) and TOOLS[action.kind].repeat)
         idle = 0
+        refusal = None
         for step in range(action.steps):
             if self.cancelled():
                 reason = "caller_interrupt"
@@ -260,6 +267,9 @@ class Executor:
                 reason = "prompt"
                 break
             if action.kind in ("travel", "explore") and view.hero != target:
+                if refused(prior, view, origin, target):
+                    self.observer.current.refuse(origin, direction)
+                    refusal = [position(origin), position(target)]
                 reason = "no_observed_effect" if fingerprint(view) == fingerprint(prior) else "movement_interrupted"
                 break
             if exploring:
@@ -301,6 +311,8 @@ class Executor:
         result = self.snapshot(reason)
         if changed_fields:
             result["changed_fields"] = changed_fields
+        if refusal:
+            result["refused_step"] = refusal
         if exploring:
             result["position"] = position(view.hero)
             result["new_terrain"] = [{"position": position(p), "glyph": ch}

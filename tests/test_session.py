@@ -161,7 +161,8 @@ class SessionTest(TestCase):
         for kind, rows, cursor, target in (("travel", [" |@.{| "], (1, 2), "4,1"),
                                            ("explore", ["  #@##"], (1, 3), "5,1")):
             with self.subTest(kind=kind):
-                initial = view(screen("", rows), cursor)
+                # Without the turn counter a step left in place is not known to be refused, so it is offered again.
+                initial = view(screen("", rows, status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2"), cursor)
                 session, endpoint = self.session(choosing(kind, kind + ":" + target), [initial])
                 self.assertIsNone(session.step())
                 self.assertEqual(session.step(), "repeated_no_effect")

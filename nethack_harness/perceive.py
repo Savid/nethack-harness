@@ -190,6 +190,9 @@ class Observer:
         label = view.st.get("location")
         changed = self.current is None or self.current.label != label
         if changed:
+            if self.current:
+                # A refusal may depend on the hero rather than the terrain, so it lasts only until the hero leaves.
+                self.current.refused.clear()
             edge = None
             if self.last_action:
                 action, old, origin = self.last_action

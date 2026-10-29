@@ -210,6 +210,22 @@ class PlayTest(TestCase):
                     play.go(target)
         self.assertEqual(len(play.session.term.sent), 2)
 
+    def test_go_names_a_refused_step_and_routes_around_it(self):
+        def at(hero, turn, message=""):
+            rows = [list(" |....| "), list(" |..>.| ")]
+            rows[hero[0] - 2][hero[1]] = "@"
+            return view(screen(message, [" ------ "] + ["".join(row) for row in rows] + [" ------ "],
+                               status2="Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:%d" % turn), hero)
+
+        play = self.play([at((2, 3), 400), at((2, 3), 400, "You cannot get through."), at((3, 3), 401),
+                          at((3, 4), 402)], engine=Engine())
+        play.view()
+        report, _, _ = play.go(">")
+        self.assertEqual(report, "go >: 1 step, 0 turns, now at 3,2; stopped: step 3,2->4,3 refused; routing around it")
+        report, _, _ = play.go(">")
+        self.assertEqual(play.session.term.sent, ["mn", "mj", "ml"])
+        self.assertEqual(report, "go >: 2 steps, 2 turns, now at 4,3; done")
+
     def test_go_door_walks_beside_another_door_when_already_beside_one(self):
         play = self.play([start()], engine=Engine())
         play.observer.observation(start())
