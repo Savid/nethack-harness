@@ -212,24 +212,25 @@ class Level:
                 and self.linked(p, q, key, self.corridor)]
 
     def paths(self, start, occupied=()):
-        """Shortest routes that cross the fewest remembered traps: like the game's own travel, a route crosses
-        a trap only where no other known route exists. No route takes a step the game refused."""
-        previous, cost = {start: None}, {start: (0, 0)}
+        """Shortest routes that take the fewest refused steps, then cross the fewest remembered traps: like the
+        game's own travel, a route crosses a trap only where no other known route exists, and it takes a step
+        the game refused only where no route avoids one."""
+        previous, cost = {start: None}, {start: (0, 0, 0)}
         order = count()
-        queue = [(0, 0, next(order), start)]
+        queue = [(0, 0, 0, next(order), start)]
         blocked = set(occupied) - {start}
         while queue:
-            traps, length, _, p = heapq.heappop(queue)
-            if (traps, length) != cost[p]:
+            refused, traps, length, _, p = heapq.heappop(queue)
+            if (refused, traps, length) != cost[p]:
                 continue
             for key, q in neighbours(p):
-                if q in blocked or not self.passable(q) or (p, key) in self.refused:
+                if q in blocked or not self.passable(q):
                     continue
                 if self.terrain.get(q) == "#" and not self.corridor(q):
                     continue
                 if key in "yubn" and ({p, q} & self.open_doors or {p, q} & self.maybe_doors):
                     continue
-                step = (traps + (self.terrain.get(q) == "^"), length + 1)
+                step = (refused + ((p, key) in self.refused), traps + (self.terrain.get(q) == "^"), length + 1)
                 if q in cost and cost[q] <= step:
                     continue
                 cost[q], previous[q] = step, p
