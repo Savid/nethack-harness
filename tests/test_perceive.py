@@ -4,6 +4,7 @@ from pathlib import Path
 
 from helpers import screen, view
 from nethack_harness.actions import Action, catalogue
+from nethack_harness.level import REFUSED_STEPS
 from nethack_harness.perceive import Observer, fingerprint, more_window, parse_menu_entries
 from nethack_harness.screen import PromptContext, View
 
@@ -164,6 +165,19 @@ class ObservationTest(TestCase):
         self.assertEqual(altar["position"], [5, 2])
         self.assertEqual(known["connections"][0]["destination"], "level-2")
         self.assertEqual(Observer().levels, [])
+
+    def test_refused_steps_are_bounded_and_forgotten_on_leaving_the_level(self):
+        observer = Observer()
+        observer.observation(view(screen("", [" ---- ", " |.@.| ", " ---- "])))
+        level = observer.current
+        for c in range(70):
+            level.refuse((2, c), "l")
+        self.assertEqual(len(level.refused), REFUSED_STEPS)
+        self.assertNotIn(((2, 0), "l"), level.refused)
+        self.assertIn(((2, 69), "l"), level.refused)
+        observer.observation(view(screen("", [" ---- ", " |.@.| ", " ---- "],
+                                         status2="Dlvl:4 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:401")))
+        self.assertEqual(level.refused, {})
 
     def test_caller_typed_stair_keys_return_to_the_remembered_level(self):
         observer = Observer()

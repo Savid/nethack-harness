@@ -291,7 +291,11 @@ squares seen only under objects. Like the game's own travel, routes never cross
 remembered water or lava (`}`), and cross a
 remembered trap (`^`) only where no other known route exists; a red `}` is
 named lava and a blue one water. A destination remains offered for the final
-step of its route.
+step of its route. A route step that leaves the hero in place without a game turn
+passing, with no monster shown where it led, is remembered as refused: later routes
+avoid that step from that square, and `go` stops with `step x,y->x,y refused;
+routing around it`. The level keeps the latest 64 refused steps and forgets them
+when the hero leaves it; without the turn counter on the status line none are kept.
 Corridors expose junctions as travel destinations and endpoints as exploration,
 which follows the same route to the endpoint and then the corridor beyond it.
 Interior corridor tiles remain part of routes without each becoming another

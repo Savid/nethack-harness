@@ -11,6 +11,7 @@ FEATURES = {"<": "up stairs", ">": "down stairs", "^": "trap", "_": "altar",
 LIQUIDS = {"red": "lava", "blue": "water"}
 # Remembered water or lava is not ground: routes, like the game's own travel, never cross it.
 PASSABLE = ".#<>^{_\\"
+REFUSED_STEPS = 64
 
 
 def on_map(p):
@@ -85,6 +86,8 @@ class Level:
         # Statues are drawn as the monster they depict; a farlook that named one keeps its square an object.
         self.statues = {}
         self.underfoot = {}
+        # Steps that left the hero in place without a turn passing, as (square, direction key), oldest first.
+        self.refused = {}
 
     def remember_terrain(self, p, ch, turn, colour=None):
         previous = self.terrain.get(p)
@@ -164,6 +167,13 @@ class Level:
                 self.remember_terrain(p, "^", turn)
                 self.trap_kinds[p] = trap
 
+    def refuse(self, p, key):
+        """Keep the step from p in direction key out of routes, forgetting the oldest beyond REFUSED_STEPS."""
+        self.refused.pop((p, key), None)
+        self.refused[(p, key)] = True
+        while len(self.refused) > REFUSED_STEPS:
+            del self.refused[next(iter(self.refused))]
+
     def guarded(self, p):
         """The name of remembered terrain at p that the game checks before a plain move enters it, or None.
 
@@ -203,7 +213,7 @@ class Level:
 
     def paths(self, start, occupied=()):
         """Shortest routes that cross the fewest remembered traps: like the game's own travel, a route crosses
-        a trap only where no other known route exists."""
+        a trap only where no other known route exists. No route takes a step the game refused."""
         previous, cost = {start: None}, {start: (0, 0)}
         order = count()
         queue = [(0, 0, next(order), start)]
@@ -213,7 +223,7 @@ class Level:
             if (traps, length) != cost[p]:
                 continue
             for key, q in neighbours(p):
-                if q in blocked or not self.passable(q):
+                if q in blocked or not self.passable(q) or (p, key) in self.refused:
                     continue
                 if self.terrain.get(q) == "#" and not self.corridor(q):
                     continue
