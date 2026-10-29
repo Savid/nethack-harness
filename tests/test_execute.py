@@ -100,6 +100,8 @@ class ExecutionTest(TestCase):
                 level = executor.observer.current
                 self.assertEqual(result.get("refused_step"), [[2, 2], [3, 3]] if refused else None)
                 self.assertEqual(len(level.route(level.paths((2, 2)), (3, 3))), 2 if refused else 1)
+                # Where no route avoids it, a route still takes the refused step.
+                self.assertEqual(len(level.route(level.paths((2, 2), occupied={(2, 3), (3, 2)}), (3, 3))), 1)
 
     def test_direction_followup_waits_for_the_expected_prompt(self):
         direction = view(screen("In what direction?"), (0, 18))
