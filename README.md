@@ -242,6 +242,7 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 GOLDENS_WRITE=1 cargo test --test goldens   # rewrite tests/goldens from the current view; review the diff
+cargo test --release --test bench -- --ignored --nocapture --test-threads 1   # print resource measurements
 ```
 
 The tests include per-module unit tests, golden views of recorded screens in `tests/fixtures/screens`, and end
