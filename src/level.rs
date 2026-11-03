@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use crate::glyphs::{
-    Base, Condition, Shade, feature_name, find_word, is_corridor_engraving, is_engraving_text,
+    BLIND, Base, Shade, feature_name, find_word, is_corridor_engraving, is_engraving_text,
     is_floor_engraving, is_item, is_monster, is_warning, is_word, liquid_name, shade, trap_kind,
 };
 use crate::screen::View;
@@ -255,7 +255,7 @@ impl Level {
     /// Takes in every map square of a screen in normal play: terrain, objects, doors, engravings and the hero's
     /// square.
     pub fn observe(&mut self, view: &View) {
-        let blind = view.cond.contains(Condition::Blind);
+        let blind = view.cond.contains(BLIND);
         for i in 0..MAP_SQUARES {
             let p = Pos::from_index(i);
             let cell = view.grid.cell(p);
@@ -1068,7 +1068,7 @@ mod tests {
     fn a_blind_hero_does_not_see_the_square_of_a_sensed_monster() {
         let g = map(&["", "   @.  d"]);
         let mut view = view_at(&g, 2, 3, 400);
-        view.cond.insert(Condition::Blind);
+        view.cond = crate::glyphs::conditions("Blind");
         let mut level = Level::new(1, "Dlvl:3");
         level.observe(&view);
         assert!(!level.seen.contains(at(2, 7)));

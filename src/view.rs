@@ -382,7 +382,7 @@ impl Renderer {
         facts.hpmax = status.hpmax;
         facts.xl = status.xl;
         facts.ac = status.ac;
-        facts.hunger = view.cond.hunger().map(|c| c.name().to_owned());
+        facts.hunger = view.cond.hunger().map(str::to_owned);
     }
 
     /// The parts after the map: `inventory:` on the map view, then `answered:` and `end:`.

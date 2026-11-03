@@ -882,7 +882,6 @@ fn menu_entry(row: &str) -> Option<(char, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glyphs::Condition;
     use crate::testkit::{STATUS1, STATUS2, grid, screen};
     use crate::types::Colour;
 
@@ -1318,25 +1317,15 @@ mod tests {
             0,
             0,
         );
-        let got: Vec<Condition> = v.cond.iter().collect();
-        assert_eq!(
-            got,
-            [
-                Condition::Blind,
-                Condition::TermIll,
-                Condition::Stone,
-                Condition::Trapped
-            ]
-        );
+        let got: Vec<&str> = v.cond.names().collect();
+        assert_eq!(got, ["Blind", "TermIll", "Stone", "Trapped"]);
         let v = view(&screen(
             "",
             &[],
             &format!("{:<40}Hungry Conf", "Weak the Stripling"),
             STATUS2,
         ));
-        assert!(v.cond.contains(Condition::Hungry));
-        assert!(v.cond.contains(Condition::Conf));
-        assert!(!v.cond.contains(Condition::Weak));
+        assert!(v.cond.names().eq(["Hungry", "Conf"]));
     }
 
     #[test]

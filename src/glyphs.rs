@@ -144,184 +144,68 @@ pub fn liquid_name(base: Base) -> Option<&'static str> {
     }
 }
 
-/// A status-line condition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Condition {
-    /// Hungry.
-    Hungry,
-    /// Weak.
-    Weak,
-    /// Fainting.
-    Fainting,
-    /// Fainted.
-    Fainted,
-    /// Satiated.
-    Satiated,
-    /// Burdened.
-    Burdened,
-    /// Stressed.
-    Stressed,
-    /// Strained.
-    Strained,
-    /// Overtaxed.
-    Overtaxed,
-    /// Overloaded.
-    Overloaded,
-    /// Blind.
-    Blind,
-    /// Confused.
-    Conf,
-    /// Stunned.
-    Stun,
-    /// Hallucinating.
-    Hallu,
-    /// Food poisoning.
-    FoodPois,
-    /// Terminally ill.
-    TermIll,
-    /// Turning to stone.
-    Stone,
-    /// Turning to slime.
-    Slime,
-    /// Being strangled.
-    Strngl,
-    /// Levitating.
-    Lev,
-    /// Flying.
-    Fly,
-    /// Riding.
-    Ride,
-    /// Deaf.
-    Deaf,
-    /// Held by a monster.
-    Held,
-    /// Trapped.
-    Trapped,
-    /// Paralysed.
-    Parlyz,
-    /// Asleep.
-    Zzz,
-    /// In lava.
-    InLava,
-    /// Sliding.
-    Sliding,
-    /// Unconscious.
-    Unconsc,
-}
-
-/// Every condition, in status-line order.
-pub const CONDITIONS: [Condition; 30] = [
-    Condition::Hungry,
-    Condition::Weak,
-    Condition::Fainting,
-    Condition::Fainted,
-    Condition::Satiated,
-    Condition::Burdened,
-    Condition::Stressed,
-    Condition::Strained,
-    Condition::Overtaxed,
-    Condition::Overloaded,
-    Condition::Blind,
-    Condition::Conf,
-    Condition::Stun,
-    Condition::Hallu,
-    Condition::FoodPois,
-    Condition::TermIll,
-    Condition::Stone,
-    Condition::Slime,
-    Condition::Strngl,
-    Condition::Lev,
-    Condition::Fly,
-    Condition::Ride,
-    Condition::Deaf,
-    Condition::Held,
-    Condition::Trapped,
-    Condition::Parlyz,
-    Condition::Zzz,
-    Condition::InLava,
-    Condition::Sliding,
-    Condition::Unconsc,
+/// The status-line conditions in status-line order, each as the words the status line may show for it, full name
+/// first. A condition's bit in `Conditions` is its index here.
+const CONDITIONS: [&[&str]; 30] = [
+    &["Hungry", "Hngry"],
+    &["Weak", "Wk"],
+    &["Fainting", "Fnt"],
+    &["Fainted"],
+    &["Satiated", "Sat"],
+    &["Burdened", "Brd"],
+    &["Stressed", "Ssd"],
+    &["Strained", "Snd"],
+    &["Overtaxed", "Otd"],
+    &["Overloaded", "Old"],
+    &["Blind", "Blnd"],
+    &["Conf", "Cnf"],
+    &["Stun", "Stn"],
+    &["Hallu", "Hal"],
+    &["FoodPois", "Fpois"],
+    &["TermIll", "Ill"],
+    &["Stone", "Ston"],
+    &["Slime", "Slim"],
+    &["Strngl", "Stngl"],
+    &["Lev"],
+    &["Fly"],
+    &["Ride"],
+    &["Deaf"],
+    &["Held", "Hld", "Grab"],
+    &["Trapped", "Trap"],
+    &["Parlyz"],
+    &["Zzz"],
+    &["InLava"],
+    &["Sliding"],
+    &["Unconsc"],
 ];
+/// The index of `Blind` in `CONDITIONS`.
+pub const BLIND: usize = 10;
+/// The hunger states, `Hungry` to `Satiated`, in `CONDITIONS`.
+const HUNGER: std::ops::Range<usize> = 0..5;
 
-impl Condition {
-    /// The condition's full name, such as `Hungry` or `Conf`.
-    pub fn name(self) -> &'static str {
-        self.forms()[0]
-    }
-
-    /// The words the status line may show for it, full and abbreviated, such as `Hungry` and `Hngry`.
-    pub fn forms(self) -> &'static [&'static str] {
-        match self {
-            Condition::Hungry => &["Hungry", "Hngry"],
-            Condition::Weak => &["Weak", "Wk"],
-            Condition::Fainting => &["Fainting", "Fnt"],
-            Condition::Fainted => &["Fainted"],
-            Condition::Satiated => &["Satiated", "Sat"],
-            Condition::Burdened => &["Burdened", "Brd"],
-            Condition::Stressed => &["Stressed", "Ssd"],
-            Condition::Strained => &["Strained", "Snd"],
-            Condition::Overtaxed => &["Overtaxed", "Otd"],
-            Condition::Overloaded => &["Overloaded", "Old"],
-            Condition::Blind => &["Blind", "Blnd"],
-            Condition::Conf => &["Conf", "Cnf"],
-            Condition::Stun => &["Stun", "Stn"],
-            Condition::Hallu => &["Hallu", "Hal"],
-            Condition::FoodPois => &["FoodPois", "Fpois"],
-            Condition::TermIll => &["TermIll", "Ill"],
-            Condition::Stone => &["Stone", "Ston"],
-            Condition::Slime => &["Slime", "Slim"],
-            Condition::Strngl => &["Strngl", "Stngl"],
-            Condition::Lev => &["Lev"],
-            Condition::Fly => &["Fly"],
-            Condition::Ride => &["Ride"],
-            Condition::Deaf => &["Deaf"],
-            Condition::Held => &["Held", "Hld", "Grab"],
-            Condition::Trapped => &["Trapped", "Trap"],
-            Condition::Parlyz => &["Parlyz"],
-            Condition::Zzz => &["Zzz"],
-            Condition::InLava => &["InLava"],
-            Condition::Sliding => &["Sliding"],
-            Condition::Unconsc => &["Unconsc"],
-        }
-    }
-
-    /// Whether it is a hunger state.
-    pub fn is_hunger(self) -> bool {
-        matches!(
-            self,
-            Condition::Hungry
-                | Condition::Weak
-                | Condition::Fainting
-                | Condition::Fainted
-                | Condition::Satiated
-        )
-    }
-}
-
-/// A set of conditions.
+/// A set of status-line conditions, by their index in `CONDITIONS`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Conditions(pub u32);
 
 impl Conditions {
-    /// Whether `c` is in the set.
-    pub fn contains(self, c: Condition) -> bool {
-        self.0 & (1 << c as u8) != 0
+    /// Whether the condition at `index` is in the set.
+    pub fn contains(self, index: usize) -> bool {
+        self.0 & (1 << index) != 0
     }
 
-    /// Adds `c`.
-    pub fn insert(&mut self, c: Condition) {
-        self.0 |= 1 << c as u8;
-    }
-
-    /// The conditions in the set, in `CONDITIONS` order.
-    pub fn iter(self) -> impl Iterator<Item = Condition> {
-        CONDITIONS.into_iter().filter(move |&c| self.contains(c))
+    /// The full names of the conditions in the set, in status-line order.
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
+        (0..CONDITIONS.len())
+            .filter(move |&i| self.contains(i))
+            .map(|i| CONDITIONS[i][0])
     }
 
     /// The hunger state shown, if any.
-    pub fn hunger(self) -> Option<Condition> {
-        self.iter().find(|c| c.is_hunger())
+    pub fn hunger(self) -> Option<&'static str> {
+        HUNGER
+            .clone()
+            .find(|&i| self.contains(i))
+            .map(|i| CONDITIONS[i][0])
     }
 }
 
@@ -329,10 +213,8 @@ impl Conditions {
 pub fn conditions(text: &str) -> Conditions {
     let mut found = Conditions::default();
     for word in text.split(|c: char| !is_word(c)).filter(|w| !w.is_empty()) {
-        for c in CONDITIONS {
-            if c.forms().contains(&word) {
-                found.insert(c);
-            }
+        if let Some(i) = CONDITIONS.iter().position(|forms| forms.contains(&word)) {
+            found.0 |= 1 << i;
         }
     }
     found
@@ -560,14 +442,14 @@ mod tests {
     #[test]
     fn conditions_match_whole_words_only() {
         let found = conditions("Dlvl:3 $:0 HP:12(16) T:400 Hngry Blind Conf");
-        let names: Vec<&str> = found.iter().map(Condition::name).collect();
-        assert_eq!(names, ["Hungry", "Blind", "Conf"]);
-        assert_eq!(found.hunger(), Some(Condition::Hungry));
+        assert!(found.names().eq(["Hungry", "Blind", "Conf"]));
+        assert!(found.contains(BLIND));
+        assert_eq!(found.hunger(), Some("Hungry"));
         assert_eq!(
             conditions("Confused Blindfold Trapdoor"),
             Conditions::default()
         );
-        assert!(conditions("Lev Trap").contains(Condition::Trapped));
+        assert!(conditions("Lev Trap").names().eq(["Lev", "Trapped"]));
     }
 
     #[test]
