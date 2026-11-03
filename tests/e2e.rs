@@ -323,7 +323,7 @@ fn the_session_is_private_to_its_owner() {
 fn an_oversized_target_is_a_usage_error() {
     let dir = scratch("e2e-target");
     let session = Session::new(&dir, &dir.join("absent.sock"));
-    let go = session.run(&["go", &"x".repeat(200_000)]);
+    let go = session.run(&["go", &"x".repeat(100_000)]);
     assert_eq!(code(&go), 64, "{}", stderr(&go));
     assert!(!session.dir.exists());
 }
