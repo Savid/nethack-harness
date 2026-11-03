@@ -36,29 +36,24 @@ pub enum Kind {
     LookHere,
 }
 
-/// A bounded action.
+/// A bounded action: the keys of one step (or a farlook's cursor keys), the most steps to take, the square it is
+/// going to or looking at, and the known route there, first step first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
-    /// What it does.
     pub kind: Kind,
-    /// The keys of one step, or a farlook's cursor keys.
     pub keys: Vec<u8>,
-    /// Most steps to take.
     pub steps: u32,
-    /// The square it is going to or looking at.
     pub target: Option<Pos>,
-    /// The known route, first step first.
     pub route: Vec<Pos>,
 }
 
-/// Which observations changed and ended an action.
+/// Which observations changed and ended an action, as bit flags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Changed(pub u8);
 
 impl Changed {
     /// The status line changed, other than turn, HP and Pw, or HP or Pw dropped.
     pub const STATUS: Changed = Changed(1);
-    /// A condition changed.
     pub const CONDITIONS: Changed = Changed(2);
     /// The hero was engulfed or released.
     pub const ENGULFED: Changed = Changed(4);
@@ -72,17 +67,14 @@ impl Changed {
     /// HP that was below its maximum reached it.
     pub const HP_FULL: Changed = Changed(64);
 
-    /// Whether every flag of `other` is set.
     pub fn contains(self, other: Changed) -> bool {
         self.0 & other.0 == other.0 && other.0 != 0
     }
 
-    /// Sets the flags of `other`.
     pub fn insert(&mut self, other: Changed) {
         self.0 |= other.0;
     }
 
-    /// Whether no flag is set.
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -94,9 +86,7 @@ pub enum Stop {
     /// It did everything asked.
     #[default]
     Completed,
-    /// It took its most steps.
     StepLimit,
-    /// A prompt opened.
     Prompt,
     /// The hero did not arrive where the step led.
     MovementInterrupted,
@@ -108,18 +98,14 @@ pub enum Stop {
     FeatureDiscovered,
     /// The corridor being followed branches.
     BranchDiscovered,
-    /// The corridor being followed ends.
     CorridorEnds,
     /// Observations in `Outcome::changed` changed.
     Changed,
     /// A step left the hero in place with no turn passing; it is kept out of routes.
     Refused {
-        /// The square the step left from.
         from: Pos,
-        /// The square it led to.
         to: Pos,
     },
-    /// The game ended.
     GameOver,
     /// The terminal failed.
     Link(LinkError),
@@ -130,16 +116,13 @@ pub enum Stop {
 /// A monster that ended a rest or walk by arriving.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arrival {
-    /// Its glyph.
     pub glyph: char,
-    /// Its square.
     pub pos: Pos,
 }
 
 /// What an action did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// Why it ended.
     pub stop: Stop,
     /// For `Stop::Changed`, what changed.
     pub changed: Changed,
@@ -154,9 +137,8 @@ pub struct Outcome {
     pub messages: Vec<String>,
     /// Prompts the keys passed and the key that answered each.
     pub answered: Vec<Answered>,
-    /// Earlier message lines left out of `messages`.
+    /// Earlier lines and prompts left out of `messages` and `answered`.
     pub messages_left_out: u32,
-    /// Earlier prompts left out of `answered`.
     pub answered_left_out: u32,
 }
 
@@ -186,45 +168,32 @@ enum Watch {
 pub struct Executor {
     /// The last batch sent started a run (travel `_`, `G` or a shift-run).
     after_run: bool,
-    /// Monsters at the previous step of a walk or rest.
+    /// Monsters at the previous step of a walk or rest, and now.
     previous: Vec<Entity>,
-    /// Monsters now.
     now: Vec<Entity>,
-    /// Text-window lines being read.
+    /// Text-window lines and menu entries being read.
     window: Vec<String>,
-    /// Menu entries being read.
     entries: Vec<MenuEntry>,
     /// The keys of one route step.
     step: Vec<u8>,
     /// The screen an information command was asked from.
     before: Option<View>,
-    /// Remembered terrain when the action began; `'\0'` where none.
+    /// When the action began: the level it was on, its remembered terrain (`'\0'` where none) and colours, the
+    /// squares that had shown a glyph, the open doors and the status line.
+    level: Option<u16>,
     terrain: Box<[char; MAP_SQUARES]>,
-    /// Remembered terrain colours when the action began.
     colours: Box<[Option<Base>; MAP_SQUARES]>,
-    /// Squares that had shown a glyph when the action began.
     seen: SquareSet,
-    /// Open doors when the action began.
     doors: SquareSet,
+    status: Status,
     /// Squares an exploration has known or stood on.
     covered: SquareSet,
-    /// The level the action began on.
-    level: Option<u16>,
-    /// The status line when the action began.
-    status: Status,
     /// The game had already ended when the action began.
     ended_before: bool,
 }
 
 impl Default for Executor {
     fn default() -> Executor {
-        Executor::new()
-    }
-}
-
-impl Executor {
-    /// An executor with empty buffers.
-    pub fn new() -> Executor {
         Executor {
             after_run: false,
             previous: Vec::new(),
@@ -243,7 +212,9 @@ impl Executor {
             ended_before: false,
         }
     }
+}
 
+impl Executor {
     /// Runs `action` to its first boundary, ingesting every screen into `memory`. The caller has read the screen
     /// since the game last took input, so nothing is re-read first. Keys actions record each prompt
     /// passed and the key that answered it, and flag keys typed into a text prompt; nothing is answered on the
@@ -963,76 +934,50 @@ fn is_run(keys: &[u8]) -> bool {
     )
 }
 
-/// A walk along the known route to `target`, at most `max_steps` steps.
-pub fn travel(paths: &Paths, target: Pos, max_steps: u32) -> Action {
-    let mut route = Vec::new();
-    paths.route(target, &mut route);
+/// An action of `kind` that sends `keys`, at most `steps` times.
+fn action(kind: Kind, keys: &[u8], steps: u32) -> Action {
     Action {
-        kind: Kind::Travel,
-        keys: Vec::new(),
-        steps: max_steps.min(route.len() as u32),
-        target: Some(target),
-        route,
+        kind,
+        keys: keys.to_vec(),
+        steps,
+        target: None,
+        route: Vec::new(),
     }
 }
 
-/// A walk to the corridor end `target`, then along the corridor beyond it, at most `max_steps` steps.
-pub fn explore(paths: &Paths, target: Pos, max_steps: u32) -> Action {
-    let mut route = Vec::new();
-    paths.route(target, &mut route);
-    Action {
-        kind: Kind::Explore,
-        keys: Vec::new(),
-        steps: max_steps,
-        target: Some(target),
-        route,
+/// A travel or exploration along the known route to `target`, at most `max_steps` steps. Travel ends there;
+/// exploring goes on along the corridor beyond it.
+pub fn walk(kind: Kind, paths: &Paths, target: Pos, max_steps: u32) -> Action {
+    let mut walk = action(kind, &[], max_steps);
+    paths.route(target, &mut walk.route);
+    if kind == Kind::Travel {
+        walk.steps = max_steps.min(walk.route.len() as u32);
     }
+    walk.target = Some(target);
+    walk
 }
 
 /// A farlook of `target` from the hero's square in `view`.
 pub fn farlook(view: &View, target: Pos) -> Action {
-    let mut keys = Vec::new();
-    cursor_keys(view.hero.unwrap_or(view.cursor), target, &mut keys);
-    Action {
-        kind: Kind::Farlook,
-        keys,
-        steps: 1,
-        target: Some(target),
-        route: Vec::new(),
-    }
+    let mut farlook = action(Kind::Farlook, &[], 1);
+    cursor_keys(view.hero.unwrap_or(view.cursor), target, &mut farlook.keys);
+    farlook.target = Some(target);
+    farlook
 }
 
 /// Up to `count` searches in place.
 pub fn search(count: u32) -> Action {
-    Action {
-        kind: Kind::Search,
-        keys: b"s".to_vec(),
-        steps: count,
-        target: None,
-        route: Vec::new(),
-    }
+    action(Kind::Search, b"s", count)
 }
 
 /// A look underfoot.
 pub fn look_here() -> Action {
-    Action {
-        kind: Kind::LookHere,
-        keys: b":".to_vec(),
-        steps: 1,
-        target: None,
-        route: Vec::new(),
-    }
+    action(Kind::LookHere, b":", 1)
 }
 
 /// The caller's keys.
 pub fn keys(keys: &[u8]) -> Action {
-    Action {
-        kind: Kind::Keys,
-        keys: keys.to_vec(),
-        steps: 1,
-        target: None,
-        route: Vec::new(),
-    }
+    action(Kind::Keys, keys, 1)
 }
 
 /// The farlook cursor keys from `start` to `target`: `@` to the hero, moves, then `.` to pick.
@@ -1222,7 +1167,7 @@ mod tests {
     #[test]
     fn a_route_is_walked_step_by_step() {
         let (mut term, mut memory) = start(vec![at(3, 400), at(4, 401), at(5, 402)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(2));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
         assert_eq!(sent(&term), ["ml", "ml"]);
         assert_eq!(outcome.stop, Stop::Completed);
         assert_eq!((outcome.steps, outcome.turns), (2, Some(2)));
@@ -1240,7 +1185,7 @@ mod tests {
             confirm,
         ]);
         let action = walk(Kind::Travel, 3, (2, 6), &[(2, 4), (2, 5), (2, 6)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &action);
+        let outcome = Executor::default().run(&mut term, &mut memory, &action);
         assert_eq!(sent(&term), ["ml", "l"]);
         assert_eq!((outcome.stop, outcome.steps), (Stop::Prompt, 2));
     }
@@ -1264,7 +1209,7 @@ mod tests {
             for (after, stop) in cases {
                 let (mut term, mut memory) = start(vec![at(3, 400), after, at(4, 402)]);
                 let action = walk(kind, 8, (2, 4), &[(2, 4)]);
-                let outcome = Executor::new().run(&mut term, &mut memory, &action);
+                let outcome = Executor::default().run(&mut term, &mut memory, &action);
                 assert_eq!(sent(&term), ["ml"], "{kind:?}");
                 assert_eq!((outcome.stop, outcome.steps), (stop, 1), "{kind:?}");
             }
@@ -1272,7 +1217,7 @@ mod tests {
         // A monster standing in the way leaves the screen as it was: no effect, and no refusal.
         let blocked = room(3, 12, 400, "", Some(4));
         let (mut term, mut memory) = start(vec![blocked.clone(), blocked]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(1));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(1));
         assert_eq!(outcome.stop, Stop::NoEffect);
     }
 
@@ -1286,7 +1231,7 @@ mod tests {
         for (after, refused) in cases {
             let (mut term, mut memory) = start(vec![hall((2, 2), 400, "", None), after]);
             let action = walk(Kind::Travel, 1, (3, 3), &[(3, 3)]);
-            let outcome = Executor::new().run(&mut term, &mut memory, &action);
+            let outcome = Executor::default().run(&mut term, &mut memory, &action);
             assert_eq!(sent(&term), ["mn"]);
             let expected = Stop::Refused {
                 from: Pos::new(2, 2),
@@ -1331,7 +1276,7 @@ mod tests {
             Some(4),
         );
         memory.remember_look(Pos::new(2, 4), &dog, &named, LookSource::Farlook);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(3));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(3));
         assert_eq!(sent(&term), ["ml", "ml", "ml", "ml"]);
         assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 4));
     }
@@ -1348,13 +1293,13 @@ mod tests {
         ];
         for (after, field) in cases {
             let (mut term, mut memory) = start(vec![at(3, 400), after, at(5, 402)]);
-            let outcome = Executor::new().run(&mut term, &mut memory, &east(2));
+            let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
             assert_eq!(sent(&term), ["ml"]);
             assert_eq!(outcome.stop, Stop::Changed);
             assert_eq!(outcome.changed, field);
         }
         let (mut term, mut memory) = start(vec![at(3, 400), room(4, 12, 401, "", Some(7))]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(2));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
         let arrival = Arrival {
             glyph: 'd',
             pos: Pos::new(2, 7),
@@ -1370,7 +1315,7 @@ mod tests {
             room(5, 12, 402, "", Some(8)),
             room(6, 12, 403, "", Some(8)),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(3));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(3));
         assert_eq!(outcome.stop, Stop::Completed);
         assert_eq!(sent(&term), ["ml", "ml", "ml"]);
     }
@@ -1382,7 +1327,7 @@ mod tests {
             room(4, 12, 401, "", Some(5)),
             at(5, 402),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(2));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
         assert_eq!(
             (outcome.stop, outcome.changed),
             (Stop::Changed, Changed::ENTITIES)
@@ -1405,7 +1350,7 @@ mod tests {
             at(6, 403),
         ];
         let (mut term, mut memory) = start(views);
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(3));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(3));
         assert_eq!(outcome.stop, Stop::Completed);
         assert_eq!(outcome.arrival, None);
     }
@@ -1418,7 +1363,7 @@ mod tests {
             parse(&g, (2, hero))
         });
         let (mut term, mut memory) = start(views.to_vec());
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(2));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
         assert_eq!(outcome.stop, Stop::Completed);
         assert_eq!(sent(&term), ["ml", "l"]);
     }
@@ -1434,7 +1379,7 @@ mod tests {
             revealed[4] = format!("   -{glyph}-");
             let (mut term, mut memory) =
                 start(vec![at(3, 400), shown(&revealed, (2, 4)), at(5, 402)]);
-            let outcome = Executor::new().run(&mut term, &mut memory, &east(2));
+            let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
             assert_eq!(outcome.stop, stop, "{glyph}");
             assert_eq!(sent(&term), keys, "{glyph}");
             if stop == Stop::Changed {
@@ -1449,7 +1394,7 @@ mod tests {
             .map(|(hp, turn)| room(3, hp, turn, "", None))
             .to_vec();
         let (mut term, mut memory) = start(views);
-        let outcome = Executor::new().run(&mut term, &mut memory, &search(4));
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(4));
         assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 4));
         assert_eq!(sent(&term), ["s", "s", "s", "s"]);
     }
@@ -1463,7 +1408,7 @@ mod tests {
                 room(3, 16, 402, "", None),
             ];
             let (mut term, mut memory) = start(views);
-            let outcome = Executor::new().run(&mut term, &mut memory, &search(8));
+            let outcome = Executor::default().run(&mut term, &mut memory, &search(8));
             assert_eq!(sent(&term), ["s"]);
             assert_eq!((outcome.stop, outcome.changed), (Stop::Changed, field));
         }
@@ -1472,7 +1417,7 @@ mod tests {
     #[test]
     fn a_search_that_changes_nothing_three_times_stops() {
         let (mut term, mut memory) = start(vec![at(3, 400)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &search(8));
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(8));
         assert_eq!(
             (outcome.stop, outcome.steps),
             (Stop::NoEffect, IDLE_SEARCHES)
@@ -1493,7 +1438,7 @@ mod tests {
         }
         let (mut term, mut memory) = start(views);
         let action = walk(Kind::Explore, 3, (2, 4), &[(2, 4)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &action);
+        let outcome = Executor::default().run(&mut term, &mut memory, &action);
         assert_eq!(sent(&term), ["ml", "mj", "mj"]);
         assert_eq!((outcome.stop, outcome.turns), (Stop::StepLimit, Some(3)));
         assert_eq!(term.view().hero, Some(Pos::new(4, 4)));
@@ -1509,7 +1454,7 @@ mod tests {
             corridor((3, 5), &turned, 402),
         ]);
         let action = walk(Kind::Explore, 8, (2, 4), &[(2, 4)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &action);
+        let outcome = Executor::default().run(&mut term, &mut memory, &action);
         assert_eq!(sent(&term), ["ml", "mn"]);
         assert_eq!(outcome.stop, Stop::CorridorEnds);
     }
@@ -1523,7 +1468,7 @@ mod tests {
             corridor((2, 4), &junction, 401),
         ]);
         let action = walk(Kind::Explore, 8, (2, 4), &[(2, 4)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &action);
+        let outcome = Executor::default().run(&mut term, &mut memory, &action);
         assert_eq!(sent(&term), ["ml"]);
         assert_eq!(outcome.stop, Stop::BranchDiscovered);
     }
@@ -1545,7 +1490,7 @@ mod tests {
             let after = shown(&corridor_lines((2, 4), &revealed, 401, hp), (2, 4));
             let (mut term, mut memory) = start(vec![corridor((2, 3), &tiles, 400), after]);
             let action = walk(Kind::Explore, 8, (2, 4), &[(2, 4)]);
-            let outcome = Executor::new().run(&mut term, &mut memory, &action);
+            let outcome = Executor::default().run(&mut term, &mut memory, &action);
             assert_eq!(sent(&term), ["ml"], "{glyph}");
             assert_eq!(outcome.stop, stop, "{glyph}");
         }
@@ -1572,7 +1517,7 @@ mod tests {
                     let views = vec![before, after, corridor((2, 5), &revealed, 402)];
                     let (mut term, mut memory) = start(views);
                     let action = walk(kind, 8, (2, 5), &[(2, 4), (2, 5)]);
-                    let outcome = Executor::new().run(&mut term, &mut memory, &action);
+                    let outcome = Executor::default().run(&mut term, &mut memory, &action);
                     let label = format!("{colour:?} {seen_before} {kind:?}");
                     assert_eq!(sent(&term), ["ml"], "{label}");
                     if kind == Kind::Explore {
@@ -1600,7 +1545,7 @@ mod tests {
         ];
         let (mut term, mut memory) = start(views);
         let action = walk(Kind::Explore, 8, (2, 5), &[(2, 4), (2, 5)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &action);
+        let outcome = Executor::default().run(&mut term, &mut memory, &action);
         assert_eq!(sent(&term), ["ml", "ml"]);
         assert_eq!(outcome.stop, Stop::CorridorEnds);
     }
@@ -1613,7 +1558,7 @@ mod tests {
         ];
         for (frame, stop) in cases {
             let (mut term, mut memory) = start(vec![at(3, 400), frame]);
-            let outcome = Executor::new().run(&mut term, &mut memory, &search(8));
+            let outcome = Executor::default().run(&mut term, &mut memory, &search(8));
             assert_eq!(outcome.stop, stop);
             assert_eq!(sent(&term), ["s"]);
         }
@@ -1623,10 +1568,10 @@ mod tests {
     fn nothing_is_sent_to_a_game_that_has_ended_unless_the_caller_sends_it() {
         let quit = asking("Do you want your possessions identified? [ynq] (n)");
         let (mut term, mut memory) = start(vec![quit.clone(), at(3, 400)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &search(3));
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(3));
         assert_eq!(outcome.stop, Stop::GameOver);
         assert!(term.sent.is_empty());
-        let outcome = Executor::new().run(&mut term, &mut memory, &keys(b"y"));
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"y"));
         assert_eq!(sent(&term), ["y"]);
         let prompt = "Do you want your possessions identified? [ynq] (n)";
         assert_eq!(outcome.answered, [answer(prompt, "y", false)]);
@@ -1641,7 +1586,7 @@ mod tests {
             asking("But wait...  Your medallion begins to glow!--More--"),
             room(3, 16, 401, "You feel much better!", None),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &keys(b"Fl"));
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"Fl"));
         assert_eq!(sent(&term), ["F", "l", " ", " "]);
         assert_eq!(outcome.stop, Stop::Completed);
         assert_eq!(outcome.answered, [answer("In what direction?", "l", false)]);
@@ -1665,7 +1610,7 @@ mod tests {
             asking("What do you want to write in the dust here?"),
             room(3, 12, 401, "", None),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &keys(b"E-nnElbereth\r"));
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"E-nnElbereth\r"));
         assert_eq!(sent(&term), ["E", "-", "n", "nElbereth\r"]);
         assert_eq!(
             outcome.answered,
@@ -1692,7 +1637,7 @@ mod tests {
             target,
             room(3, 12, 400, "d  a jackal (jackal)", Some(4)),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &keys(b";@l."));
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b";@l."));
         assert_eq!(sent(&term), [";", "@", "l", "."]);
         assert_eq!(
             outcome.answered,
@@ -1707,7 +1652,7 @@ mod tests {
             at(3, 400),
             asking("What do you want to write in the dust here?"),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &keys(b"E"));
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"E"));
         assert_eq!(outcome.stop, Stop::Prompt);
         assert!(outcome.answered.is_empty());
         assert!(outcome.messages.is_empty());
@@ -1717,7 +1662,7 @@ mod tests {
     fn a_counted_command_is_followed_by_a_redraw() {
         let views = vec![at(3, 400), at(3, 400), at(3, 400), at(3, 420), at(3, 420)];
         let (mut term, mut memory) = start(views);
-        let outcome = Executor::new().run(&mut term, &mut memory, &keys(b"20s"));
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"20s"));
         assert_eq!(sent(&term), ["2", "0", "s", "\u{12}"]);
         assert_eq!(outcome.turns, Some(20));
     }
@@ -1746,7 +1691,7 @@ mod tests {
             room(3, 12, 400, "d  a jackal (jackal)", Some(4)),
         ]);
         let outcome =
-            Executor::new().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
+            Executor::default().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
         assert_eq!(sent(&term), [";", "@l."]);
         assert_eq!(
             (outcome.stop, outcome.steps, outcome.turns),
@@ -1789,7 +1734,7 @@ mod tests {
             ),
         ]);
         let outcome =
-            Executor::new().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
+            Executor::default().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
         assert_eq!(sent(&term), [";", "\u{1b}", "@l."]);
         assert_eq!(outcome.stop, Stop::Completed);
     }
@@ -1807,7 +1752,7 @@ mod tests {
         for (rejected, stop) in cases {
             let (mut term, mut memory) = start(vec![before.clone(), rejected, at(3, 401)]);
             let outcome =
-                Executor::new().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
+                Executor::default().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
             assert_eq!(sent(&term), [";"]);
             assert_eq!((outcome.stop, outcome.steps), (stop, 1));
         }
@@ -1824,7 +1769,7 @@ mod tests {
             before.clone(),
         ]);
         let outcome =
-            Executor::new().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
+            Executor::default().run(&mut term, &mut memory, &farlook(&before, Pos::new(2, 4)));
         assert_eq!(sent(&term), [";", "@l.", "\u{1b}"]);
         assert_eq!(outcome.stop, Stop::Prompt);
     }
@@ -1835,7 +1780,7 @@ mod tests {
             at(3, 400),
             room(3, 12, 400, "You see here a dagger.", None),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &look_here());
+        let outcome = Executor::default().run(&mut term, &mut memory, &look_here());
         assert_eq!(sent(&term), [":"]);
         assert_eq!((outcome.stop, outcome.turns), (Stop::Completed, Some(0)));
         let level = memory.current().expect("a level");
@@ -1879,7 +1824,7 @@ mod tests {
             asking("Do you want to see your attributes? [ynq] (n)"),
             tombstone(),
         ]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &search(5));
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(5));
         assert_eq!(sent(&term), ["s", " ", "n", "n"]);
         assert_eq!(outcome.stop, Stop::GameOver);
         assert_eq!(
@@ -1899,14 +1844,14 @@ mod tests {
         );
         assert!(memory.end().is_some());
         // Once captured, paging again sends nothing.
-        let again = Executor::new().finish_game(&mut term, &mut memory);
+        let again = Executor::default().finish_game(&mut term, &mut memory);
         assert_eq!((again.stop, term.sent.len()), (Stop::GameOver, 4));
     }
 
     #[test]
     fn finishing_a_game_still_going_sends_nothing() {
         let (mut term, mut memory) = start(vec![at(3, 400)]);
-        let outcome = Executor::new().finish_game(&mut term, &mut memory);
+        let outcome = Executor::default().finish_game(&mut term, &mut memory);
         assert_eq!(outcome.stop, Stop::Completed);
         assert!(term.sent.is_empty());
     }
@@ -1916,7 +1861,7 @@ mod tests {
         let error = LinkError::Held("waiting to start".to_owned());
         let (mut term, mut memory) = start(vec![at(3, 400), at(4, 401)]);
         term.failures.push(Some(error.clone()));
-        let outcome = Executor::new().run(&mut term, &mut memory, &east(1));
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(1));
         assert_eq!((outcome.stop, outcome.steps), (Stop::Link(error), 0));
         assert!(term.sent.is_empty());
     }
@@ -1924,7 +1869,7 @@ mod tests {
     #[test]
     fn endless_pages_fail_after_the_bound() {
         let (mut term, mut memory) = start(vec![at(3, 400), asking("You hear a noise.--More--")]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &search(1));
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(1));
         assert!(matches!(outcome.stop, Stop::Failed(_)));
         assert_eq!(term.sent.len(), 1 + PAGES as usize);
     }
@@ -1938,7 +1883,7 @@ mod tests {
         window[3] = "7 apples".to_owned();
         window[4] = "--More--".to_owned();
         let (mut term, mut memory) = start(vec![at(3, 400), shown(&window, (4, 8)), at(3, 400)]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &look_here());
+        let outcome = Executor::default().run(&mut term, &mut memory, &look_here());
         assert_eq!(sent(&term), [":", " "]);
         assert_eq!(
             outcome.messages,

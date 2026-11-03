@@ -1,16 +1,12 @@
 //! Data shared across modules: screen geometry, cells, exit codes and the reply a command produces.
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
-/// Terminal rows.
 pub const ROWS: usize = 24;
-/// Terminal columns.
 pub const COLS: usize = 80;
-/// First terminal row of the map.
+/// The map is terminal rows `MAP_TOP..=MAP_BOTTOM`.
 pub const MAP_TOP: u8 = 1;
-/// Last terminal row of the map.
 pub const MAP_BOTTOM: u8 = 21;
-/// Squares in the map area.
 pub const MAP_SQUARES: usize = (MAP_BOTTOM - MAP_TOP + 1) as usize * COLS;
 
 /// The eight direction keys and their (row, column) steps, cardinal first, in the order routes try them.
@@ -28,32 +24,24 @@ pub const DIRS: [(u8, i8, i8); 8] = [
 /// A screen square: `y` is the terminal row, `x` the terminal column; it orders by row, then column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pos {
-    /// Terminal row, 0 to 23.
     pub y: u8,
-    /// Terminal column, 0 to 79.
     pub x: u8,
 }
 
 impl Pos {
-    /// The square at row `y`, column `x`.
     pub const fn new(y: u8, x: u8) -> Pos {
         Pos { y, x }
     }
 
-    /// Whether the square lies in the map area (rows 1 to 21).
     pub const fn on_map(self) -> bool {
         self.y >= MAP_TOP && self.y <= MAP_BOTTOM && (self.x as usize) < COLS
     }
 
     /// The square one step away in direction (`dy`, `dx`), if it is on the screen.
     pub fn step(self, dy: i8, dx: i8) -> Option<Pos> {
-        let y = self.y as i16 + dy as i16;
-        let x = self.x as i16 + dx as i16;
-        if (0..ROWS as i16).contains(&y) && (0..COLS as i16).contains(&x) {
-            Some(Pos::new(y as u8, x as u8))
-        } else {
-            None
-        }
+        let y = self.y.checked_add_signed(dy)?;
+        let x = self.x.checked_add_signed(dx)?;
+        ((y as usize) < ROWS && (x as usize) < COLS).then_some(Pos::new(y, x))
     }
 
     /// The on-map neighbours with their direction keys, in `DIRS` order.
@@ -65,11 +53,9 @@ impl Pos {
 
     /// The direction key that steps from `self` to the adjacent square `to`.
     pub fn direction_to(self, to: Pos) -> Option<u8> {
-        let dy = to.y as i16 - self.y as i16;
-        let dx = to.x as i16 - self.x as i16;
-        DIRS.iter()
-            .find(|&&(_, ry, rx)| ry as i16 == dy && rx as i16 == dx)
-            .map(|&(key, _, _)| key)
+        self.neighbours()
+            .find(|&(_, q)| q == to)
+            .map(|(key, _)| key)
     }
 
     /// King-move distance.
@@ -83,7 +69,6 @@ impl Pos {
             .then(|| (self.y - MAP_TOP) as usize * COLS + self.x as usize)
     }
 
-    /// The map square at a `MAP_SQUARES` index.
     pub fn from_index(index: usize) -> Pos {
         Pos::new((index / COLS) as u8 + MAP_TOP, (index % COLS) as u8)
     }
@@ -103,16 +88,10 @@ impl Serialize for Pos {
     }
 }
 
-/// A fixed-size set of map squares.
-#[derive(Clone, PartialEq, Eq)]
+/// A fixed-size set of map squares; off-map squares are never in it.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SquareSet {
     bits: [u64; MAP_SQUARES.div_ceil(64)],
-}
-
-impl Default for SquareSet {
-    fn default() -> SquareSet {
-        SquareSet::new()
-    }
 }
 
 impl std::fmt::Debug for SquareSet {
@@ -122,56 +101,38 @@ impl std::fmt::Debug for SquareSet {
 }
 
 impl SquareSet {
-    /// An empty set.
     pub const fn new() -> SquareSet {
         SquareSet {
             bits: [0; MAP_SQUARES.div_ceil(64)],
         }
     }
 
-    /// Adds a square; off-map squares are ignored. Returns whether it was newly added.
-    pub fn insert(&mut self, p: Pos) -> bool {
-        match p.index() {
-            Some(i) => {
-                let had = self.bits[i / 64] & (1 << (i % 64)) != 0;
-                self.bits[i / 64] |= 1 << (i % 64);
-                !had
-            }
-            None => false,
+    pub fn insert(&mut self, p: Pos) {
+        if let Some(i) = p.index() {
+            self.bits[i / 64] |= 1 << (i % 64);
         }
     }
 
-    /// Removes a square. Returns whether it was present.
+    /// Removes a square; returns whether it was present.
     pub fn remove(&mut self, p: Pos) -> bool {
-        match p.index() {
-            Some(i) => {
-                let had = self.bits[i / 64] & (1 << (i % 64)) != 0;
-                self.bits[i / 64] &= !(1 << (i % 64));
-                had
-            }
-            None => false,
+        let had = self.contains(p);
+        if let Some(i) = p.index() {
+            self.bits[i / 64] &= !(1 << (i % 64));
         }
+        had
     }
 
-    /// Whether the square is in the set.
     pub fn contains(&self, p: Pos) -> bool {
         p.index()
             .is_some_and(|i| self.bits[i / 64] & (1 << (i % 64)) != 0)
     }
 
-    /// Empties the set.
     pub fn clear(&mut self) {
-        self.bits = [0; MAP_SQUARES.div_ceil(64)];
+        *self = SquareSet::new();
     }
 
-    /// Whether the set is empty.
     pub fn is_empty(&self) -> bool {
         self.bits.iter().all(|&w| w == 0)
-    }
-
-    /// Number of squares in the set.
-    pub fn len(&self) -> usize {
-        self.bits.iter().map(|w| w.count_ones() as usize).sum()
     }
 
     /// The squares in row-then-column order.
@@ -182,121 +143,58 @@ impl SquareSet {
     }
 }
 
-/// A terminal foreground colour as the emulator stores it: SGR 30–37, 90–97 or the default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// A terminal foreground colour as the emulator stores it: the default, SGR 30–37 or SGR 90–97. Fixtures name
+/// colours in lower case, such as `brightblue`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Colour {
-    /// No colour set (SGR 39 or 0).
     #[default]
     Default,
-    /// SGR 30.
     Black,
-    /// SGR 31.
     Red,
-    /// SGR 32.
     Green,
-    /// SGR 33.
     Brown,
-    /// SGR 34.
     Blue,
-    /// SGR 35.
     Magenta,
-    /// SGR 36.
     Cyan,
-    /// SGR 37.
     White,
-    /// SGR 90.
     BrightBlack,
-    /// SGR 91.
     BrightRed,
-    /// SGR 92.
     BrightGreen,
-    /// SGR 93.
     BrightBrown,
-    /// SGR 94.
     BrightBlue,
-    /// SGR 95.
     BrightMagenta,
-    /// SGR 96.
     BrightCyan,
-    /// SGR 97.
     BrightWhite,
 }
-
-/// Colour names as fixtures store them, in `Colour` order after `Default`.
-const COLOUR_NAMES: [&str; 17] = [
-    "default",
-    "black",
-    "red",
-    "green",
-    "brown",
-    "blue",
-    "magenta",
-    "cyan",
-    "white",
-    "brightblack",
-    "brightred",
-    "brightgreen",
-    "brightbrown",
-    "brightblue",
-    "brightmagenta",
-    "brightcyan",
-    "brightwhite",
-];
-
-const COLOURS: [Colour; 17] = [
-    Colour::Default,
-    Colour::Black,
-    Colour::Red,
-    Colour::Green,
-    Colour::Brown,
-    Colour::Blue,
-    Colour::Magenta,
-    Colour::Cyan,
-    Colour::White,
-    Colour::BrightBlack,
-    Colour::BrightRed,
-    Colour::BrightGreen,
-    Colour::BrightBrown,
-    Colour::BrightBlue,
-    Colour::BrightMagenta,
-    Colour::BrightCyan,
-    Colour::BrightWhite,
-];
 
 impl Colour {
     /// The colour of SGR code `n` (30–37 or 90–97).
     pub fn from_sgr(n: u16) -> Option<Colour> {
+        use Colour::*;
+        #[rustfmt::skip]
+        const SGR: [Colour; 16] = [
+            Black, Red, Green, Brown, Blue, Magenta, Cyan, White,
+            BrightBlack, BrightRed, BrightGreen, BrightBrown, BrightBlue, BrightMagenta, BrightCyan, BrightWhite,
+        ];
         match n {
-            30..=37 => Some(COLOURS[(n - 30) as usize + 1]),
-            90..=97 => Some(COLOURS[(n - 90) as usize + 9]),
+            30..=37 => Some(SGR[usize::from(n - 30)]),
+            90..=97 => Some(SGR[usize::from(n - 82)]),
             _ => None,
         }
     }
-
-    /// The colour a fixture names, such as `default`, `blue` or `brightblue`.
-    pub fn from_name(name: &str) -> Option<Colour> {
-        COLOUR_NAMES
-            .iter()
-            .position(|&n| n == name)
-            .map(|i| COLOURS[i])
-    }
 }
 
-/// One terminal cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cell {
-    /// The character shown.
     pub ch: char,
-    /// Foreground colour.
     pub fg: Colour,
-    /// Bold (bright) attribute.
     pub bold: bool,
     /// Reverse video, which the game uses to highlight a pet.
     pub rev: bool,
 }
 
 impl Cell {
-    /// A blank cell in the default colour.
     pub const BLANK: Cell = Cell {
         ch: ' ',
         fg: Colour::Default,
@@ -305,16 +203,9 @@ impl Cell {
     };
 }
 
-impl Default for Cell {
-    fn default() -> Cell {
-        Cell::BLANK
-    }
-}
-
-/// The 80×24 cells of one screen.
+/// The 80×24 cells of one screen, by row, then column.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Grid {
-    /// Cells by row, then column.
     pub cells: [[Cell; COLS]; ROWS],
 }
 
@@ -337,7 +228,6 @@ impl std::fmt::Debug for Grid {
 }
 
 impl Grid {
-    /// A blank screen.
     pub const fn new() -> Grid {
         Grid {
             cells: [[Cell::BLANK; COLS]; ROWS],
@@ -365,9 +255,8 @@ impl Grid {
 /// How a command ended, as the process exit code and the reply's `code`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitCode {
-    /// The command did what was asked.
     Done = 0,
-    /// The command was refused or failed; the text says why.
+    /// Refused or failed; the text says why.
     Failed = 1,
     /// A bounded action stopped short; the report says why.
     Short = 2,
@@ -377,32 +266,28 @@ pub enum ExitCode {
     Closed = 4,
     /// The game has not started taking input yet.
     Held = 5,
-    /// The command line was malformed.
+    /// The command line or request was malformed.
     Usage = 64,
 }
 
 impl ExitCode {
-    /// The numeric code.
     pub fn code(self) -> i32 {
         self as i32
     }
 }
 
 impl Serialize for ExitCode {
-    /// Serialises as its number.
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_i32(self.code())
     }
 }
 
-/// The daemon's answer to one request: `{"code", "text", "facts"}`.
+/// The daemon's answer to one request: the exit code, the text view with any report line first, and the same
+/// observation in machine form.
 #[derive(Clone, Debug, Serialize)]
 pub struct Reply {
-    /// Exit code for the client.
     pub code: ExitCode,
-    /// The compact text view, with any report line first.
     pub text: String,
-    /// The same observation in machine form.
     pub facts: Facts,
 }
 
@@ -417,64 +302,43 @@ impl Reply {
     }
 }
 
-/// The machine form of a view.
+/// The machine form of a view; the README describes each field.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Facts {
-    /// Dungeon level number from the status line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dlvl: Option<i32>,
-    /// Game turn from the status line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn: Option<u32>,
-    /// Hit points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hp: Option<i32>,
-    /// Maximum hit points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hpmax: Option<i32>,
-    /// Experience level.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xl: Option<i32>,
-    /// Armour class.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ac: Option<i32>,
-    /// The hunger word on the status line, if one is shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hunger: Option<String>,
-    /// The hero's square as `[x, y]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pos: Option<Pos>,
-    /// What is remembered underfoot, as the `here:` part prints it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub here: Option<String>,
-    /// The open prompt's text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
-    /// Messages the game wrote since the last reply.
     pub msgs: Vec<String>,
-    /// Monsters in view, nearest first.
     pub monsters: Vec<Monster>,
-    /// Remembered items, nearest by route first.
     pub items: Vec<Place>,
-    /// Remembered features and doors, nearest by route first.
     pub seen: Vec<Place>,
-    /// Reachable frontier squares, nearest group first.
     pub frontier: Vec<Frontier>,
-    /// The remembered down stairs on this level.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stairs_down: Option<Pos>,
-    /// The remembered up stairs on this level.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stairs_up: Option<Pos>,
-    /// The last inventory the game showed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inventory: Option<Inventory>,
-    /// How the command went.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<Report>,
-    /// Prompts the sent keys passed, with the key that answered each.
     pub answered: Vec<Answered>,
-    /// End-of-game messages, when the game is over.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<End>,
 }
@@ -482,21 +346,17 @@ pub struct Facts {
 /// A monster in view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Monster {
-    /// The game's farlook name, when one is cached for this monster.
+    /// The game's farlook name, when one is kept for this monster.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The glyph shown.
     pub glyph: char,
-    /// Terminal column.
     pub x: u8,
-    /// Terminal row.
     pub y: u8,
     /// King-move distance from the hero.
     pub dist: u8,
     /// The turn the name was looked up, when that was an earlier turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub looked_turn: Option<u32>,
-    /// Whether the terminal highlights it as the hero's pet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pet: bool,
 }
@@ -504,13 +364,10 @@ pub struct Monster {
 /// A remembered feature, door or item and how a route reaches it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Place {
-    /// The glyph shown or remembered.
     pub glyph: char,
     /// What it is, such as `down stairs` or `door`; empty for a plain item.
     pub label: String,
-    /// Terminal column.
     pub x: u8,
-    /// Terminal row.
     pub y: u8,
     /// Route length in steps; `None` when no route avoids monsters.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -523,31 +380,24 @@ pub struct Place {
 /// A frontier square: reachable known ground beside unexplored squares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Frontier {
-    /// Terminal column.
     pub x: u8,
-    /// Terminal row.
     pub y: u8,
-    /// Route length in steps.
     pub steps: u32,
 }
 
-/// An inventory menu as the game last showed it.
+/// An inventory menu as the game last showed it, and the turn it showed it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Inventory {
-    /// The turn it was shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn: Option<u32>,
-    /// Its item lines, such as `a - a +0 scalpel (weapon in right hand)`.
     pub lines: Vec<String>,
 }
 
-/// The end-of-game text.
+/// The end-of-game text: the tombstone or final line naming how the game ended, and every end-of-game line.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct End {
-    /// The tombstone or final line naming how the game ended, verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub death: Option<String>,
-    /// Every end-of-game message line, in order.
     pub lines: Vec<String>,
 }
 
@@ -556,13 +406,11 @@ pub struct End {
 pub struct Report {
     /// The command as labelled in the text, such as `go >` or `rest 20`.
     pub verb: String,
-    /// Whether it finished what was asked.
     pub done: bool,
     /// Why it stopped short, one phrase per reason.
     pub stopped: Vec<String>,
     /// Steps, searches or keys executed.
     pub steps: u32,
-    /// Game turns that passed, when the status line showed them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<i64>,
     /// A failure that ended the command, such as a closed terminal.
@@ -570,12 +418,10 @@ pub struct Report {
     pub error: Option<String>,
 }
 
-/// A prompt that sent keys passed, and the key that answered it.
+/// A prompt that sent keys passed, and the key that answered it in escape syntax.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Answered {
-    /// The prompt text.
     pub prompt: String,
-    /// The answering key in escape syntax, such as `n`, `\e` or `\r`.
     pub key: String,
     /// The prompt takes free text, so the keys after it were typed into it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -586,36 +432,26 @@ pub struct Answered {
 /// code, so `\xHH` is the only way to send a byte above 0x7f.
 pub fn unescape(keys: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(keys.len());
-    let mut chars = keys.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            if !ch.is_ascii() {
-                return Err("send takes ASCII keys; write other bytes as \\xHH".to_owned());
-            }
-            out.push(ch as u8);
-            continue;
+    let mut rest = keys;
+    while let Some(ch) = rest.chars().next() {
+        if !ch.is_ascii() {
+            return Err("send takes ASCII keys; write other bytes as \\xHH".to_owned());
         }
-        let rest = chars.as_str();
-        let (byte, used) = match rest.as_bytes().first() {
-            Some(b'e') => (0x1b, 1),
-            Some(b'r') => (b'\r', 1),
-            Some(b'n') => (b'\n', 1),
-            Some(b't') => (b'\t', 1),
-            Some(b'\\') => (b'\\', 1),
-            Some(b'x')
-                if rest.len() >= 3 && rest.as_bytes()[1..3].iter().all(u8::is_ascii_hexdigit) =>
-            {
-                match u8::from_str_radix(&rest[1..3], 16) {
-                    Ok(b) => (b, 3),
-                    Err(_) => (b'\\', 0),
-                }
-            }
-            _ => (b'\\', 0),
+        let hex = rest
+            .get(2..4)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        let (byte, used) = match (ch, rest.as_bytes().get(1), hex) {
+            ('\\', Some(b'e'), _) => (0x1b, 2),
+            ('\\', Some(b'r'), _) => (b'\r', 2),
+            ('\\', Some(b'n'), _) => (b'\n', 2),
+            ('\\', Some(b't'), _) => (b'\t', 2),
+            ('\\', Some(b'\\'), _) => (b'\\', 2),
+            ('\\', Some(b'x'), Some(byte)) => (byte, 4),
+            _ => (ch as u8, 1),
         };
         out.push(byte);
-        for _ in 0..used {
-            chars.next();
-        }
+        rest = &rest[used..];
     }
     Ok(out)
 }
@@ -654,14 +490,14 @@ mod tests {
     #[test]
     fn square_set_holds_map_squares_in_order() {
         let mut set = SquareSet::new();
-        assert!(set.insert(Pos::new(5, 3)));
-        assert!(set.insert(Pos::new(2, 70)));
-        assert!(!set.insert(Pos::new(0, 1)));
+        set.insert(Pos::new(5, 3));
+        set.insert(Pos::new(2, 70));
+        set.insert(Pos::new(0, 1));
         assert_eq!(
             set.iter().collect::<Vec<_>>(),
             [Pos::new(2, 70), Pos::new(5, 3)]
         );
-        assert_eq!(set.len(), 2);
+        assert!(set.remove(Pos::new(5, 3)) && !set.remove(Pos::new(5, 3)));
     }
 
     #[test]

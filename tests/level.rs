@@ -85,7 +85,7 @@ fn routes_never_cross_remembered_lava() {
         "the square west of the hero"
     );
     let paths = search(&level, hero);
-    assert!(paths.reached().len() > 10);
+    assert!(paths.reached().iter().count() > 10);
     for p in paths.reached().iter() {
         let path = route(&paths, p).unwrap_or_default();
         assert!(

@@ -47,8 +47,8 @@ pub fn fixture_names() -> Vec<String> {
 pub struct Fixture {
     /// 24 rows of text.
     pub rows: Vec<String>,
-    /// Colour name per cell.
-    pub fg: Vec<Vec<String>>,
+    /// Colour per cell.
+    pub fg: Vec<Vec<Colour>>,
     /// Bold per cell.
     pub bold: Vec<Vec<bool>>,
     /// Reverse video per cell.
@@ -75,15 +75,14 @@ impl Fixture {
                 .map(|row| row.chars().collect())
                 .unwrap_or_default();
             for c in 0..COLS {
-                let fg = self
-                    .fg
-                    .get(r)
-                    .and_then(|row| row.get(c))
-                    .map(String::as_str)
-                    .unwrap_or("default");
                 grid.cells[r][c] = Cell {
                     ch: chars.get(c).copied().unwrap_or(' '),
-                    fg: Colour::from_name(fg).unwrap_or_else(|| panic!("unknown colour {fg}")),
+                    fg: self
+                        .fg
+                        .get(r)
+                        .and_then(|row| row.get(c))
+                        .copied()
+                        .unwrap_or_default(),
                     bold: self
                         .bold
                         .get(r)

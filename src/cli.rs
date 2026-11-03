@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::daemon::{COMMAND_TIME, Cmd, Request, check, serve};
+use crate::daemon::{COMMAND_TIME, Cmd, Request, check, serve, serving};
 use crate::play::STEPS_MAX;
 use crate::types::ExitCode;
 
@@ -34,28 +34,14 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30)
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] \
                          look | send KEYS | go TARGET | rest N | stop | serve";
 
-/// A parsed command line.
+/// A parsed command line: the options, then the request for the daemon or `serve` (`None`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args {
-    /// The session directory.
     pub dir: PathBuf,
-    /// Print the reply object instead of its text.
     pub json: bool,
-    /// The terminal socket a started daemon connects to.
     pub socket: PathBuf,
-    /// Most steps one `go` takes, 1 to 64.
     pub max_steps: u32,
-    /// What to do.
-    pub command: Command,
-}
-
-/// A command.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    /// Ask the daemon for a request's reply.
-    Client(Request),
-    /// Run the daemon in the foreground.
-    Serve,
+    pub request: Option<Request>,
 }
 
 /// The parts of a reply line the client acts on.
@@ -73,84 +59,71 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         json: false,
         socket: PathBuf::from(DEFAULT_SOCKET),
         max_steps: STEPS_MAX,
-        command: Command::Serve,
+        request: None,
     };
-    let mut at = 0;
-    loop {
-        let Some(arg) = args.get(at) else {
+    let mut rest = args;
+    let (name, operands) = loop {
+        let Some((arg, after)) = rest.split_first() else {
             return Err("missing command".to_owned());
         };
-        let value = || {
-            args.get(at + 1)
-                .ok_or_else(|| format!("{arg} takes a value"))
+        rest = after;
+        if arg == "--json" {
+            parsed.json = true;
+            continue;
+        }
+        if !matches!(arg.as_str(), "--dir" | "--socket" | "--max-steps") {
+            break (arg.as_str(), rest);
+        }
+        let Some((value, after)) = rest.split_first() else {
+            return Err(format!("{arg} takes a value"));
         };
+        rest = after;
         match arg.as_str() {
-            "--json" => {
-                parsed.json = true;
-                at += 1;
-                continue;
-            }
-            "--dir" => parsed.dir = PathBuf::from(value()?),
-            "--socket" => parsed.socket = PathBuf::from(value()?),
-            "--max-steps" => {
-                parsed.max_steps = value()?
+            "--dir" => parsed.dir = PathBuf::from(value),
+            "--socket" => parsed.socket = PathBuf::from(value),
+            _ => {
+                parsed.max_steps = value
                     .parse()
                     .ok()
                     .filter(|n| (1..=STEPS_MAX).contains(n))
                     .ok_or_else(|| format!("--max-steps takes 1 to {STEPS_MAX}"))?;
             }
-            _ => break,
         }
-        at += 2;
-    }
-    let name = args[at].as_str();
-    let operands = &args[at + 1..];
-    let arity = match name {
-        "look" | "stop" | "serve" => 0,
-        "send" | "go" | "rest" => 1,
+    };
+    let operand = operands.first().cloned();
+    let request = |cmd| Request {
+        cmd,
+        ..Request::default()
+    };
+    let request = match (name, operands.len()) {
+        ("serve", 0) => return Ok(parsed),
+        ("look", 0) => request(Cmd::Look),
+        ("stop", 0) => request(Cmd::Stop),
+        ("send", 1) => Request {
+            keys: operand,
+            ..request(Cmd::Send)
+        },
+        ("go", 1) => Request {
+            target: operand,
+            ..request(Cmd::Go)
+        },
+        ("rest", 1) => Request {
+            count: Some(operands[0].parse().unwrap_or(0)),
+            ..request(Cmd::Rest)
+        },
+        ("look" | "stop" | "serve", _) => return Err(format!("{name} takes no arguments")),
+        ("send" | "go" | "rest", _) => return Err(format!("{name} takes one argument")),
         _ => return Err(format!("unknown command {name}")),
     };
-    if operands.len() != arity {
-        return Err(match arity {
-            0 => format!("{name} takes no arguments"),
-            _ => format!("{name} takes one argument"),
-        });
-    }
-    let mut request = Request {
-        cmd: Cmd::Look,
-        keys: None,
-        target: None,
-        count: None,
-    };
-    match name {
-        "serve" => return Ok(parsed),
-        "look" => {}
-        "stop" => request.cmd = Cmd::Stop,
-        "send" => {
-            request.cmd = Cmd::Send;
-            request.keys = Some(operands[0].clone());
-        }
-        "go" => {
-            request.cmd = Cmd::Go;
-            request.target = Some(operands[0].clone());
-        }
-        _ => {
-            request.cmd = Cmd::Rest;
-            request.count = Some(0);
-            if let Ok(count) = operands[0].parse() {
-                request.count = Some(count);
-            }
-        }
-    }
     check(&request)?;
-    parsed.command = Command::Client(request);
+    parsed.request = Some(request);
     Ok(parsed)
 }
 
 /// Runs a parsed command and returns the exit code.
 pub fn run(args: &Args) -> i32 {
-    match &args.command {
-        Command::Serve => {
+    match &args.request {
+        None => {
             let (socket, _, _) = paths(&args.dir);
             let started = private_dir(&args.dir).and_then(|()| {
                 let mut stdout = std::io::stdout().lock();
@@ -161,7 +134,7 @@ pub fn run(args: &Args) -> i32 {
                 Err(e) => fail(format_args!("serve: {e}")),
             }
         }
-        Command::Client(request) => client(args, request),
+        Some(request) => client(args, request),
     }
 }
 
@@ -178,20 +151,20 @@ fn absent(e: &std::io::Error) -> bool {
 
 /// Sends one request and prints its reply.
 fn client(args: &Args, request: &Request) -> i32 {
-    let stream = if request.cmd == Cmd::Stop {
-        match UnixStream::connect(paths(&args.dir).0) {
-            Ok(stream) => stream,
-            Err(e) if absent(&e) => {
-                println!("no daemon is running");
-                return ExitCode::Done.code();
-            }
-            Err(e) => return fail(format_args!("cannot reach the daemon: {e}")),
-        }
+    let stop = request.cmd == Cmd::Stop;
+    let connected = if stop {
+        UnixStream::connect(paths(&args.dir).0)
     } else {
-        match connect(args) {
-            Ok(stream) => stream,
-            Err(e) => return fail(format_args!("{e}")),
+        connect(args)
+    };
+    let stream = match connected {
+        Ok(stream) => stream,
+        Err(e) if stop && absent(&e) => {
+            println!("no daemon is running");
+            return ExitCode::Done.code();
         }
+        Err(e) if stop => return fail(format_args!("cannot reach the daemon: {e}")),
+        Err(e) => return fail(format_args!("{e}")),
     };
     let mut line = match serde_json::to_string(request) {
         Ok(line) => line,
@@ -273,16 +246,6 @@ pub fn connect(args: &Args) -> std::io::Result<UnixStream> {
     }
     start(args)?;
     UnixStream::connect(&socket)
-}
-
-/// Whether a daemon holds the lock on `<socket>.lock`, so the socket is live.
-fn serving(socket: &Path) -> bool {
-    let mut path = socket.as_os_str().to_owned();
-    path.push(".lock");
-    OpenOptions::new()
-        .write(true)
-        .open(path)
-        .is_ok_and(|file| file.try_lock().is_err())
 }
 
 /// Creates `dir` and any missing parents, a new directory readable by its owner only.
@@ -374,10 +337,7 @@ mod tests {
     }
 
     fn request(line: &[&str]) -> Request {
-        match args(line).unwrap().command {
-            Command::Client(request) => request,
-            Command::Serve => panic!("not a client command"),
-        }
+        args(line).unwrap().request.expect("a client command")
     }
 
     #[test]
@@ -399,7 +359,7 @@ mod tests {
         assert_eq!(parsed.max_steps, 8);
         assert_eq!(request(&["look"]).cmd, Cmd::Look);
         let defaults = args(&["serve"]).unwrap();
-        assert_eq!(defaults.command, Command::Serve);
+        assert_eq!(defaults.request, None);
         assert_eq!(defaults.dir, PathBuf::from(DEFAULT_DIR));
         assert_eq!(defaults.socket, PathBuf::from(DEFAULT_SOCKET));
         assert_eq!(defaults.max_steps, STEPS_MAX);

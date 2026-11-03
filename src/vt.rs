@@ -2,58 +2,29 @@
 
 use crate::types::{COLS, Cell, Colour, Grid, Pos, ROWS};
 
-/// Longest escape sequence kept; a longer one is dropped.
-pub const ESCAPE_MAX: usize = 64;
+/// Longest escape sequence kept; a longer one is dropped. It also bounds the parameters one sequence carries.
+const ESCAPE_MAX: usize = 64;
 
-/// The characters the DEC special graphics set redraws, and what it draws for each.
-const DEC: [(char, char); 25] = [
-    ('`', '◆'),
-    ('a', '▒'),
-    ('f', '°'),
-    ('g', '±'),
-    ('j', '┘'),
-    ('k', '┐'),
-    ('l', '┌'),
-    ('m', '└'),
-    ('n', '┼'),
-    ('o', '⎺'),
-    ('p', '⎻'),
-    ('q', '─'),
-    ('r', '⎼'),
-    ('s', '⎽'),
-    ('t', '├'),
-    ('u', '┤'),
-    ('v', '┴'),
-    ('w', '┬'),
-    ('x', '│'),
-    ('y', '≤'),
-    ('z', '≥'),
-    ('{', 'π'),
-    ('|', '≠'),
-    ('}', '£'),
-    ('~', '·'),
-];
+/// The characters the DEC special graphics set redraws in line-drawing mode, and what it draws for each, in the
+/// same order.
+const DEC_FROM: &str = "`afgjklmnopqrstuvwxyz{|}~";
+const DEC_TO: &str = "◆▒°±┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
 
-/// The character the DEC special graphics set draws for `ch` in line-drawing mode; other characters are unchanged.
-pub fn dec_graphics(ch: char) -> char {
-    DEC.iter()
-        .find(|&&(from, _)| from == ch)
-        .map_or(ch, |&(_, to)| to)
+/// The character the DEC special graphics set draws for `ch`; other characters are unchanged.
+fn dec_graphics(ch: char) -> char {
+    DEC_FROM
+        .find(ch)
+        .and_then(|i| DEC_TO.chars().nth(i))
+        .unwrap_or(ch)
 }
 
 /// The attributes new characters are written with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Attr {
-    /// Foreground colour.
-    pub fg: Colour,
-    /// Bold.
-    pub bold: bool,
-    /// Reverse video.
-    pub rev: bool,
+struct Attr {
+    fg: Colour,
+    bold: bool,
+    rev: bool,
 }
-
-/// The most parameters a sequence that fits in `ESCAPE_MAX` bytes can carry.
-const PARAMS_MAX: usize = ESCAPE_MAX;
 
 /// Every row's bit in a touched mask.
 const ALL_ROWS: u32 = (1 << ROWS) - 1;
@@ -63,7 +34,7 @@ const FOREIGN: u8 = 0x80;
 
 /// The numeric parameters of one control sequence; `None` is an empty or non-numeric parameter.
 struct Params {
-    nums: [Option<u32>; PARAMS_MAX],
+    nums: [Option<u32>; ESCAPE_MAX],
     len: usize,
 }
 
@@ -143,12 +114,10 @@ impl Vt {
         }
     }
 
-    /// The current cells.
     pub fn grid(&self) -> &Grid {
         &self.grid
     }
 
-    /// The cursor as (row, column).
     pub fn cursor(&self) -> Pos {
         self.cursor
     }
@@ -158,7 +127,6 @@ impl Vt {
         self.complete
     }
 
-    /// Forgets which rows were touched.
     pub fn clear_touched(&mut self) {
         self.touched = 0;
     }
@@ -399,7 +367,7 @@ impl Vt {
     /// The parameters between `[` and the final byte, after any private-mode markers.
     fn params(&self) -> Params {
         let mut params = Params {
-            nums: [None; PARAMS_MAX],
+            nums: [None; ESCAPE_MAX],
             len: 0,
         };
         let raw = &self.esc[1..self.esc_len - 1];
@@ -411,7 +379,7 @@ impl Vt {
             .position(|b| !matches!(b, b'?' | b'>' | b'=' | b'!'))
             .unwrap_or(raw.len());
         for part in raw[start..].split(|&b| b == b';') {
-            if params.len == PARAMS_MAX {
+            if params.len == ESCAPE_MAX {
                 break;
             }
             params.nums[params.len] = if !part.is_empty() && part.iter().all(u8::is_ascii_digit) {

@@ -9,7 +9,7 @@ use std::fs::{File, OpenOptions, Permissions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -19,71 +19,41 @@ use crate::play::{KEYS_MAX, Play, REST_MAX};
 use crate::types::{ExitCode, Reply, unescape};
 
 /// Longest request line accepted, in bytes.
-pub const REQUEST_MAX: usize = 4096;
-/// Longest a `go` target, in bytes.
-pub const TARGET_MAX: usize = 64;
+const REQUEST_MAX: usize = 4096;
+/// Longest `go` target, in bytes.
+const TARGET_MAX: usize = 64;
 /// Longest the daemon waits on one client to send its whole request, and again to take its whole reply.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Longest one command keeps sending to the game; past it the command stops short.
 pub const COMMAND_TIME: Duration = Duration::from_secs(60);
 
-/// A request's command.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Cmd {
-    /// Render the current view.
+    #[default]
     Look,
-    /// Send keys.
     Send,
-    /// Walk to a target.
     Go,
-    /// Search in place.
     Rest,
-    /// Exit the daemon.
     Stop,
 }
 
-impl Cmd {
-    /// The command's name.
-    pub fn name(self) -> &'static str {
-        match self {
-            Cmd::Look => "look",
-            Cmd::Send => "send",
-            Cmd::Go => "go",
-            Cmd::Rest => "rest",
-            Cmd::Stop => "stop",
-        }
-    }
-}
-
-/// One request line.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+/// One request line: `keys` for `send`, `target` for `go`, `count` for `rest`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    /// The command.
     pub cmd: Cmd,
-    /// Keys for `send`, in escape syntax.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<String>,
-    /// Target for `go`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// Searches for `rest`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
 }
 
-/// What to do after answering a request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum After {
-    /// Keep serving.
-    Serve,
-    /// Exit: a `stop`, or the terminal closed and a client has been told.
-    Exit,
-}
-
-/// A checked request.
-enum Checked<'a> {
+/// A request whose arguments have been checked.
+#[derive(Debug)]
+pub enum Checked<'a> {
     Look,
     Send(Vec<u8>),
     Go(&'a str),
@@ -93,56 +63,35 @@ enum Checked<'a> {
 
 /// Checks that a request carries exactly the arguments its command takes, within their limits; the error is the
 /// message it is refused with under code 64.
-pub fn check(request: &Request) -> Result<(), String> {
-    checked(request).map(|_| ())
-}
-
-fn checked(request: &Request) -> Result<Checked<'_>, String> {
-    let name = request.cmd.name();
-    let only = |keys: bool, target: bool, count: bool| -> Result<(), String> {
-        if (request.keys.is_some() && !keys)
-            || (request.target.is_some() && !target)
-            || (request.count.is_some() && !count)
-        {
-            Err(match request.cmd {
-                Cmd::Look | Cmd::Stop => format!("{name} takes no keys, target or count"),
-                Cmd::Send => "send takes only keys".to_owned(),
-                Cmd::Go => "go takes only a target".to_owned(),
-                Cmd::Rest => "rest takes only a count".to_owned(),
-            })
-        } else {
-            Ok(())
-        }
-    };
+pub fn check(request: &Request) -> Result<Checked<'_>, String> {
+    let (keys, target, count) = (
+        request.keys.is_some(),
+        request.target.is_some(),
+        request.count.is_some(),
+    );
+    let refuse = |why: &str| Err(why.to_owned());
     match request.cmd {
-        Cmd::Look => only(false, false, false).map(|()| Checked::Look),
-        Cmd::Stop => only(false, false, false).map(|()| Checked::Stop),
-        Cmd::Send => {
-            only(true, false, false)?;
-            let keys = unescape(request.keys.as_deref().unwrap_or(""))?;
-            if keys.is_empty() || keys.len() > KEYS_MAX {
-                return Err(format!("send takes 1 to {KEYS_MAX} keys"));
-            }
-            Ok(Checked::Send(keys))
-        }
-        Cmd::Go => {
-            only(false, true, false)?;
-            match request.target.as_deref().map(str::trim) {
-                Some(target) if !target.is_empty() && target.len() <= TARGET_MAX => {
-                    Ok(Checked::Go(target))
-                }
-                _ => Err(format!(
-                    "go takes a target of 1 to {TARGET_MAX} bytes: x,y, a map glyph, a feature or frontier"
-                )),
-            }
-        }
-        Cmd::Rest => {
-            only(false, false, true)?;
-            match request.count {
-                Some(count) if (1..=REST_MAX).contains(&count) => Ok(Checked::Rest(count)),
-                _ => Err(format!("rest takes 1 to {REST_MAX} searches")),
-            }
-        }
+        Cmd::Look if keys || target || count => refuse("look takes no keys, target or count"),
+        Cmd::Stop if keys || target || count => refuse("stop takes no keys, target or count"),
+        Cmd::Send if target || count => refuse("send takes only keys"),
+        Cmd::Go if keys || count => refuse("go takes only a target"),
+        Cmd::Rest if keys || target => refuse("rest takes only a count"),
+        Cmd::Look => Ok(Checked::Look),
+        Cmd::Stop => Ok(Checked::Stop),
+        Cmd::Send => match unescape(request.keys.as_deref().unwrap_or(""))? {
+            keys if (1..=KEYS_MAX).contains(&keys.len()) => Ok(Checked::Send(keys)),
+            _ => Err(format!("send takes 1 to {KEYS_MAX} keys")),
+        },
+        Cmd::Go => match request.target.as_deref().map(str::trim) {
+            Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go(target)),
+            _ => Err(format!(
+                "go takes a target of 1 to {TARGET_MAX} bytes: x,y, a map glyph, a feature or frontier"
+            )),
+        },
+        Cmd::Rest => match request.count {
+            Some(count) if (1..=REST_MAX).contains(&count) => Ok(Checked::Rest(count)),
+            _ => Err(format!("rest takes 1 to {REST_MAX} searches")),
+        },
     }
 }
 
@@ -163,59 +112,53 @@ pub fn serve(
     let mut line = Vec::with_capacity(256);
     let mut out = Vec::with_capacity(16 * 1024);
     let result = loop {
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+        match listener.accept() {
+            Ok((stream, _)) if answer(&stream, &mut play, &mut line, &mut out) => break Ok(()),
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => break Err(e),
-        };
-        if answer(&stream, &mut play, &mut line, &mut out) == After::Exit {
-            break Ok(());
         }
     };
     let _ = std::fs::remove_file(socket);
     result
 }
 
-/// Answers the one request on `stream`. A reply that tells of a closed terminal ends the daemon only once it has
-/// reached the client.
+/// Answers the one request on `stream`; true when the daemon is to exit. A reply that tells of a closed terminal
+/// ends the daemon only once it has reached the client.
 fn answer(
     stream: &UnixStream,
     play: &mut Play<Term>,
     line: &mut Vec<u8>,
     out: &mut Vec<u8>,
-) -> After {
-    let (reply, after) = match read_line(stream, line) {
+) -> bool {
+    let (reply, exit) = match read_line(stream, line) {
         // A connection that sends nothing, such as a liveness probe, gets no reply.
-        Ok(0) => return After::Serve,
+        Ok(0) => return false,
         Ok(_) => match parse_request(line) {
             Ok(request) => handle(play, &request),
-            Err(why) => (Reply::message(ExitCode::Usage, why), After::Serve),
+            Err(why) => (Reply::message(ExitCode::Usage, why), false),
         },
-        Err(e) => (
-            Reply::message(ExitCode::Usage, format!("cannot read the request: {e}")),
-            After::Serve,
-        ),
+        Err(e) => {
+            let why = format!("cannot read the request: {e}");
+            (Reply::message(ExitCode::Usage, why), false)
+        }
     };
     out.clear();
     if let Err(e) = serde_json::to_writer(&mut *out, &reply) {
         log(format_args!("cannot encode a reply: {e}"));
-        return After::Serve;
+        return false;
     }
     out.push(b'\n');
+    let closed = reply.code == ExitCode::Closed;
     match write_all(stream, out) {
-        Ok(()) => {
-            if after == After::Exit && reply.code == ExitCode::Closed {
-                log(format_args!("exiting: {}", reply.text));
-            }
-            after
+        Ok(()) if exit && closed => {
+            log(format_args!("exiting: {}", reply.text));
+            true
         }
+        Ok(()) => exit,
         Err(e) => {
             log(format_args!("cannot write a reply: {e}"));
-            if reply.code == ExitCode::Closed {
-                After::Serve
-            } else {
-                after
-            }
+            exit && !closed
         }
     }
 }
@@ -267,17 +210,30 @@ fn log(message: std::fmt::Arguments) {
     let _ = writeln!(std::io::stderr(), "nethack-harness: {message}");
 }
 
+/// The lock a serving daemon holds: `<socket>.lock`.
+fn lock_path(socket: &Path) -> PathBuf {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".lock");
+    path.into()
+}
+
+/// Whether a daemon holds the lock on `<socket>.lock`, so the socket is live.
+pub fn serving(socket: &Path) -> bool {
+    OpenOptions::new()
+        .write(true)
+        .open(lock_path(socket))
+        .is_ok_and(|file| file.try_lock().is_err())
+}
+
 /// Binds the listening socket, readable and writable by its owner only, and returns it with the lock on
 /// `<socket>.lock` that the daemon holds for as long as it serves. A socket file nobody holds the lock for is stale
 /// and replaced; while a daemon holds it, binding fails with `AddrInUse`.
 pub fn bind(socket: &Path) -> std::io::Result<(UnixListener, File)> {
-    let mut path = socket.as_os_str().to_owned();
-    path.push(".lock");
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(path)?;
+        .open(lock_path(socket))?;
     if lock.try_lock().is_err() {
         return Err(std::io::Error::new(
             ErrorKind::AddrInUse,
@@ -293,15 +249,14 @@ pub fn bind(socket: &Path) -> std::io::Result<(UnixListener, File)> {
     Ok((listener, lock))
 }
 
-/// Answers one request.
-pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
-    let command = match checked(request) {
+/// Answers one request; true when the daemon is to exit once the reply reaches the client: after a `stop`, or
+/// when the terminal has closed.
+pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
+    let command = match check(request) {
+        Ok(Checked::Stop) => return (Reply::message(ExitCode::Done, "stopped"), true),
         Ok(command) => command,
-        Err(why) => return (Reply::message(ExitCode::Usage, why), After::Serve),
+        Err(why) => return (Reply::message(ExitCode::Usage, why), false),
     };
-    if let Checked::Stop = command {
-        return (Reply::message(ExitCode::Done, "stopped"), After::Exit);
-    }
     play.term_mut().deadline(Instant::now() + COMMAND_TIME);
     let reply = match (play.sync(), command) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
@@ -311,12 +266,8 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
         (Ok(()), Checked::Rest(count)) => play.rest(count),
         (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
     };
-    let after = if reply.code == ExitCode::Closed {
-        After::Exit
-    } else {
-        After::Serve
-    };
-    (reply, after)
+    let exit = reply.code == ExitCode::Closed;
+    (reply, exit)
 }
 
 /// Decodes one request line; the error is the message a malformed request is answered with, under code 64.

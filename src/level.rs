@@ -1210,6 +1210,6 @@ mod tests {
         assert!(!paths.reaches(at(3, 3)));
         assert!(!paths.route(at(3, 3), &mut out));
         assert_eq!(paths.distance(at(3, 3)), None);
-        assert_eq!(paths.reached().len(), 6);
+        assert_eq!(paths.reached().iter().count(), 6);
     }
 }

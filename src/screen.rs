@@ -1,7 +1,7 @@
 //! Parsing one 80×24 tty screen: the message line, prompts, `--More--`, menus, end-of-game text, the status
 //! lines, the hero and map cells.
 
-use crate::glyphs::{self, Conditions, Shade, find_word, is_word};
+use crate::glyphs::{self, Conditions, Shade, contains_ignore_case, find_word, is_word};
 use crate::types::{COLS, Grid, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
 
 /// What the game is waiting for, judged from the screen.
@@ -9,13 +9,10 @@ use crate::types::{COLS, Grid, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
 pub enum Phase {
     /// End-of-game text or questions.
     Ended,
-    /// A `--More--` page.
     More,
-    /// A direction prompt.
     Direction,
     /// An object prompt, such as `What do you want to eat? [fg or ?*]`.
     Item,
-    /// A spell prompt.
     Spell,
     /// A choice prompt with bracketed answers, such as `[yn]`.
     Choice,
@@ -27,7 +24,6 @@ pub enum Phase {
     Position,
     /// The map, waiting for a command.
     Play,
-    /// None of these.
     Unknown,
 }
 
@@ -50,16 +46,13 @@ impl Phase {
     }
 }
 
-/// The kind of end-of-game screen shown.
+/// The kind of end-of-game screen shown: the disclosure questions (`Do you want your possessions identified?`),
+/// the tombstone (`REST IN PEACE`), the farewell line (`Goodbye …`, `Be seeing you…`) or the ascension line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndKind {
-    /// `Do you want your possessions identified?` and the other disclosure questions.
     Disclosure,
-    /// The tombstone (`REST IN PEACE`).
     Tombstone,
-    /// The farewell line (`Goodbye …`, `Fare thee well …`, `Be seeing you…`).
     Farewell,
-    /// The ascension line.
     Ascended,
 }
 
@@ -68,48 +61,31 @@ pub enum EndKind {
 pub struct Status {
     /// The location word, such as `Dlvl:3`, `Home 1` or `Astral Plane`.
     pub location: Option<String>,
-    /// Dungeon level number.
     pub dlvl: Option<i32>,
-    /// Gold.
     pub gold: Option<i32>,
-    /// Hit points.
     pub hp: Option<i32>,
-    /// Maximum hit points.
     pub hpmax: Option<i32>,
-    /// Power.
     pub pw: Option<i32>,
-    /// Maximum power.
     pub pwmax: Option<i32>,
-    /// Armour class.
     pub ac: Option<i32>,
-    /// Experience level.
     pub xl: Option<i32>,
-    /// Game turn.
     pub turn: Option<u32>,
     /// Strength as shown, such as `18/50`.
     pub strength: Option<String>,
-    /// Dexterity.
     pub dex: Option<i32>,
-    /// Constitution.
     pub con: Option<i32>,
-    /// Intelligence.
     pub int: Option<i32>,
-    /// Wisdom.
     pub wis: Option<i32>,
-    /// Charisma.
     pub cha: Option<i32>,
-    /// Alignment word.
     pub alignment: Option<&'static str>,
 }
 
 /// One parsed screen.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct View {
-    /// The cells.
     pub grid: Grid,
     /// Each row's 80 characters.
     pub rows: [String; ROWS],
-    /// The cursor as (row, column).
     pub cursor: Pos,
     /// The message: row 0 plus up to two wrapped continuation rows, trimmed.
     pub msg: String,
@@ -135,15 +111,11 @@ pub struct View {
     pub getpos: bool,
     /// End-of-game text is on screen.
     pub ended: bool,
-    /// Which end-of-game screen, when `ended`.
     pub end: Option<EndKind>,
-    /// Status-line fields.
     pub status: Status,
-    /// Status-line conditions.
     pub cond: Conditions,
     /// Any prompt is open.
     pub prompt: bool,
-    /// The hero's square.
     pub hero: Option<Pos>,
     /// The hero is engulfed: the corners around it read `/ \ \ /`.
     pub engulfed: bool,
@@ -152,44 +124,28 @@ pub struct View {
 }
 
 /// Messages that open a free-text prompt.
+#[rustfmt::skip]
 const TEXT_PROMPTS: [&str; 13] = [
-    "What do you want to write",
-    "What do you want to name",
-    "What do you want to call",
-    "What do you want to add",
-    "Call a ",
-    "Call an ",
-    "Name it",
-    "What monster",
-    "write in the",
-    "What do you want to engrave",
-    "who are you?",
-    "What do you want to wish",
-    "What do you want to genocide",
+    "What do you want to write", "What do you want to name", "What do you want to call", "What do you want to add",
+    "Call a ", "Call an ", "Name it", "What monster", "write in the", "What do you want to engrave",
+    "who are you?", "What do you want to wish", "What do you want to genocide",
 ];
 
 /// Messages, matched without regard to ASCII case, that ask for a direction.
 const DIRECTION_PROMPTS: [&str; 3] = ["in what direction", "which direction", "open where?"];
 
 /// Messages that open a cursor-positioning prompt.
+#[rustfmt::skip]
 const POSITION_PROMPTS: [&str; 8] = [
-    "Where do you want to travel",
-    "Where do you want to cast the spell",
-    "For instructions type a ?",
-    "For instructions type a '?",
-    "For instructions type a \"?",
-    "Pick a ",
-    "Pick an ",
-    "Move cursor to ",
+    "Where do you want to travel", "Where do you want to cast the spell", "For instructions type a ?",
+    "For instructions type a '?", "For instructions type a \"?", "Pick a ", "Pick an ", "Move cursor to ",
 ];
 
 /// The questions the game asks after the hero's death or departure, before the tombstone.
+#[rustfmt::skip]
 const DISCLOSURE_QUESTIONS: [&str; 6] = [
-    "possessions identified?",
-    "Do you want to see what you had when you",
-    "Do you want to see your attributes?",
-    "Do you want an account of creatures vanquished?",
-    "Do you want to see your conduct",
+    "possessions identified?", "Do you want to see what you had when you", "Do you want to see your attributes?",
+    "Do you want an account of creatures vanquished?", "Do you want to see your conduct",
     "Do you want to see the dungeon overview?",
 ];
 
@@ -197,18 +153,11 @@ const DISCLOSURE_QUESTIONS: [&str; 6] = [
 const FAREWELLS: [&str; 5] = ["Goodbye", "Fare thee well", "Sayonara", "Aloha", "Farvel"];
 
 /// Location words of the second status line, tried in order at each word start.
+#[rustfmt::skip]
 const LOCATIONS: [(&str, Tail); 11] = [
-    ("Dlvl:", Tail::Digits),
-    ("Home ", Tail::Digits),
-    ("Tutorial:", Tail::Digits),
-    ("Fort Ludios", Tail::Nothing),
-    ("Astral Plane", Tail::Nothing),
-    ("Earth", Tail::Nothing),
-    ("Air", Tail::Nothing),
-    ("Fire", Tail::Nothing),
-    ("Water", Tail::Nothing),
-    ("Plane of ", Tail::Word),
-    ("End Game", Tail::Nothing),
+    ("Dlvl:", Tail::Digits), ("Home ", Tail::Digits), ("Tutorial:", Tail::Digits), ("Fort Ludios", Tail::Nothing),
+    ("Astral Plane", Tail::Nothing), ("Earth", Tail::Nothing), ("Air", Tail::Nothing), ("Fire", Tail::Nothing),
+    ("Water", Tail::Nothing), ("Plane of ", Tail::Word), ("End Game", Tail::Nothing),
 ];
 
 /// What follows a location word's fixed text.
@@ -223,36 +172,9 @@ enum Tail {
 const ALIGNMENTS: [&str; 4] = ["Lawful", "Neutral", "Chaotic", "Unaligned"];
 
 impl View {
-    fn empty() -> View {
-        View {
-            grid: Grid::new(),
-            rows: std::array::from_fn(|_| String::with_capacity(COLS)),
-            cursor: Pos::new(0, 0),
-            msg: String::with_capacity(3 * COLS),
-            message_rows: 1,
-            more: false,
-            menu: false,
-            asking: false,
-            yn: None,
-            obj: None,
-            spell: None,
-            text: false,
-            direction: false,
-            getpos: false,
-            ended: false,
-            end: None,
-            status: Status::default(),
-            cond: Conditions::default(),
-            prompt: false,
-            hero: None,
-            engulfed: false,
-            normal: false,
-        }
-    }
-
     /// Parses a screen.
     pub fn parse(grid: &Grid, cursor: Pos) -> View {
-        let mut view = View::empty();
+        let mut view = View::default();
         view.reparse(grid, cursor);
         view
     }
@@ -311,7 +233,7 @@ impl View {
         self.direction = asking
             && DIRECTION_PROMPTS
                 .iter()
-                .any(|p| contains_ignore_case(msg, p));
+                .any(|p| contains_ignore_case(msg, p, false));
         self.getpos = POSITION_PROMPTS.iter().any(|p| msg.contains(p));
         set_str(&mut self.yn, if obj.is_some() { None } else { yn });
         set_str(&mut self.obj, obj);
@@ -668,13 +590,6 @@ fn set_str(slot: &mut Option<String>, value: Option<&str>) {
 /// The byte offset of character column `col` in `row`, or its length past the end.
 fn byte_at(row: &str, col: usize) -> usize {
     row.char_indices().nth(col).map_or(row.len(), |(i, _)| i)
-}
-
-/// Whether `needle` occurs in `hay`, comparing ASCII letters without regard to case.
-fn contains_ignore_case(hay: &str, needle: &str) -> bool {
-    let (hay, needle) = (hay.as_bytes(), needle.as_bytes());
-    hay.windows(needle.len())
-        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 /// The leading ASCII digits of `s` (at least one) and the rest.
@@ -1317,15 +1232,14 @@ mod tests {
             0,
             0,
         );
-        let got: Vec<&str> = v.cond.names().collect();
-        assert_eq!(got, ["Blind", "TermIll", "Stone", "Trapped"]);
+        assert_eq!(v.cond, glyphs::conditions("Blind TermIll Stone Trapped"));
         let v = view(&screen(
             "",
             &[],
             &format!("{:<40}Hungry Conf", "Weak the Stripling"),
             STATUS2,
         ));
-        assert!(v.cond.names().eq(["Hungry", "Conf"]));
+        assert_eq!(v.cond, glyphs::conditions("Hungry Conf"));
     }
 
     #[test]

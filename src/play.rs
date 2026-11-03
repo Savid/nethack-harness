@@ -75,7 +75,7 @@ impl<T: Terminal> Play<T> {
         Play {
             term,
             memory: Memory::default(),
-            exec: Executor::new(),
+            exec: Executor::default(),
             names: Names::default(),
             renderer: Renderer::default(),
             fresh: Vec::new(),
@@ -162,11 +162,8 @@ impl<T: Terminal> Play<T> {
                 .memory
                 .current()
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
-        let action = if explore {
-            exec::explore(&self.renderer.routes.paths, goal, self.max_steps)
-        } else {
-            exec::travel(&self.renderer.routes.paths, goal, self.max_steps)
-        };
+        let kind = if explore { Kind::Explore } else { Kind::Travel };
+        let action = exec::walk(kind, &self.renderer.routes.paths, goal, self.max_steps);
         self.execute(&verb, &action)
     }
 
@@ -678,7 +675,7 @@ mod tests {
     #[derive(Clone, Deserialize)]
     struct Data {
         rows: Vec<String>,
-        fg: Vec<Vec<String>>,
+        fg: Vec<Vec<Colour>>,
         bold: Vec<Vec<bool>>,
         rev: Vec<Vec<bool>>,
         cursor: [u8; 2],
@@ -739,7 +736,7 @@ mod tests {
             let b = self.rows[to.0].chars().nth(to.1).unwrap();
             data.set(to.0, to.1, a);
             data.set(from.0, from.1, b);
-            let fg = data.fg[from.0][from.1].clone();
+            let fg = data.fg[from.0][from.1];
             data.fg[from.0][from.1] = std::mem::replace(&mut data.fg[to.0][to.1], fg);
             let bold = data.bold[from.0][from.1];
             data.bold[from.0][from.1] = std::mem::replace(&mut data.bold[to.0][to.1], bold);
@@ -754,7 +751,7 @@ mod tests {
                 for (c, ch) in self.rows[r].chars().take(COLS).enumerate() {
                     grid.cells[r][c] = Cell {
                         ch,
-                        fg: Colour::from_name(&self.fg[r][c]).unwrap(),
+                        fg: self.fg[r][c],
                         bold: self.bold[r][c],
                         rev: self.rev[r][c],
                     };
@@ -1183,7 +1180,7 @@ mod tests {
         let rows = screen("", &["", "   ###", "     #", "     #"], STATUS1, STATUS2);
         let corridor = Data {
             rows: rows.iter().map(|row| format!("{row:<80}")).collect(),
-            fg: vec![vec!["default".to_owned(); COLS]; ROWS],
+            fg: vec![vec![Colour::Default; COLS]; ROWS],
             bold: vec![vec![false; COLS]; ROWS],
             rev: vec![vec![false; COLS]; ROWS],
             cursor: [2, 3],

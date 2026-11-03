@@ -2,53 +2,34 @@
 
 use crate::types::Colour;
 
-/// A cell's base colour as the game chose it, before the terminal's bold or bright rendering.
+/// A cell's base colour as the game chose it, before the terminal's bold or bright rendering. Brown is drawn
+/// bright as yellow; white is the default colour drawn bold, or SGR white; gray is the default colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Base {
-    /// Black.
     Black,
-    /// Red.
     Red,
-    /// Green.
     Green,
-    /// Brown, drawn bright as yellow.
     Brown,
-    /// Blue.
     Blue,
-    /// Magenta.
     Magenta,
-    /// Cyan.
     Cyan,
-    /// White: the default colour drawn bold, or SGR white.
     White,
-    /// Gray: the default colour.
     Gray,
+}
+
+impl Base {
+    pub fn name(self) -> &'static str {
+        [
+            "black", "red", "green", "brown", "blue", "magenta", "cyan", "white", "gray",
+        ][self as usize]
+    }
 }
 
 /// A cell's colour as the game chose it: a base colour and whether it is the bright variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Shade {
-    /// Base colour.
     pub base: Base,
-    /// Bright variant.
     pub bright: bool,
-}
-
-impl Base {
-    /// The colour's name, such as `blue` or `gray`.
-    pub fn name(self) -> &'static str {
-        match self {
-            Base::Black => "black",
-            Base::Red => "red",
-            Base::Green => "green",
-            Base::Brown => "brown",
-            Base::Blue => "blue",
-            Base::Magenta => "magenta",
-            Base::Cyan => "cyan",
-            Base::White => "white",
-            Base::Gray => "gray",
-        }
-    }
 }
 
 impl Shade {
@@ -89,7 +70,7 @@ pub fn shade(fg: Colour, bold: bool) -> Shade {
     Shade { base, bright }
 }
 
-/// Whether the symbol is an object class symbol: `) [ % ? / = ! ( * " $`.
+/// Whether the symbol is an object class symbol.
 pub fn is_item(ch: char) -> bool {
     matches!(
         ch,
@@ -115,13 +96,12 @@ pub fn is_floor_engraving(ch: char, shade: Shade) -> bool {
     ch == '`' && shade == Shade::BRIGHT_BLUE
 }
 
-/// Whether a `#` is a corridor engraving: the game draws an engraving in a corridor as a bright blue `#`.
+/// Whether a `#` is a corridor engraving, which the game draws in bright blue.
 pub fn is_corridor_engraving(ch: char, shade: Shade) -> bool {
     ch == '#' && shade == Shade::BRIGHT_BLUE
 }
 
-/// The name of a map feature symbol: `<` up stairs, `>` down stairs, `^` trap, `_` altar, `{` fountain,
-/// `}` water or lava, `\` throne.
+/// The name of a map feature symbol.
 pub fn feature_name(ch: char) -> Option<&'static str> {
     Some(match ch {
         '<' => "up stairs",
@@ -135,7 +115,7 @@ pub fn feature_name(ch: char) -> Option<&'static str> {
     })
 }
 
-/// The liquid a `}` is, from its colour: red is lava, blue is water.
+/// The liquid a `}` is, from its colour.
 pub fn liquid_name(base: Base) -> Option<&'static str> {
     match base {
         Base::Red => Some("lava"),
@@ -146,37 +126,14 @@ pub fn liquid_name(base: Base) -> Option<&'static str> {
 
 /// The status-line conditions in status-line order, each as the words the status line may show for it, full name
 /// first. A condition's bit in `Conditions` is its index here.
+#[rustfmt::skip]
 const CONDITIONS: [&[&str]; 30] = [
-    &["Hungry", "Hngry"],
-    &["Weak", "Wk"],
-    &["Fainting", "Fnt"],
-    &["Fainted"],
-    &["Satiated", "Sat"],
-    &["Burdened", "Brd"],
-    &["Stressed", "Ssd"],
-    &["Strained", "Snd"],
-    &["Overtaxed", "Otd"],
-    &["Overloaded", "Old"],
-    &["Blind", "Blnd"],
-    &["Conf", "Cnf"],
-    &["Stun", "Stn"],
-    &["Hallu", "Hal"],
-    &["FoodPois", "Fpois"],
-    &["TermIll", "Ill"],
-    &["Stone", "Ston"],
-    &["Slime", "Slim"],
-    &["Strngl", "Stngl"],
-    &["Lev"],
-    &["Fly"],
-    &["Ride"],
-    &["Deaf"],
-    &["Held", "Hld", "Grab"],
-    &["Trapped", "Trap"],
-    &["Parlyz"],
-    &["Zzz"],
-    &["InLava"],
-    &["Sliding"],
-    &["Unconsc"],
+    &["Hungry", "Hngry"], &["Weak", "Wk"], &["Fainting", "Fnt"], &["Fainted"], &["Satiated", "Sat"],
+    &["Burdened", "Brd"], &["Stressed", "Ssd"], &["Strained", "Snd"], &["Overtaxed", "Otd"],
+    &["Overloaded", "Old"], &["Blind", "Blnd"], &["Conf", "Cnf"], &["Stun", "Stn"], &["Hallu", "Hal"],
+    &["FoodPois", "Fpois"], &["TermIll", "Ill"], &["Stone", "Ston"], &["Slime", "Slim"],
+    &["Strngl", "Stngl"], &["Lev"], &["Fly"], &["Ride"], &["Deaf"], &["Held", "Hld", "Grab"],
+    &["Trapped", "Trap"], &["Parlyz"], &["Zzz"], &["InLava"], &["Sliding"], &["Unconsc"],
 ];
 /// The index of `Blind` in `CONDITIONS`.
 pub const BLIND: usize = 10;
@@ -188,16 +145,8 @@ const HUNGER: std::ops::Range<usize> = 0..5;
 pub struct Conditions(pub u32);
 
 impl Conditions {
-    /// Whether the condition at `index` is in the set.
     pub fn contains(self, index: usize) -> bool {
         self.0 & (1 << index) != 0
-    }
-
-    /// The full names of the conditions in the set, in status-line order.
-    pub fn names(self) -> impl Iterator<Item = &'static str> {
-        (0..CONDITIONS.len())
-            .filter(move |&i| self.contains(i))
-            .map(|i| CONDITIONS[i][0])
     }
 
     /// The hunger state shown, if any.
@@ -233,37 +182,19 @@ const TRAP_NOUNS: [&str; 7] = [
 
 /// The game's announcements of traps that leave the hero where they triggered, matched without regard to case at
 /// the start of a word, with the trap each one names.
+#[rustfmt::skip]
 const TRAP_EVENTS: [(&[&str], &str); 11] = [
     (&["dart shoots out at you"], "dart trap"),
     (&["arrow shoots out at you"], "arrow trap"),
     (&["bear trap closes on"], "bear trap"),
-    (
-        &[
-            "you fall into a pit",
-            "you fall into a spiked pit",
-            "you fall in a pit",
-            "you fall in a spiked pit",
-            "you land into a pit",
-            "you land into a spiked pit",
-            "you land in a pit",
-            "you land in a spiked pit",
-        ],
-        "pit",
-    ),
+    (&["you fall into a pit", "you fall into a spiked pit", "you fall in a pit", "you fall in a spiked pit",
+       "you land into a pit", "you land into a spiked pit", "you land in a pit", "you land in a spiked pit"], "pit"),
     (&["sharp iron spikes"], "spiked pit"),
     (&["board beneath you squeaks"], "squeaky board"),
     (&["rock falls on your head"], "falling rock trap"),
     (&["cloud of gas"], "sleeping gas trap"),
     (&["gush of water hits"], "rust trap"),
-    (
-        &[
-            "stumble into a web",
-            "stumble into a spider web",
-            "caught in a web",
-            "caught in a spider web",
-        ],
-        "web",
-    ),
+    (&["stumble into a web", "stumble into a spider web", "caught in a web", "caught in a spider web"], "web"),
     (&["kaablamm"], "land mine"),
 ];
 
@@ -275,21 +206,21 @@ pub fn trap_kind(message: &str) -> Option<&str> {
     }
     TRAP_EVENTS
         .iter()
-        .find(|(phrases, _)| phrases.iter().any(|p| find_word_ci(message, p)))
+        .find(|(phrases, _)| {
+            phrases
+                .iter()
+                .any(|p| contains_ignore_case(message, p, true))
+        })
         .map(|&(_, kind)| kind)
 }
 
 /// Whether a sentence is one of the game's engraving read-outs: `Something is written here in the dust.`, `You
 /// read: "…".` and the like.
 pub fn is_engraving_text(sentence: &str) -> bool {
+    #[rustfmt::skip]
     const PREFIXES: [&str; 7] = [
-        "You read: ",
-        "You feel the words: ",
-        "Something is written here",
-        "Something is engraved here",
-        "Some text has been ",
-        "There's some graffiti ",
-        "You see a message scrawled ",
+        "You read: ", "You feel the words: ", "Something is written here", "Something is engraved here",
+        "Some text has been ", "There's some graffiti ", "You see a message scrawled ",
     ];
     let sentence = sentence.trim_start();
     PREFIXES.iter().any(|p| sentence.starts_with(p))
@@ -306,6 +237,19 @@ pub fn find_word(text: &str, word: &str) -> Option<usize> {
         !text[..i].chars().next_back().is_some_and(is_word)
             && !text[i + word.len()..].chars().next().is_some_and(is_word)
     })
+}
+
+/// Whether ASCII `needle` occurs in `hay` without regard to ASCII case; with `word_start`, only where it starts a
+/// word.
+pub fn contains_ignore_case(hay: &str, needle: &str, word_start: bool) -> bool {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    !n.is_empty()
+        && h.windows(n.len()).enumerate().any(|(i, w)| {
+            w.eq_ignore_ascii_case(n)
+                && (!word_start
+                    || hay.is_char_boundary(i)
+                        && !hay[..i].chars().next_back().is_some_and(is_word))
+        })
 }
 
 /// The trap named by the first `There is a(n) <words> <trap noun> here` in `message`, taking the fewest words.
@@ -351,20 +295,6 @@ fn trap_phrase(text: &str) -> Option<usize> {
         }
         pos += word + 1;
     }
-}
-
-/// Whether ASCII `needle` occurs in `hay`, ignoring ASCII case, starting a word.
-fn find_word_ci(hay: &str, needle: &str) -> bool {
-    let h = hay.as_bytes();
-    let n = needle.as_bytes();
-    if n.is_empty() || h.len() < n.len() {
-        return false;
-    }
-    (0..=h.len() - n.len()).any(|i| {
-        h[i..i + n.len()].eq_ignore_ascii_case(n)
-            && hay.is_char_boundary(i)
-            && !hay[..i].chars().next_back().is_some_and(is_word)
-    })
 }
 
 #[cfg(test)]
@@ -442,14 +372,14 @@ mod tests {
     #[test]
     fn conditions_match_whole_words_only() {
         let found = conditions("Dlvl:3 $:0 HP:12(16) T:400 Hngry Blind Conf");
-        assert!(found.names().eq(["Hungry", "Blind", "Conf"]));
+        assert_eq!(found, conditions("Hungry Blind Conf"));
         assert!(found.contains(BLIND));
         assert_eq!(found.hunger(), Some("Hungry"));
         assert_eq!(
             conditions("Confused Blindfold Trapdoor"),
             Conditions::default()
         );
-        assert!(conditions("Lev Trap").names().eq(["Lev", "Trapped"]));
+        assert_eq!(conditions("Lev Trap"), conditions("Trapped Lev"));
     }
 
     #[test]
