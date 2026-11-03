@@ -1080,7 +1080,7 @@ mod tests {
             report: None,
             answered: &answered,
         };
-        let (text, _) = Renderer::default().render(&scene).unwrap();
+        let (text, facts) = Renderer::default().render(&scene).unwrap();
         assert_eq!(
             text.lines().last(),
             Some(
