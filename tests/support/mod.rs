@@ -118,18 +118,28 @@ pub fn load_view(name: &str) -> View {
     Fixture::load(name).view()
 }
 
-/// A terminal that shows one screen and refuses input.
+/// A terminal that shows one screen: it refuses input, or with `still` takes keys without changing the screen.
 pub struct FixtureTerm {
     view: View,
     prompts: PromptContext,
+    still: bool,
 }
 
 impl FixtureTerm {
-    /// A terminal showing `view`.
+    /// A terminal showing `view` that refuses input.
     pub fn new(view: View) -> FixtureTerm {
         FixtureTerm {
             view,
             prompts: PromptContext::default(),
+            still: false,
+        }
+    }
+
+    /// A terminal showing `view` that takes keys and keeps showing it.
+    pub fn still(view: View) -> FixtureTerm {
+        FixtureTerm {
+            still: true,
+            ..FixtureTerm::new(view)
         }
     }
 }
@@ -140,6 +150,9 @@ impl Terminal for FixtureTerm {
     }
 
     fn send(&mut self, _keys: &[u8]) -> Result<(), LinkError> {
+        if self.still {
+            return Ok(());
+        }
         Err(LinkError::Protocol("a fixture takes no input".to_owned()))
     }
 
@@ -148,7 +161,7 @@ impl Terminal for FixtureTerm {
     }
 
     fn message_written(&self) -> bool {
-        true
+        !self.still
     }
 
     fn prompts(&self) -> &PromptContext {
