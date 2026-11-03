@@ -344,7 +344,11 @@ impl Renderer {
         }
         let prompt = shown(&view.msg);
         for message in scene.fresh {
-            if message.is_empty() || (*message == prompt && phase != Phase::Play) {
+            // A prompt's text, and on a screen printed in full any line it shows, would repeat what follows.
+            if message.is_empty()
+                || phase != Phase::Play && *message == prompt
+                || !map_shown && view.rows.iter().any(|row| row.trim() == message.trim())
+            {
                 continue;
             }
             newline(text);

@@ -220,8 +220,8 @@ impl<T: Terminal> Play<T> {
         self.execute(&verb, &exec::search(count))
     }
 
-    /// The places a `go` target names on `level`, written into `out`; an error says why none match. It leaves the
-    /// routes from the hero around monsters in the play's path buffer.
+    /// The places a `go` target names on the current level, written into `out`; an error says why none match. It
+    /// leaves the routes from the hero around monsters in the play's path buffer.
     pub fn places(&mut self, target: &str, out: &mut Vec<Landmark>) -> Result<(), String> {
         out.clear();
         self.route_from_hero();
@@ -509,16 +509,12 @@ impl<T: Terminal> Play<T> {
             target: action.target,
             route: action.route.len(),
         });
-        self.memory.begin(self.term.view());
         let mut outcome = self.exec.run(&mut self.term, &mut self.memory, action);
         self.fresh.clear();
         self.fresh.append(&mut outcome.messages);
         self.answered.clear();
         self.answered.append(&mut outcome.answered);
         self.reported = self.memory.message_total();
-        if self.term.view().ended || outcome.stop == Stop::GameOver {
-            self.finish_game();
-        }
         let report = self.report(verb, &outcome);
         let code = match &outcome.stop {
             Stop::Held(_) => ExitCode::Held,
@@ -542,10 +538,11 @@ impl<T: Terminal> Play<T> {
         self.reply(code, Some(report))
     }
 
-    /// Pages through the end of the game, keeping its messages for the view.
+    /// Pages through the end of the game. What it shows is reported as the end text rather than as messages; the
+    /// questions it declined are reported as answered.
     fn finish_game(&mut self) {
         let mut outcome = self.exec.finish_game(&mut self.term, &mut self.memory);
-        self.fresh.append(&mut outcome.messages);
+        self.answered.append(&mut outcome.answered);
         self.reported = self.memory.message_total();
     }
 
@@ -704,19 +701,15 @@ impl<T: Terminal> Play<T> {
         self.unnamed = unnamed;
     }
 
-    /// The game's own farlook description of `entity`, or `None`.
+    /// The game's own farlook description of `entity`, or `None`. The executor keeps the look's messages out of
+    /// the remembered ones and closes the targeting prompt.
     fn farlook(&mut self, entity: &Entity) -> Option<String> {
         let p = entity.pos;
         if let Some(level) = self.memory.current_mut() {
             level.inspections.remove(&p);
         }
         let action = exec::farlook(self.term.view(), p);
-        self.memory.set_aside(true);
         let outcome = self.exec.run(&mut self.term, &mut self.memory, &action);
-        if self.term.view().phase() == Phase::Position && self.term.send(b"\x1b").is_ok() {
-            self.memory.ingest(self.term.view());
-        }
-        self.memory.set_aside(false);
         if outcome.stop != Stop::Completed || outcome.turns.unwrap_or(0) != 0 {
             return None;
         }
@@ -751,11 +744,9 @@ impl<T: Terminal> Play<T> {
         if !(arrived && object || engraving) {
             return;
         }
-        self.memory.set_aside(true);
         let outcome = self
             .exec
             .run(&mut self.term, &mut self.memory, &exec::look_here());
-        self.memory.set_aside(false);
         if outcome.stop != Stop::Completed || outcome.turns.unwrap_or(0) != 0 {
             return;
         }
@@ -1464,6 +1455,144 @@ mod tests {
                 .iter()
                 .any(|line| line == "c - an uncursed stethoscope")
         );
+    }
+
+    #[test]
+    fn a_death_pages_to_the_tombstone_and_reports_the_end() {
+        let room = [" ------ ", " |.@d.| ", " ------ "];
+        let tombstone: Vec<String> = [
+            "",
+            "                       ----------",
+            "                      /          \\",
+            "                     /    REST    \\",
+            "                    /      IN      \\",
+            "                   /     PEACE      \\",
+            "                  /                  \\",
+            "                  |       Hero       |",
+            "                  |      0 Au        |",
+            "                  |   killed by a    |",
+            "                  |      jackal      |",
+            "                  |                  |",
+            "                  |                  |",
+            "                  |       2026       |",
+            "                 *|     *  *  *      | *",
+            "        _________)/\\\\_//(\\/(/\\)/\\//\\/|_)_______",
+            "",
+            "--More--",
+        ]
+        .iter()
+        .map(|row| (*row).to_owned())
+        .collect();
+        let mut play = play(vec![
+            text("", &room, 2, 3),
+            text("You die...--More--", &room, 0, 18),
+            text(
+                "Do you want your possessions identified? [ynq] (n)",
+                &room,
+                0,
+                51,
+            ),
+            view(&tombstone, 17, 8),
+        ]);
+        let reply = play.send(b"F");
+        assert_eq!(reply.code, ExitCode::Over, "{}", reply.text);
+        let end = reply.facts.end.as_ref().unwrap();
+        assert_eq!(end.death.as_deref(), Some("killed by a jackal"));
+        assert!(
+            has_line(&reply.text, "end: killed by a jackal"),
+            "{}",
+            reply.text
+        );
+        assert!(!reply.text.contains("msg:   |"), "{}", reply.text);
+        assert!(has_line(
+            &reply.text,
+            "answered: \"Do you want your possessions identified? [ynq] (n)\" \u{2190} n"
+        ));
+        let reply = play.go(">");
+        assert_eq!(reply.code, ExitCode::Over);
+        assert!(
+            reply
+                .text
+                .starts_with("go >: the game is over; nothing was sent")
+        );
+        assert!(has_line(&reply.text, "end: killed by a jackal"));
+    }
+
+    #[test]
+    fn an_engraving_underfoot_is_read_again_once_the_turn_advances() {
+        // A room with a bright blue engraving at 4,2, the hero beside it or on it.
+        let room = |hero: usize, turn: u32, message: &str| {
+            let mut row: Vec<char> = " |....| ".chars().collect();
+            row[hero] = '@';
+            let row: String = row.into_iter().collect();
+            let status = format!("Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:{turn}");
+            let rows = screen(message, &[" ------ ", &row, " ------ "], STATUS1, &status);
+            let mut grid = crate::testkit::grid(&rows);
+            if hero != 4 {
+                grid.cells[2][4] = Cell {
+                    ch: '`',
+                    fg: Colour::Blue,
+                    bold: true,
+                    rev: false,
+                };
+            }
+            View::parse(&grid, Pos::new(2, hero as u8))
+        };
+        let first = "Something is written here in the dust.  You read: \"Elbereth\".";
+        let second = "Something is written here in the dust.  You read: \"Elbe?eth\".";
+        let mut play = play(vec![room(4, 401, ""), room(4, 401, first)]);
+        play.memory.ingest(&room(3, 400, ""));
+        let reply = play.look();
+        assert_eq!(sent(&play), [":"]);
+        assert!(
+            reply.facts.here.as_deref().unwrap().ends_with(first),
+            "{}",
+            reply.text
+        );
+        play.look();
+        assert_eq!(sent(&play), [":"]);
+        play.term_mut().views = vec![room(4, 402, ""), room(4, 402, second)];
+        let reply = play.look();
+        assert_eq!(sent(&play), [":", ":"]);
+        let here = reply.facts.here.unwrap();
+        assert!(here.ends_with(second) && !here.contains(first), "{here}");
+    }
+
+    #[test]
+    fn a_monster_arriving_stops_a_rest_short_and_is_named_with_its_square() {
+        let mut play = play(vec![start().view()]);
+        play.last = Some(Last {
+            kind: Kind::Search,
+            target: None,
+            route: 0,
+        });
+        let outcome = Outcome {
+            stop: Stop::Changed,
+            changed: exec::Changed::ENTITIES,
+            arrival: Some(exec::Arrival {
+                glyph: 'd',
+                pos: Pos::new(8, 41),
+            }),
+            steps: 3,
+            turns: Some(3),
+            ..Outcome::new()
+        };
+        let report = play.report("rest 20", &outcome);
+        assert!(!report.done);
+        assert_eq!(
+            report.stopped,
+            ["a monster came into view or next to the hero (d 41,8)"]
+        );
+    }
+
+    #[test]
+    fn held_input_is_reported_with_its_own_code() {
+        let mut play = play(vec![start().view()]);
+        play.term_mut().failures = vec![Some(LinkError::Held("waiting to start".to_owned()))];
+        let reply = play.send(b"s");
+        assert_eq!(reply.code, ExitCode::Held);
+        assert!(reply.text.starts_with("send: "), "{}", reply.text);
+        assert!(play.term().sent.is_empty());
     }
 
     #[test]
