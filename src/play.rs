@@ -125,11 +125,9 @@ impl<T: Terminal> Play<T> {
         self.reply(code, None)
     }
 
-    /// Sends the caller's keys and renders the result, with every prompt they passed and its answer.
+    /// Sends the caller's keys, 1 to `KEYS_MAX` as the request check allows, and renders the result, with every
+    /// prompt they passed and its answer.
     pub fn send(&mut self, keys: &[u8]) -> Reply {
-        if keys.is_empty() || keys.len() > KEYS_MAX {
-            return Reply::message(ExitCode::Usage, format!("send takes 1 to {KEYS_MAX} keys"));
-        }
         if let Some(reply) = self.prepare("send") {
             return reply;
         }
@@ -172,14 +170,8 @@ impl<T: Terminal> Play<T> {
         self.execute(&verb, &action)
     }
 
-    /// Searches in place up to `count` times.
+    /// Searches in place up to `count` times, 1 to `REST_MAX` as the request check allows.
     pub fn rest(&mut self, count: u32) -> Reply {
-        if count == 0 || count > REST_MAX {
-            return Reply::message(
-                ExitCode::Usage,
-                format!("rest takes 1 to {REST_MAX} searches"),
-            );
-        }
         let verb = format!("rest {count}");
         if let Some(reply) = self.prepare(&verb) {
             return reply;
@@ -1247,16 +1239,6 @@ mod tests {
         let reply = play.rest(3);
         assert_eq!(reply.code, ExitCode::Failed);
         assert_eq!(reply.facts.report.and_then(|report| report.turns), Some(0));
-    }
-
-    #[test]
-    fn rest_and_go_count_bounds_are_checked_before_anything_is_sent() {
-        let mut play = play(vec![start().view()]);
-        assert_eq!(play.rest(0).code, ExitCode::Usage);
-        assert_eq!(play.rest(REST_MAX + 1).code, ExitCode::Usage);
-        assert_eq!(play.send(b"").code, ExitCode::Usage);
-        assert_eq!(play.send(&[b'a'; KEYS_MAX + 1]).code, ExitCode::Usage);
-        assert!(play.term().sent.is_empty());
     }
 
     #[test]

@@ -206,8 +206,6 @@ pub struct Scene<'a> {
 
 /// One `seen:` or `items:` entry while it is sorted: unreachable last, then by route length and square.
 struct Listed {
-    unreachable: bool,
-    steps: u32,
     place: Place,
     text: String,
 }
@@ -529,8 +527,6 @@ impl Renderer {
                 }
             }
             let listed = Listed {
-                unreachable: steps.is_none(),
-                steps: steps.unwrap_or(0),
                 place: Place {
                     glyph,
                     label: if item {
@@ -560,13 +556,9 @@ impl Renderer {
                 continue;
             }
             entries.sort_by(|a, b| {
-                (a.unreachable, a.steps, a.place.y, a.place.x, &a.text).cmp(&(
-                    b.unreachable,
-                    b.steps,
-                    b.place.y,
-                    b.place.x,
-                    &b.text,
-                ))
+                let key =
+                    |e: &Listed| (e.place.steps.is_none(), e.place.steps, e.place.y, e.place.x);
+                key(a).cmp(&key(b)).then_with(|| a.text.cmp(&b.text))
             });
             newline(text);
             let _ = write!(text, "{title}: ");
