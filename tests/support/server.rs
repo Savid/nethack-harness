@@ -30,8 +30,12 @@ pub enum Step {
     /// Prints these bytes and waits for a key: the reply says `waiting: true`.
     Output(Vec<u8>),
     /// Prints these bytes but is still busy when the reply goes out, as at the request's `wait` deadline: the reply
-    /// says `waiting: false`; the next pure read with `wait` reports `waiting: true` with no new output.
+    /// says `waiting: false`; the game settles while the next read with `wait` is held, which reports
+    /// `waiting: true` with no new output.
     Busy(Vec<u8>),
+    /// Prints these bytes and never settles, like a frozen game: this and every later reply comes at once with
+    /// `waiting: false`.
+    Stuck(Vec<u8>),
     /// Refuses the input with this HTTP status and body, such as 410 `waiting to start`, 410 `time is up` or 503
     /// `terminal busy`; the input is not consumed.
     Refuse(u16, String),
@@ -64,6 +68,7 @@ struct Game {
     start: u64,
     script: VecDeque<Step>,
     busy: bool,
+    stuck: bool,
     received: Vec<Received>,
     connections: u32,
     streams: Vec<UnixStream>,
@@ -285,6 +290,10 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
                 g.print(&bytes);
                 g.busy = true;
             }
+            Some(Step::Stuck(bytes)) => {
+                g.print(&bytes);
+                g.stuck = true;
+            }
             Some(Step::Slow(ms, bytes)) => {
                 drop(g);
                 std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -316,7 +325,7 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
         "{{\"output\":\"{}\",\"cursor\":{cursor},\"truncated\":{},\"waiting\":{}}}\n",
         String::from_utf8_lossy(&output),
         request.after < g.start,
-        !g.busy
+        !g.busy && !g.stuck
     );
     (200, reply)
 }

@@ -119,11 +119,9 @@ pub enum Stop {
     },
     /// The game ended.
     GameOver,
-    /// Game input is held; nothing was sent.
-    Held(String),
-    /// The terminal closed.
-    Closed(String),
-    /// The terminal answered something unexpected.
+    /// The terminal failed.
+    Link(LinkError),
+    /// The game kept showing pages past the bound.
     Failed(String),
 }
 
@@ -186,15 +184,6 @@ enum Watch {
     Features,
     /// None: exploring judges terrain by what it discovers instead.
     Nothing,
-}
-
-/// A link failure as the reason an action ended.
-fn stopped_by(error: LinkError) -> Stop {
-    match error {
-        LinkError::Held(text) => Stop::Held(text),
-        LinkError::Closed(text) | LinkError::Unavailable(text) => Stop::Closed(text),
-        LinkError::Protocol(text) => Stop::Failed(text),
-    }
 }
 
 /// Runs actions, keeping scratch buffers across calls.
@@ -321,7 +310,7 @@ impl Executor {
         outcome: &mut Outcome,
         turn: &mut Option<u32>,
     ) -> Result<Stop, Stop> {
-        term.poll().map_err(stopped_by)?;
+        term.poll().map_err(Stop::Link)?;
         let view = term.view();
         memory.ingest(view);
         *turn = view.status.turn;
@@ -346,7 +335,7 @@ impl Executor {
         keys: &[u8],
         outcome: &mut Outcome,
     ) -> Result<bool, Stop> {
-        term.send(keys).map_err(stopped_by)?;
+        term.send(keys).map_err(Stop::Link)?;
         self.after_run = is_run(keys);
         Ok(self.take(term, memory, outcome))
     }
@@ -467,7 +456,7 @@ impl Executor {
             } else {
                 open = None;
             }
-            term.send(&keys[i..end]).map_err(stopped_by)?;
+            term.send(&keys[i..end]).map_err(Stop::Link)?;
             outcome.steps += (end - i) as u32;
             self.take(term, memory, outcome);
             i = end;
@@ -1991,31 +1980,12 @@ mod tests {
 
     #[test]
     fn a_link_failure_ends_the_action_with_its_reason() {
-        let cases = [
-            (
-                LinkError::Held("waiting to start".to_owned()),
-                Stop::Held("waiting to start".to_owned()),
-            ),
-            (
-                LinkError::Closed("time is up".to_owned()),
-                Stop::Closed("time is up".to_owned()),
-            ),
-            (
-                LinkError::Unavailable("no socket".to_owned()),
-                Stop::Closed("no socket".to_owned()),
-            ),
-            (
-                LinkError::Protocol("HTTP 500".to_owned()),
-                Stop::Failed("HTTP 500".to_owned()),
-            ),
-        ];
-        for (error, stop) in cases {
-            let (mut term, mut memory) = start(vec![at(3, 400), at(4, 401)]);
-            term.failures.push(Some(error));
-            let outcome = Executor::new().run(&mut term, &mut memory, &east(1));
-            assert_eq!((outcome.stop, outcome.steps), (stop, 0));
-            assert!(term.sent.is_empty());
-        }
+        let error = LinkError::Held("waiting to start".to_owned());
+        let (mut term, mut memory) = start(vec![at(3, 400), at(4, 401)]);
+        term.failures.push(Some(error.clone()));
+        let outcome = Executor::new().run(&mut term, &mut memory, &east(1));
+        assert_eq!((outcome.stop, outcome.steps), (Stop::Link(error), 0));
+        assert!(term.sent.is_empty());
     }
 
     #[test]

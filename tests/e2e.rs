@@ -247,6 +247,21 @@ fn a_closed_terminal_during_sync_ends_the_daemon() {
 }
 
 #[test]
+fn a_game_that_never_settles_stops_the_keys_short() {
+    let dir = scratch("e2e-stuck");
+    let server = FakeTerminalServer::start(&dir, SCREEN, vec![]);
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    server.push([Step::Stuck(Vec::new())]);
+    let sent = session.run(&["send", "ab"]);
+    assert_eq!(code(&sent), 2, "{}{}", stdout(&sent), stderr(&sent));
+    assert!(stdout(&sent).contains("still busy"), "{}", stdout(&sent));
+    let inputs = server.inputs();
+    assert_eq!(inputs.last(), Some(&b"a".to_vec()), "{inputs:?}");
+    assert!(!inputs.contains(&b"b".to_vec()), "{inputs:?}");
+}
+
+#[test]
 fn concurrent_clients_start_one_daemon() {
     let dir = scratch("e2e-concurrent");
     let server = FakeTerminalServer::start(&dir, SCREEN, vec![]);

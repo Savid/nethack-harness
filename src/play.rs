@@ -52,15 +52,6 @@ pub struct Play<T: Terminal> {
     facts: Facts,
 }
 
-/// The exit code for a link failure.
-fn link_code(error: &LinkError) -> ExitCode {
-    match error {
-        LinkError::Held(_) => ExitCode::Held,
-        LinkError::Closed(_) | LinkError::Unavailable(_) => ExitCode::Closed,
-        LinkError::Protocol(_) => ExitCode::Failed,
-    }
-}
-
 /// The phrase for each changed observation, in the order a report lists them.
 const CHANGES: [(exec::Changed, &str); 7] = [
     (exec::Changed::STATUS, "the status line changed"),
@@ -417,9 +408,8 @@ impl<T: Terminal> Play<T> {
             return report;
         }
         match &outcome.stop {
-            Stop::Held(error) | Stop::Closed(error) | Stop::Failed(error) => {
-                report.error = Some(error.clone());
-            }
+            Stop::Link(error) => report.error = Some(error.to_string()),
+            Stop::Failed(error) => report.error = Some(error.clone()),
             Stop::Completed => {
                 if matches!(kind, Kind::Travel | Kind::Explore)
                     && target.is_some()
@@ -521,8 +511,7 @@ impl<T: Terminal> Play<T> {
         self.reported = self.memory.message_total();
         let report = self.report(verb, &outcome);
         let code = match &outcome.stop {
-            Stop::Held(_) => ExitCode::Held,
-            Stop::Closed(_) => ExitCode::Closed,
+            Stop::Link(error) => error.code(),
             Stop::Failed(_) => ExitCode::Failed,
             Stop::GameOver => ExitCode::Over,
             _ if refused_search(action.kind, &outcome) => ExitCode::Failed,
@@ -530,7 +519,8 @@ impl<T: Terminal> Play<T> {
             _ => ExitCode::Short,
         };
         let code = self.over().unwrap_or(code);
-        if !matches!(code, ExitCode::Held | ExitCode::Closed | ExitCode::Over) {
+        // After a link failure the game may still be busy or gone, so nothing more is sent to it.
+        if code != ExitCode::Over && !matches!(outcome.stop, Stop::Link(_)) {
             self.inquire();
         }
         self.reply(code, Some(report))
@@ -552,7 +542,7 @@ impl<T: Terminal> Play<T> {
     /// Answers a link failure; once the game has ended, with the last screen and the end text.
     fn failure(&mut self, verb: &str, error: &LinkError) -> Reply {
         let Some(code) = self.over() else {
-            return Reply::message(link_code(error), format!("{verb}: {error}"));
+            return Reply::message(error.code(), format!("{verb}: {error}"));
         };
         let report = Report {
             verb: verb.to_owned(),

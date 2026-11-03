@@ -218,16 +218,23 @@ POST /terminal
   the daemon reads from 0 again.
 - `waiting` is true when the game is blocked reading a key, has consumed all input sent so far, and all its output
   is in `output`.
-- With `wait` > 0 and input written, the server replies as soon as `waiting` is true, or at the deadline. Empty
-  input is a pure read.
-- `503` means busy; the daemon retries up to 100 times, 50 ms apart.
+- With `wait` > 0 the server holds the reply until `waiting` is true or the deadline passes, whether or not input
+  was written; with `wait` 0 it answers at once. A frozen, stopping or ended game answers at once with
+  `waiting: false`.
+- `503` means busy; the daemon retries with pauses growing from 10 ms to 1 s, for at most 5 s.
 - `410` with a body containing `waiting` (such as `waiting to start`) means the game takes no input yet: exit code 5.
 - Any other `410` means the terminal is closed: exit code 4.
 
-The daemon sends each key batch with `wait: 3000` and treats `waiting: true` as settled. `waiting: false` at the
-deadline means the game is still busy, and it reads again with `wait`. Screen shape (the cursor on `@` with the
-status drawn, `--More--`, a menu footer, the cursor on row 0) only classifies what the game is waiting for, never
-when it is done.
+The daemon sends each key batch with `wait: 3000` and treats `waiting: true` as settled. While `waiting` stays
+false it reads again with `wait`, at most 4 times (about 12 s more); a game still busy after that stops the command
+short (exit code 2) and the keys after the batch are not sent. Screen shape (the cursor on `@` with the status
+drawn, `--More--`, a menu footer, the cursor on row 0) only classifies what the game is waiting for, never when it
+is done.
+
+A reply must arrive in full within its `wait` plus 5 s. A connection that fails partway through a reply fails the
+command (exit code 1) and is replaced for the next one. Input is never sent twice: a kept connection is checked
+before input goes out on it, and one that closes after taking input without answering is reported as an unknown
+outcome (exit code 1).
 
 ## Resources
 

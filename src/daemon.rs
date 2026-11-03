@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::link::{LinkError, Term};
+use crate::link::Term;
 use crate::play::{KEYS_MAX, Play, REST_MAX};
 use crate::types::{ExitCode, Reply, unescape};
 
@@ -230,16 +230,6 @@ pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
     }
 }
 
-/// The reply for a terminal that failed before the command ran.
-fn link_reply(error: &LinkError) -> Reply {
-    let code = match error {
-        LinkError::Held(_) => ExitCode::Held,
-        LinkError::Closed(_) | LinkError::Unavailable(_) => ExitCode::Closed,
-        LinkError::Protocol(_) => ExitCode::Failed,
-    };
-    Reply::message(code, error.to_string())
-}
-
 /// Answers one request.
 pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
     let command = match checked(request) {
@@ -252,7 +242,7 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
     if !play.term().complete()
         && let Err(e) = play.term_mut().sync()
     {
-        let reply = link_reply(&e);
+        let reply = Reply::message(e.code(), e.to_string());
         let after = if reply.code == ExitCode::Closed {
             After::Exit
         } else {
@@ -387,27 +377,6 @@ mod tests {
         assert_eq!(
             check(&look).unwrap_err(),
             "look takes no keys, target or count"
-        );
-    }
-
-    #[test]
-    fn link_errors_map_to_exit_codes() {
-        let code = |e: LinkError| link_reply(&e).code;
-        assert_eq!(
-            code(LinkError::Held("waiting to start".into())),
-            ExitCode::Held
-        );
-        assert_eq!(
-            code(LinkError::Closed("time is up".into())),
-            ExitCode::Closed
-        );
-        assert_eq!(
-            code(LinkError::Unavailable("absent".into())),
-            ExitCode::Closed
-        );
-        assert_eq!(
-            code(LinkError::Protocol("HTTP 400".into())),
-            ExitCode::Failed
         );
     }
 }

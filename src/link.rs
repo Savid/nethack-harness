@@ -3,12 +3,14 @@
 //!
 //! Request: `{"input": base64, "after": cursor, "wait": ms}`. Reply 200: `{"output": base64, "cursor": n,
 //! "truncated": bool, "waiting": bool}`; `waiting` is true when the game is blocked reading a key, has consumed
-//! all input sent so far, and all its output is in `output`. With `wait` > 0 and input written, the server
-//! replies as soon as `waiting` is true, or at the deadline. 503 is busy; 410 `waiting to start` means input is
-//! held; any other 410 means the terminal is closed.
+//! all input sent so far, and all its output is in `output`. With `wait` > 0 the server holds the reply, whether or
+//! not input was written, until `waiting` is true or the deadline passes; a frozen, stopping or ended game answers
+//! at once with `waiting` false. 503 is busy; 410 `waiting to start` means input is held; any other 410 means the
+//! terminal is closed.
 
 use std::borrow::Cow;
 use std::io::{ErrorKind, Read, Write};
+use std::ops::Range;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -16,23 +18,28 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::screen::{PromptContext, View};
+use crate::types::ExitCode;
 use crate::vt::Vt;
 
 /// Longest the server is asked to wait for the game to settle, in milliseconds.
 pub const WAIT_MS: u32 = 3000;
 /// Most input bytes one request carries.
 pub const INPUT_MAX: usize = 4096;
-/// Retries of a 503 before giving up.
-pub const BUSY_RETRIES: u32 = 100;
-/// Pause between 503 retries, in milliseconds.
-pub const BUSY_PAUSE_MS: u64 = 50;
 /// Re-reads with `wait` while the game stays busy, before reporting it still busy.
 pub const BUSY_READS: u32 = 4;
+/// Longest a run of 503 answers is retried before giving up.
+const BUSY_BUDGET: Duration = Duration::from_secs(5);
+/// The first pause after a 503; each later one doubles, up to `BUSY_PAUSE_MAX`.
+const BUSY_PAUSE: Duration = Duration::from_millis(10);
+/// The longest pause after a 503.
+const BUSY_PAUSE_MAX: Duration = Duration::from_secs(1);
 
 /// Largest response body accepted: the server keeps at most 64 KiB of output, which base64 and JSON enlarge.
 const BODY_MAX: usize = 512 * 1024;
 /// Largest response header block accepted.
 const HEADER_MAX: usize = 8192;
+/// Capacity the response and output buffers return to after a reply larger than this, such as a full replay.
+const KEEP: usize = 32 * 1024;
 /// A connection idle this long is replaced before use, because the server closes idle connections after 30 s.
 const IDLE: Duration = Duration::from_secs(20);
 /// How much longer than the requested wait a reply may take before the server counts as unresponsive.
@@ -47,14 +54,29 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 /// Why an exchange with the terminal failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkError {
-    /// 410 `waiting to start`: the game takes no input yet; nothing was sent.
+    /// 410 `waiting to start`: the game takes no input yet; this request's input was not sent.
     Held(String),
     /// Any other 410, or the socket went away after answering before: the terminal is closed.
     Closed(String),
     /// The socket could not be reached at all.
     Unavailable(String),
-    /// The server answered something this client does not understand, or kept answering 503.
+    /// The server answered something this client does not understand, kept answering 503, or the connection
+    /// failed partway through an exchange.
     Protocol(String),
+    /// The game was still busy after the re-reads, or the command ran out of time; later keys were not sent.
+    Busy(String),
+}
+
+impl LinkError {
+    /// The exit code a command that failed this way ends with.
+    pub fn code(&self) -> ExitCode {
+        match self {
+            LinkError::Held(_) => ExitCode::Held,
+            LinkError::Closed(_) | LinkError::Unavailable(_) => ExitCode::Closed,
+            LinkError::Protocol(_) => ExitCode::Failed,
+            LinkError::Busy(_) => ExitCode::Short,
+        }
+    }
 }
 
 impl std::fmt::Display for LinkError {
@@ -62,7 +84,9 @@ impl std::fmt::Display for LinkError {
         match self {
             LinkError::Held(why) => write!(f, "the game has not started yet: {why}"),
             LinkError::Closed(why) => write!(f, "the terminal is closed: {why}"),
-            LinkError::Unavailable(why) | LinkError::Protocol(why) => f.write_str(why),
+            LinkError::Unavailable(why) | LinkError::Protocol(why) | LinkError::Busy(why) => {
+                f.write_str(why)
+            }
         }
     }
 }
@@ -85,11 +109,13 @@ pub struct Link {
     cursor: u64,
     answered: bool,
     request: Vec<u8>,
+    /// The request body while it is built.
+    json: Vec<u8>,
+    /// The last response; its body is `response[body]`, dechunked in place.
     response: Vec<u8>,
+    body: Range<usize>,
     output: Vec<u8>,
-    body: Vec<u8>,
     used: Option<Instant>,
-    read_timeout_ms: u64,
 }
 
 /// The 200 reply body. `output` is null when the server has no output at all.
@@ -106,9 +132,9 @@ struct Answer<'a> {
 
 /// How one HTTP round trip failed.
 enum Fail {
-    /// The connection was closed before any byte of a response arrived.
-    Stale,
-    /// The socket failed.
+    /// The request could not be written, or the connection closed before any byte of a response arrived.
+    Stale { written: bool },
+    /// The socket failed partway through the response, or the response took past its deadline.
     Io(std::io::Error),
     /// The response is not HTTP this client understands.
     Bad(String),
@@ -137,17 +163,17 @@ impl Link {
             cursor: 0,
             answered: false,
             request: Vec::with_capacity(1024),
+            json: Vec::with_capacity(1024),
             response: Vec::with_capacity(16 * 1024),
+            body: 0..0,
             output: Vec::with_capacity(16 * 1024),
-            body: Vec::with_capacity(16 * 1024),
             used: None,
-            read_timeout_ms: 0,
         }
     }
 
-    /// Sends `input` (possibly empty, a pure read) and returns what the server answered. With `wait_ms` > 0 and
-    /// input given, the server holds the reply until the game waits for a key or the deadline passes. A 503 is
-    /// retried `BUSY_RETRIES` times.
+    /// Sends `input` (possibly empty, a pure read) and returns what the server answered. With `wait_ms` > 0 the
+    /// server holds the reply until the game waits for a key or the deadline passes. 503 answers are retried with
+    /// growing pauses for at most `BUSY_BUDGET`.
     pub fn exchange(&mut self, input: &[u8], wait_ms: u32) -> Result<Exchange, LinkError> {
         if input.len() > INPUT_MAX {
             return Err(LinkError::Protocol(format!(
@@ -156,8 +182,9 @@ impl Link {
         }
         let mut input = input;
         let mut wait = wait_ms.min(WAIT_MS);
-        let mut busy = 0;
         let mut reset = false;
+        let busy_until = Instant::now() + BUSY_BUDGET;
+        let mut pause = BUSY_PAUSE;
         loop {
             let status = self.post(input, wait)?;
             match status {
@@ -178,9 +205,15 @@ impl Link {
                         waiting,
                     });
                 }
-                503 if busy < BUSY_RETRIES => {
-                    busy += 1;
-                    std::thread::sleep(Duration::from_millis(BUSY_PAUSE_MS));
+                503 if Instant::now() + pause < busy_until => {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(BUSY_PAUSE_MAX);
+                }
+                503 => {
+                    return Err(LinkError::Protocol(format!(
+                        "the terminal stayed busy (HTTP 503) for {} s",
+                        BUSY_BUDGET.as_secs()
+                    )));
                 }
                 410 => {
                     let text = self.quote();
@@ -212,7 +245,7 @@ impl Link {
 
     /// The body of the last response as text, trimmed and cut short for a message.
     fn quote(&self) -> String {
-        let text = String::from_utf8_lossy(&self.body);
+        let text = String::from_utf8_lossy(&self.response[self.body.clone()]);
         let text = text.trim();
         match text.char_indices().nth(QUOTE_MAX) {
             Some((at, _)) => text[..at].to_owned(),
@@ -222,10 +255,14 @@ impl Link {
 
     /// Decodes a 200 body into `output`; returns the cursor, `truncated` and `waiting`.
     fn decode(&mut self) -> Result<(u64, bool, bool), LinkError> {
-        let answer: Answer = serde_json::from_slice(&self.body).map_err(|e| {
-            LinkError::Protocol(format!("the terminal socket answered malformed JSON: {e}"))
-        })?;
+        let answer: Answer =
+            serde_json::from_slice(&self.response[self.body.clone()]).map_err(|e| {
+                LinkError::Protocol(format!("the terminal socket answered malformed JSON: {e}"))
+            })?;
         self.output.clear();
+        if self.output.capacity() > KEEP {
+            self.output.shrink_to(KEEP);
+        }
         if let Some(text) = &answer.output
             && !base64_decode(text.as_bytes(), &mut self.output)
         {
@@ -237,40 +274,44 @@ impl Link {
         Ok((answer.cursor, answer.truncated, answer.waiting))
     }
 
-    /// Posts one request and returns the response status, with its body in `body`. A reused connection that the
-    /// server closed is replaced once; one idle long enough for the server to close it is replaced before use.
+    /// Posts one request and returns the response status, with its body in `response[body]`. A connection the
+    /// server closed is replaced once, unless it may have taken the request's input: input is never sent twice.
+    /// One idle long enough for the server to close it is replaced before use.
     fn post(&mut self, input: &[u8], wait: u32) -> Result<u16, LinkError> {
-        self.body.clear();
-        self.body.extend_from_slice(b"{\"input\":\"");
-        base64_encode(input, &mut self.body);
+        self.json.clear();
+        self.json.extend_from_slice(b"{\"input\":\"");
+        base64_encode(input, &mut self.json);
         // Writes into a Vec cannot fail.
-        let _ = write!(self.body, "\",\"after\":{},\"wait\":{wait}}}", self.cursor);
+        let _ = write!(self.json, "\",\"after\":{},\"wait\":{wait}}}", self.cursor);
         self.request.clear();
         let _ = write!(
             self.request,
             "POST /terminal HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
              Content-Length: {}\r\n\r\n",
-            self.body.len()
+            self.json.len()
         );
-        self.request.extend_from_slice(&self.body);
+        self.request.extend_from_slice(&self.json);
+        if self.response.capacity() > KEEP {
+            self.response.clear();
+            self.response.shrink_to(KEEP);
+        }
         if self.used.is_some_and(|at| at.elapsed() >= IDLE) {
             self.stream = None;
         }
-        let read_timeout_ms = u64::from(wait) + READ_MARGIN_MS;
+        let limit = u64::from(wait) + READ_MARGIN_MS;
         let mut retried = false;
         loop {
+            // Input is sent at most once, so a kept connection the server has since closed is found before it.
+            if !input.is_empty() && self.stream.as_ref().is_some_and(|stream| !open(stream)) {
+                self.stream = None;
+            }
             let reused = self.stream.is_some();
             let mut stream = match self.stream.take() {
                 Some(stream) => stream,
                 None => self.connect()?,
             };
-            if self.read_timeout_ms != read_timeout_ms {
-                stream
-                    .set_read_timeout(Some(Duration::from_millis(read_timeout_ms)))
-                    .map_err(|e| self.gone(&e))?;
-                self.read_timeout_ms = read_timeout_ms;
-            }
-            match self.round_trip(&mut stream) {
+            let deadline = Instant::now() + Duration::from_millis(limit);
+            match self.round_trip(&mut stream, deadline) {
                 Ok(head) => {
                     self.answered = true;
                     self.used = Some(Instant::now());
@@ -279,18 +320,33 @@ impl Link {
                     }
                     return Ok(head.status);
                 }
-                Err(Fail::Stale) if reused && !retried => retried = true,
-                Err(Fail::Stale) => {
+                Err(Fail::Stale { written })
+                    if reused && !retried && (!written || input.is_empty()) =>
+                {
+                    retried = true;
+                }
+                Err(Fail::Stale { written: true }) if !input.is_empty() => {
+                    return Err(LinkError::Protocol(
+                        "the terminal connection closed before answering; whether the keys reached the game \
+                         is unknown"
+                            .to_owned(),
+                    ));
+                }
+                Err(Fail::Stale { .. }) => {
                     return Err(self.gone(&"the connection closed without an answer"));
                 }
                 Err(Fail::Io(e))
                     if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
                 {
                     return Err(LinkError::Protocol(format!(
-                        "the terminal socket did not answer within {read_timeout_ms} ms"
+                        "the terminal socket did not answer within {limit} ms"
                     )));
                 }
-                Err(Fail::Io(e)) => return Err(self.gone(&e)),
+                Err(Fail::Io(e)) => {
+                    return Err(LinkError::Protocol(format!(
+                        "the terminal connection failed partway through an exchange ({e})"
+                    )));
+                }
                 Err(Fail::Bad(why)) => return Err(LinkError::Protocol(why)),
             }
         }
@@ -301,8 +357,12 @@ impl Link {
         let stream = UnixStream::connect(&self.path).map_err(|e| self.gone(&e))?;
         stream
             .set_write_timeout(Some(WRITE_TIMEOUT))
+            .and_then(|()| {
+                stream.set_read_timeout(Some(Duration::from_millis(
+                    u64::from(WAIT_MS) + READ_MARGIN_MS,
+                )))
+            })
             .map_err(|e| self.gone(&e))?;
-        self.read_timeout_ms = 0;
         Ok(stream)
     }
 
@@ -318,17 +378,17 @@ impl Link {
         }
     }
 
-    /// Writes the request and reads one response into `response`, its body into `body`.
-    fn round_trip(&mut self, stream: &mut UnixStream) -> Result<Head, Fail> {
+    /// Writes the request and reads one response into `response` by `deadline`, its body dechunked in place.
+    fn round_trip(&mut self, stream: &mut UnixStream, deadline: Instant) -> Result<Head, Fail> {
         if let Err(e) = stream.write_all(&self.request) {
             return Err(if dropped(&e) {
-                Fail::Stale
+                Fail::Stale { written: false }
             } else {
                 Fail::Io(e)
             });
         }
         self.response.clear();
-        self.body.clear();
+        self.body = 0..0;
         let mut from = 0;
         let end = loop {
             if let Some(at) = find(&self.response[from..], b"\r\n\r\n") {
@@ -340,16 +400,16 @@ impl Link {
                 ));
             }
             from = self.response.len().saturating_sub(3);
-            match more(stream, &mut self.response) {
+            match more(stream, &mut self.response, deadline) {
                 Err(Fail::Io(e)) if self.response.is_empty() && dropped(&e) => {
-                    return Err(Fail::Stale);
+                    return Err(Fail::Stale { written: true });
                 }
                 other => other?,
             }
         };
         let mut head = parse_head(&self.response[..end])?;
-        if head.chunked {
-            dechunk(stream, &mut self.response, end, &mut self.body)?;
+        let length = if head.chunked {
+            dechunk(stream, &mut self.response, end, deadline)?
         } else if let Some(length) = head.length {
             if length > BODY_MAX {
                 return Err(Fail::Bad(
@@ -357,23 +417,34 @@ impl Link {
                 ));
             }
             while self.response.len() < end + length {
-                more(stream, &mut self.response)?;
+                more(stream, &mut self.response, deadline)?;
             }
-            self.body
-                .extend_from_slice(&self.response[end..end + length]);
+            length
         } else {
             head.close = true;
             loop {
-                match more(stream, &mut self.response) {
+                match more(stream, &mut self.response, deadline) {
                     Ok(()) => {}
                     Err(Fail::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
                     Err(other) => return Err(other),
                 }
             }
-            self.body.extend_from_slice(&self.response[end..]);
-        }
+            self.response.len() - end
+        };
+        self.body = end..end + length;
         Ok(head)
     }
+}
+
+/// Whether a kept connection is still open: no end of file or error is waiting to be read on it.
+fn open(stream: &UnixStream) -> bool {
+    let mut byte = [0u8; 1];
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let pending = (&*stream).read(&mut byte);
+    stream.set_nonblocking(false).is_ok()
+        && matches!(pending, Err(e) if e.kind() == ErrorKind::WouldBlock)
 }
 
 /// Whether a socket error means the peer closed the connection.
@@ -393,23 +464,34 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Reads at least one more byte into `buf`; EOF is `UnexpectedEof`.
-fn more(stream: &mut UnixStream, buf: &mut Vec<u8>) -> Result<(), Fail> {
+/// Reads at least one more byte into `buf`; EOF is `UnexpectedEof`, and a read once `deadline` has passed is
+/// `TimedOut`, so a server sending its reply a byte at a time cannot hold the link.
+fn more(stream: &mut UnixStream, buf: &mut Vec<u8>, deadline: Instant) -> Result<(), Fail> {
     if buf.len() > HEADER_MAX + BODY_MAX {
         return Err(Fail::Bad(
             "the terminal socket answered an oversized response".to_owned(),
         ));
     }
-    let mut chunk = [0u8; 16 * 1024];
+    if Instant::now() >= deadline {
+        return Err(Fail::Io(ErrorKind::TimedOut.into()));
+    }
+    let len = buf.len();
+    buf.resize(len + 16 * 1024, 0);
     loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => return Err(Fail::Io(ErrorKind::UnexpectedEof.into())),
+        match stream.read(&mut buf[len..]) {
+            Ok(0) => {
+                buf.truncate(len);
+                return Err(Fail::Io(ErrorKind::UnexpectedEof.into()));
+            }
             Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
+                buf.truncate(len + n);
                 return Ok(());
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) => return Err(Fail::Io(e)),
+            Err(e) => {
+                buf.truncate(len);
+                return Err(Fail::Io(e));
+            }
         }
     }
 }
@@ -460,16 +542,19 @@ fn parse_head(head: &[u8]) -> Result<Head, Fail> {
     Ok(parsed)
 }
 
-/// Decodes a chunked body that starts at `buf[at..]`, reading more as needed, into `body`.
+/// Decodes in place a chunked body that starts at `buf[start..]`, reading more as needed; returns the body's
+/// length, which then lies at `buf[start..]`.
 fn dechunk(
     stream: &mut UnixStream,
     buf: &mut Vec<u8>,
-    mut at: usize,
-    body: &mut Vec<u8>,
-) -> Result<(), Fail> {
+    start: usize,
+    deadline: Instant,
+) -> Result<usize, Fail> {
     let bad = || Fail::Bad("the terminal socket answered a malformed chunked body".to_owned());
+    let mut at = start;
+    let mut end = start;
     loop {
-        let line = line_end(stream, buf, at)?;
+        let line = line_end(stream, buf, at, deadline)?;
         let size_text = std::str::from_utf8(&buf[at..line]).map_err(|_| bad())?;
         let size_text = size_text.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_text, 16).map_err(|_| bad())?;
@@ -477,32 +562,38 @@ fn dechunk(
         if size == 0 {
             // Trailers, if any, end with an empty line.
             loop {
-                let line = line_end(stream, buf, at)?;
+                let line = line_end(stream, buf, at, deadline)?;
                 let empty = line == at;
                 at = line + 2;
                 if empty {
-                    return Ok(());
+                    return Ok(end - start);
                 }
             }
         }
-        if body.len() + size > BODY_MAX {
+        if end - start + size > BODY_MAX {
             return Err(Fail::Bad(
                 "the terminal socket answered an oversized body".to_owned(),
             ));
         }
         while buf.len() < at + size + 2 {
-            more(stream, buf)?;
+            more(stream, buf, deadline)?;
         }
-        body.extend_from_slice(&buf[at..at + size]);
         if &buf[at + size..at + size + 2] != b"\r\n" {
             return Err(bad());
         }
+        buf.copy_within(at..at + size, end);
+        end += size;
         at += size + 2;
     }
 }
 
 /// The offset of the CRLF ending the line that starts at `buf[at..]`, reading more as needed.
-fn line_end(stream: &mut UnixStream, buf: &mut Vec<u8>, at: usize) -> Result<usize, Fail> {
+fn line_end(
+    stream: &mut UnixStream,
+    buf: &mut Vec<u8>,
+    at: usize,
+    deadline: Instant,
+) -> Result<usize, Fail> {
     let mut from = at;
     loop {
         if let Some(end) = find(&buf[from..], b"\r\n") {
@@ -514,7 +605,7 @@ fn line_end(stream: &mut UnixStream, buf: &mut Vec<u8>, at: usize) -> Result<usi
             ));
         }
         from = buf.len().saturating_sub(1).max(at);
-        more(stream, buf)?;
+        more(stream, buf, deadline)?;
     }
 }
 
@@ -594,7 +685,8 @@ pub fn base64_decode(text: &[u8], out: &mut Vec<u8>) -> bool {
 pub trait Terminal {
     /// Reads any pending output without sending input.
     fn poll(&mut self) -> Result<(), LinkError>;
-    /// Sends `keys` as one batch and returns once the game waits for a key, re-reading while it stays busy.
+    /// Sends `keys` as one batch and returns once the game waits for a key, re-reading while it stays busy; a
+    /// game still busy after `BUSY_READS` re-reads is `LinkError::Busy`.
     fn send(&mut self, keys: &[u8]) -> Result<(), LinkError>;
     /// The current screen.
     fn view(&self) -> &View;
@@ -610,6 +702,7 @@ pub struct Term {
     vt: Vt,
     prompts: PromptContext,
     view: View,
+    deadline: Option<Instant>,
 }
 
 impl Term {
@@ -622,7 +715,14 @@ impl Term {
             vt,
             prompts: PromptContext::new(),
             view,
+            deadline: None,
         }
+    }
+
+    /// Sets the time by which the current command must stop sending: past it, `send` refuses with
+    /// `LinkError::Busy`, so a command against a slow game ends while its client still waits.
+    pub fn deadline(&mut self, at: Instant) {
+        self.deadline = Some(at);
     }
 
     /// Reads the screen and, if the emulator has never seen a full clear, asks the game to redraw (`^R`).
@@ -671,16 +771,32 @@ impl Terminal for Term {
     }
 
     fn send(&mut self, keys: &[u8]) -> Result<(), LinkError> {
+        let late = || {
+            LinkError::Busy("the command ran out of time; the game may still be busy".to_owned())
+        };
+        if self.deadline.is_some_and(|at| Instant::now() >= at) {
+            return Err(late());
+        }
         self.vt.clear_touched();
         let mut exchange = self.link.exchange(keys, WAIT_MS)?;
         self.apply(exchange, Some(keys));
-        let mut reads = 0;
-        while !exchange.waiting && reads < BUSY_READS {
+        for _ in 0..BUSY_READS {
+            if exchange.waiting {
+                return Ok(());
+            }
+            if self.deadline.is_some_and(|at| Instant::now() >= at) {
+                return Err(late());
+            }
             exchange = self.link.exchange(&[], WAIT_MS)?;
             self.apply(exchange, None);
-            reads += 1;
         }
-        Ok(())
+        if exchange.waiting {
+            return Ok(());
+        }
+        Err(LinkError::Busy(format!(
+            "the game is still busy after {} reads; later keys were not sent",
+            BUSY_READS + 1
+        )))
     }
 
     fn view(&self) -> &View {
@@ -776,5 +892,18 @@ mod tests {
             LinkError::Closed("time is up".to_owned()).to_string(),
             "the terminal is closed: time is up"
         );
+    }
+
+    #[test]
+    fn errors_map_to_exit_codes() {
+        let code = |e: LinkError| e.code();
+        assert_eq!(code(LinkError::Held(String::new())), ExitCode::Held);
+        assert_eq!(code(LinkError::Closed(String::new())), ExitCode::Closed);
+        assert_eq!(
+            code(LinkError::Unavailable(String::new())),
+            ExitCode::Closed
+        );
+        assert_eq!(code(LinkError::Protocol(String::new())), ExitCode::Failed);
+        assert_eq!(code(LinkError::Busy(String::new())), ExitCode::Short);
     }
 }
