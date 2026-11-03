@@ -12,10 +12,12 @@ are deployed.
   routes over observed geometry, runs bounded actions and reports what happened.
 - **No game knowledge or policy.** It never advises, ranks, vetoes or chooses, and holds no survival rules or
   game reference tables. Decoding what a symbol or colour on screen is counts as UI decoding and belongs here.
-- **No answers on the caller's behalf.** Prompts are reported with the keys that answered them; the harness
-  answers only the end-of-game disclosure questions, to reach the final screens.
+- **No answers on the caller's behalf.** Prompts are reported with the keys that answered them. The harness
+  answers no question for the caller; it dismisses `--More--` pages and empty text windows, and declines the
+  end-of-game disclosure questions to reach the final screens.
 - **Bounded actions.** Every action names its target and bounds and stops when observations change. It never
-  substitutes a different goal or action.
+  substitutes a different goal or action. A rest also stops when HP that was below its maximum reaches it: the
+  status line shows it, and searching on would only pass turns.
 - Distinguish what is on screen, what is remembered, and what is unknown.
 
 ## Change rules

@@ -72,7 +72,10 @@ the game refused only where no other route exists, and pass through the highligh
 `go` sends nothing and says why. A walk or rest stops short when a monster arrives (a monster with no monster of
 the same glyph and colour within one square of it at the previous step; `I` and warning digits never count), a
 message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
-refused or a prompt opens.
+refused or a prompt opens. A rest also stops when three searches in a row leave the screen unchanged (`nothing
+changed`), and checks its last search too; searches that pass no game time and change nothing but the message
+were refused by the game (`no time passed`, exit code 1). A `frontier` walk that follows a corridor stops where
+the corridor branches or ends.
 
 After `send`, `go` and `rest`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
 eight per command) and reads underfoot with `:` where the hero stands on a square never seen, an object square, or
@@ -100,7 +103,7 @@ the caller; the client waits at most 90 s for its reply.
 | 2 | Stopped short; the report line says why. |
 | 3 | The game is over; `end:` and `facts.end` hold the end text. |
 | 4 | The terminal is closed or cannot be reached. This is not a death. The daemon exits after telling a client. |
-| 5 | Held: the game has not started yet. Nothing was sent. |
+| 5 | Held: the game takes no input yet; the keys from the refused one on were not sent. |
 | 64 | Usage: bad arguments or a malformed request. |
 
 ## Socket API
