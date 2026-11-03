@@ -169,17 +169,6 @@ struct Io<'a> {
     outcome: Outcome,
 }
 
-/// Which remembered terrain ends an action when it changes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Watch {
-    /// Any square.
-    All,
-    /// Features, `+`, coloured `#` and open doors.
-    Features,
-    /// None: exploring judges terrain by what it discovers instead.
-    Nothing,
-}
-
 /// Runs actions, keeping scratch buffers across calls.
 pub struct Executor {
     /// The last batch sent started a run (travel `_`, `G` or a shift-run).
@@ -494,11 +483,6 @@ impl Executor {
         let exploring = action.kind == Kind::Explore;
         let moving = matches!(action.kind, Kind::Travel | Kind::Explore);
         let repeat = action.kind == Kind::Search;
-        let watch = match action.kind {
-            Kind::Explore => Watch::Nothing,
-            Kind::Travel => Watch::Features,
-            _ => Watch::All,
-        };
         self.remember_start(io.memory);
         let start = io.term.view();
         self.status.clone_from(&start.status);
@@ -609,7 +593,7 @@ impl Executor {
                 if view.engulfed != engulfed {
                     changed.insert(Changed::ENGULFED);
                 }
-                if self.terrain_changed(io.memory, watch) {
+                if self.terrain_changed(io.memory, action.kind) {
                     changed.insert(Changed::TERRAIN);
                 }
                 if repeat
@@ -665,9 +649,10 @@ impl Executor {
         self.doors = level.open_doors.clone();
     }
 
-    /// Whether the remembered terrain `watch` covers differs from the start, or the hero is on another level.
-    fn terrain_changed(&self, memory: &Memory, watch: Watch) -> bool {
-        if watch == Watch::Nothing {
+    /// Whether remembered terrain differs from the start, or the hero is on another level. Travel watches only
+    /// features, `+`, coloured `#` and open doors; exploring judges terrain by what it discovers instead.
+    fn terrain_changed(&self, memory: &Memory, kind: Kind) -> bool {
+        if kind == Kind::Explore {
             return false;
         }
         let Some(level) = memory.current() else {
@@ -681,9 +666,9 @@ impl Executor {
             let (old, new) = (self.terrain[i], level.terrain(p).unwrap_or('\0'));
             let (was, now) = (self.colours[i], level.colour(p));
             let structure = structural(old, was) != structural(new, now);
-            match watch {
-                Watch::All => old != new || structure,
-                _ => feature(old) != feature(new) || structure,
+            match kind {
+                Kind::Travel => feature(old) != feature(new) || structure,
+                _ => old != new || structure,
             }
         })
     }

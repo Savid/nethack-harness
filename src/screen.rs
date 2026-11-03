@@ -525,9 +525,7 @@ pub struct PromptContext {
 impl PromptContext {
     /// Forgets any open positioning prompt.
     pub fn reset(&mut self) {
-        self.position = false;
-        self.status.0 = None;
-        self.status.1 = None;
+        *self = PromptContext::default();
     }
 
     /// Adjusts a freshly parsed view: while a positioning prompt is open, the cursor is the target, not the hero.

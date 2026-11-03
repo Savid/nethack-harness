@@ -428,8 +428,17 @@ pub struct Answered {
     pub text_entry: bool,
 }
 
-/// Decodes the key escape syntax: `\e \r \n \t \\ \xHH`; any other character must be ASCII and stands for its
-/// code, so `\xHH` is the only way to send a byte above 0x7f.
+/// The named key escapes: `\e \r \n \t \\`, with the byte each stands for.
+const ESCAPES: [(u8, u8); 5] = [
+    (0x1b, b'e'),
+    (b'\r', b'r'),
+    (b'\n', b'n'),
+    (b'\t', b't'),
+    (b'\\', b'\\'),
+];
+
+/// Decodes the key escape syntax: the named escapes and `\xHH`; any other character must be ASCII and stands for
+/// its code, so `\xHH` is the only way to send a byte above 0x7f.
 pub fn unescape(keys: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(keys.len());
     let mut rest = keys;
@@ -437,17 +446,15 @@ pub fn unescape(keys: &str) -> Result<Vec<u8>, String> {
         if !ch.is_ascii() {
             return Err("send takes ASCII keys; write other bytes as \\xHH".to_owned());
         }
+        let next = rest.as_bytes().get(1).copied();
+        let named = ESCAPES.iter().find(|&&(_, name)| Some(name) == next);
         let hex = rest
             .get(2..4)
             .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
             .and_then(|h| u8::from_str_radix(h, 16).ok());
-        let (byte, used) = match (ch, rest.as_bytes().get(1), hex) {
-            ('\\', Some(b'e'), _) => (0x1b, 2),
-            ('\\', Some(b'r'), _) => (b'\r', 2),
-            ('\\', Some(b'n'), _) => (b'\n', 2),
-            ('\\', Some(b't'), _) => (b'\t', 2),
-            ('\\', Some(b'\\'), _) => (b'\\', 2),
-            ('\\', Some(b'x'), Some(byte)) => (byte, 4),
+        let (byte, used) = match (ch, named, next, hex) {
+            ('\\', Some(&(byte, _)), _, _) => (byte, 2),
+            ('\\', None, Some(b'x'), Some(byte)) => (byte, 4),
             _ => (ch as u8, 1),
         };
         out.push(byte);
@@ -458,17 +465,14 @@ pub fn unescape(keys: &str) -> Result<Vec<u8>, String> {
 
 /// Writes one key byte in escape syntax: the inverse of `unescape` for a single byte.
 pub fn escape_key(key: u8, out: &mut String) {
-    match key {
-        0x1b => out.push_str("\\e"),
-        b'\r' => out.push_str("\\r"),
-        b'\n' => out.push_str("\\n"),
-        b'\t' => out.push_str("\\t"),
-        b'\\' => out.push_str("\\\\"),
-        0x20..=0x7e => out.push(key as char),
-        _ => {
-            use std::fmt::Write;
-            let _ = write!(out, "\\x{key:02x}");
-        }
+    if let Some(&(_, name)) = ESCAPES.iter().find(|&&(byte, _)| byte == key) {
+        out.push('\\');
+        out.push(name as char);
+    } else if (0x20..=0x7e).contains(&key) {
+        out.push(key as char);
+    } else {
+        use std::fmt::Write;
+        let _ = write!(out, "\\x{key:02x}");
     }
 }
 

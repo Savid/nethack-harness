@@ -8,12 +8,12 @@
 
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -260,6 +260,9 @@ pub fn start(args: &Args) -> std::io::Result<()> {
         .create(true)
         .append(true)
         .open(&log_path)?;
+    // The daemon's output is a socket, so its `ready` line can be awaited with a timeout.
+    let (ready, output) = UnixStream::pair()?;
+    ready.set_read_timeout(Some(Duration::from_millis(START_TIMEOUT_MS)))?;
     let mut child = Process::new(std::env::current_exe()?)
         .arg("--dir")
         .arg(&args.dir)
@@ -269,35 +272,26 @@ pub fn start(args: &Args) -> std::io::Result<()> {
         .arg(args.max_steps.to_string())
         .arg("serve")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(OwnedFd::from(output))
         .stderr(log)
         .process_group(0)
         .spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| std::io::Error::other("the daemon has no output pipe"))?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let read = BufReader::new(stdout).read_line(&mut line);
-        let _ = tx.send(read.map(|_| line));
-    });
     let failed =
         |why: &str| std::io::Error::other(format!("the daemon {why}; see {}", log_path.display()));
-    match rx.recv_timeout(Duration::from_millis(START_TIMEOUT_MS)) {
-        Ok(Ok(line)) if line.trim_end() == "ready" => Ok(()),
-        Ok(_) => {
-            let _ = child.wait();
-            Err(failed("did not start"))
-        }
-        Err(_) => {
+    let mut line = String::new();
+    match BufReader::new(&ready).read_line(&mut line) {
+        Ok(_) if line.trim_end() == "ready" => Ok(()),
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
             let _ = child.kill();
             let _ = child.wait();
             Err(failed(&format!(
                 "did not start within {} s",
                 START_TIMEOUT_MS / 1000
             )))
+        }
+        _ => {
+            let _ = child.wait();
+            Err(failed("did not start"))
         }
     }
 }
