@@ -5,7 +5,7 @@ use crate::glyphs::{Base, is_monster};
 use crate::level::{Level, Paths};
 use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, LookSource, Memory};
-use crate::screen::{EndKind, MenuEntry, Phase, Status, View};
+use crate::screen::{EndKind, MenuEntry, Phase, Status, View, strip_more};
 use crate::types::{Answered, MAP_BOTTOM, MAP_SQUARES, MAP_TOP, Pos, SquareSet, escape_key};
 
 /// Most `--More--` pages or text windows dismissed in one go.
@@ -370,8 +370,7 @@ impl Executor {
         {
             return false;
         }
-        let text = view.msg.replace("--More--", "");
-        let text = text.trim();
+        let text = strip_more(&view.msg).trim();
         if text.is_empty() {
             return false;
         }
@@ -856,8 +855,7 @@ fn asks(view: &View) -> bool {
 /// the same free-text or positioning prompt, and leaving out the earliest prompts beyond `REPORTED`.
 fn record(view: &View, phase: Phase, open: Option<Phase>, keys: &[u8], outcome: &mut Outcome) {
     let answered = &mut outcome.answered;
-    let text = view.msg.replace("--More--", "");
-    let text = text.trim();
+    let text = strip_more(&view.msg).trim();
     let prompt = if text.is_empty() { phase.name() } else { text };
     let same = open == Some(phase)
         && answered.last().is_some_and(|last| match phase {

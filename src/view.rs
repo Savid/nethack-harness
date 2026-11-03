@@ -10,7 +10,7 @@ use std::fmt::Write;
 use crate::glyphs::feature_name;
 use crate::level::{Level, Near, Paths, door_sides};
 use crate::observe::{Entity, EntityKind, Memory};
-use crate::screen::{Phase, View};
+use crate::screen::{Phase, View, strip_more};
 use crate::types::{
     Answered, End, Facts, Frontier, Inventory, MAP_BOTTOM, MAP_TOP, Monster, Place, Pos, ROWS,
     Report, SquareSet,
@@ -258,11 +258,6 @@ fn squash(text: &str, out: &mut String) {
     }
 }
 
-/// The message without `--More--`, trimmed.
-fn shown(msg: &str) -> String {
-    msg.replace("--More--", "").trim().to_owned()
-}
-
 /// Appends `count word`, with the plural `-es` after `h` and `-s` otherwise.
 fn plural(count: i64, word: &str, out: &mut String) {
     let _ = write!(out, "{count} {word}");
@@ -310,7 +305,7 @@ impl Renderer {
             newline(text);
             squash(&view.rows[ROWS - 2], text);
         }
-        let prompt = shown(&view.msg);
+        let prompt = strip_more(&view.msg).trim().to_owned();
         for message in scene.fresh {
             // A prompt's text, and on a screen printed in full any line it shows, would repeat what follows.
             if message.is_empty()

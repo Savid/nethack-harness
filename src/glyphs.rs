@@ -414,8 +414,16 @@ pub fn is_engraving_text(sentence: &str) -> bool {
 }
 
 /// A regular-expression word character.
-fn is_word(c: char) -> bool {
+pub fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Where `word` first occurs in `text` as a whole word: no word character just before or just after it.
+pub fn find_word(text: &str, word: &str) -> Option<usize> {
+    text.match_indices(word).map(|(i, _)| i).find(|&i| {
+        !text[..i].chars().next_back().is_some_and(is_word)
+            && !text[i + word.len()..].chars().next().is_some_and(is_word)
+    })
 }
 
 /// The trap named by the first `There is a(n) <words> <trap noun> here` in `message`, taking the fewest words.

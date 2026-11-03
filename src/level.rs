@@ -4,8 +4,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use crate::glyphs::{
-    Base, Condition, Shade, feature_name, is_corridor_engraving, is_engraving_text,
-    is_floor_engraving, is_item, is_monster, is_warning, liquid_name, shade, trap_kind,
+    Base, Condition, Shade, feature_name, find_word, is_corridor_engraving, is_engraving_text,
+    is_floor_engraving, is_item, is_monster, is_warning, is_word, liquid_name, shade, trap_kind,
 };
 use crate::screen::View;
 use crate::types::{MAP_SQUARES, Pos, SquareSet};
@@ -611,33 +611,19 @@ fn stairs_here(note: &str) -> Option<char> {
     let trimmed = note.strip_suffix('.').unwrap_or(note);
     let ends_here = trimmed
         .strip_suffix("here")
-        .is_some_and(|head| !head.chars().next_back().is_some_and(word_char));
+        .is_some_and(|head| !head.chars().next_back().is_some_and(is_word));
     if !ends_here {
         return None;
     }
-    for (phrase, stairs) in [
+    [
         ("staircase up", '<'),
         ("staircase down", '>'),
         ("ladder up", '<'),
         ("ladder down", '>'),
-    ] {
-        let found = note.match_indices(phrase).any(|(at, _)| {
-            !note[..at].chars().next_back().is_some_and(word_char)
-                && !note[at + phrase.len()..]
-                    .chars()
-                    .next()
-                    .is_some_and(word_char)
-        });
-        if found {
-            return Some(stairs);
-        }
-    }
-    None
-}
-
-/// A regular-expression word character.
-fn word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    ]
+    .into_iter()
+    .find(|(phrase, _)| find_word(note, phrase).is_some())
+    .map(|(_, stairs)| stairs)
 }
 
 /// What a `+` at `p` is, from the screen around it and the level's memory.

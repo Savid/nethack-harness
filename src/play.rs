@@ -1,10 +1,10 @@
 //! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view.
 
 use crate::exec::{self, Executor, Kind, Outcome, Stop};
-use crate::level::{Paths, Underfoot, door_sides};
+use crate::level::{Paths, door_sides};
 use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, Memory};
-use crate::screen::Phase;
+use crate::screen::{Phase, strip_more};
 use crate::types::{Answered, ExitCode, Pos, Reply, Report, SquareSet};
 use crate::view::{LISTED, Landmark, Names, Renderer, Scene, landmarks};
 
@@ -559,8 +559,7 @@ impl<T: Terminal> Play<T> {
     /// Renders the view with `report` under `code`; a refused view is answered with its reason instead.
     fn reply(&mut self, code: ExitCode, report: Option<Report>) -> Reply {
         for message in self.memory.messages_since(self.reported) {
-            let text = message.text.replace("--More--", "");
-            let text = text.trim();
+            let text = strip_more(&message.text).trim();
             if !text.is_empty() {
                 self.fresh.push(text.to_owned());
             }
@@ -705,7 +704,7 @@ impl<T: Terminal> Play<T> {
 
     /// Asks the game what is underfoot (`:`, no game time): on arriving at a square never seen under the hero
     /// or listed under `items:`, and on a known engraving square whenever the turn has advanced since its last
-    /// reading. The reading replaces what was noted there, so a scuffed or wiped engraving is not kept.
+    /// reading. Memory makes the reading what is noted there, so a scuffed or wiped engraving is not kept.
     fn look_underfoot(&mut self) {
         let view = self.term.view();
         let turn = view.status.turn;
@@ -725,27 +724,13 @@ impl<T: Terminal> Play<T> {
                 known
                     .notes
                     .iter()
-                    .any(|note| crate::observe::engraving_sentence(note))
+                    .any(|note| crate::glyphs::is_engraving_text(note))
             });
         if !(arrived && object || engraving) {
             return;
         }
-        let outcome = self
-            .exec
+        self.exec
             .run(&mut self.term, &mut self.memory, &exec::look_here());
-        if outcome.stop != Stop::Completed || outcome.turns.unwrap_or(0) != 0 {
-            return;
-        }
-        let notes: Vec<String> = outcome
-            .messages
-            .iter()
-            .map(|message| message.trim().to_owned())
-            .filter(|message| !message.is_empty())
-            .collect();
-        if let Some(level) = self.memory.current_mut() {
-            level.underfoot.insert(hero, Underfoot::default());
-            level.note_underfoot(hero, &notes, turn);
-        }
     }
 }
 
@@ -1545,7 +1530,12 @@ mod tests {
         let reply = play.look();
         assert_eq!(sent(&play), [":"]);
         assert!(
-            reply.facts.here.as_deref().unwrap().ends_with(first),
+            reply
+                .facts
+                .here
+                .as_deref()
+                .unwrap()
+                .ends_with("Something is written here in the dust.; You read: \"Elbereth\"."),
             "{}",
             reply.text
         );
@@ -1555,7 +1545,10 @@ mod tests {
         let reply = play.look();
         assert_eq!(sent(&play), [":", ":"]);
         let here = reply.facts.here.unwrap();
-        assert!(here.ends_with(second) && !here.contains(first), "{here}");
+        assert!(
+            here.ends_with("You read: \"Elbe?eth\".") && !here.contains("Elbereth"),
+            "{here}"
+        );
     }
 
     #[test]

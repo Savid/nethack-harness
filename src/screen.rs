@@ -1,7 +1,7 @@
 //! Parsing one 80×24 tty screen: the message line, prompts, `--More--`, menus, end-of-game text, the status
 //! lines, the hero and map cells.
 
-use crate::glyphs::{self, Conditions, Shade};
+use crate::glyphs::{self, Conditions, Shade, find_word, is_word};
 use crate::types::{COLS, Grid, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
 
 /// What the game is waiting for, judged from the screen.
@@ -648,6 +648,11 @@ impl PromptContext {
     }
 }
 
+/// The text with `--More--` and anything after it cut off.
+pub fn strip_more(text: &str) -> &str {
+    text.find("--More--").map_or(text, |at| &text[..at])
+}
+
 /// Replaces an optional string, reusing its buffer.
 fn set_str(slot: &mut Option<String>, value: Option<&str>) {
     match (slot.as_mut(), value) {
@@ -663,10 +668,6 @@ fn set_str(slot: &mut Option<String>, value: Option<&str>) {
 /// The byte offset of character column `col` in `row`, or its length past the end.
 fn byte_at(row: &str, col: usize) -> usize {
     row.char_indices().nth(col).map_or(row.len(), |(i, _)| i)
-}
-
-fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
 }
 
 /// Whether `needle` occurs in `hay`, comparing ASCII letters without regard to case.
@@ -745,14 +746,6 @@ fn strength(text: &str) -> Option<&str> {
             }
         }
         Some(&text[start..end])
-    })
-}
-
-/// Where `word` first occurs in `text` as a whole word.
-fn find_word(text: &str, word: &str) -> Option<usize> {
-    text.match_indices(word).map(|(i, _)| i).find(|&i| {
-        !text[..i].chars().next_back().is_some_and(is_word)
-            && !text[i + word.len()..].chars().next().is_some_and(is_word)
     })
 }
 

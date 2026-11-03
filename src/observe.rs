@@ -1,9 +1,12 @@
 //! Taking screens into memory: which level the hero is on, the messages, what the game says underfoot, the
 //! entities in view, inventory menus and end-of-game text.
 
-use crate::glyphs::{Shade, is_floor_engraving, is_item, is_monster, is_warning, trap_kind};
+use crate::glyphs::{
+    Shade, find_word, is_engraving_text, is_floor_engraving, is_item, is_monster, is_warning,
+    trap_kind,
+};
 use crate::level::{Inspection, Level, Plus, Underfoot, plus_kind};
-use crate::screen::{EndKind, MenuEntry, Phase, View};
+use crate::screen::{EndKind, MenuEntry, Phase, View, strip_more};
 use crate::types::{COLS, End, Inventory, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
 
 /// Messages kept for the view.
@@ -41,18 +44,6 @@ const HEADINGS: [&str; 17] = [
     "Iron balls",
     "Chains",
     "Venoms",
-];
-
-/// How the game opens a description of the engraving under the hero, and how it quotes the text.
-const ENGRAVING_READS: [&str; 8] = [
-    "Something is written here in the ",
-    "Something is engraved here on the ",
-    "Some text has been burned into the ",
-    "Some text has been melted into the ",
-    "There's some graffiti on the ",
-    "You see a message scrawled in blood here",
-    "You read: \"",
-    "You feel the words: \"",
 ];
 
 /// How the game reports writing, adding to or wiping out the engraving under the hero.
@@ -304,7 +295,7 @@ impl Memory {
         if source != LookSource::Farlook {
             return;
         }
-        if is_monster(glyph) && contains_word(message, "statue of") {
+        if is_monster(glyph) && find_word(message, "statue of").is_some() {
             level.statues.insert(target, (glyph, shade));
         }
         if let Some(tame) = text.strip_prefix("tame ") {
@@ -599,15 +590,15 @@ impl Memory {
         if self.rewritten {
             self.rewritten = false;
             if let Some(underfoot) = level.underfoot.get_mut(&hero) {
-                underfoot.notes.retain(|note| !engraving_sentence(note));
+                underfoot.notes.retain(|note| !is_engraving_text(note));
                 underfoot.turn = None;
             }
             level.engravings.insert(hero);
         }
         if !self.notes.is_empty() {
-            if self.notes.iter().any(|note| engraving_sentence(note)) {
+            if self.notes.iter().any(|note| is_engraving_text(note)) {
                 if let Some(underfoot) = level.underfoot.get_mut(&hero) {
-                    underfoot.notes.retain(|note| !engraving_sentence(note));
+                    underfoot.notes.retain(|note| !is_engraving_text(note));
                 }
                 level.engravings.insert(hero);
             }
@@ -763,7 +754,7 @@ impl Memory {
             level.note_underfoot(target, &self.reading, turn);
             level.underfoot.entry(target).or_default().turn = turn;
         }
-        if self.reading.iter().any(|note| engraving_sentence(note)) {
+        if self.reading.iter().any(|note| is_engraving_text(note)) {
             level.engravings.insert(target);
         } else {
             level.engravings.remove(target);
@@ -792,16 +783,8 @@ pub fn underfoot_sentence(sentence: &str) -> bool {
         || sentence
             .strip_prefix("You see here ")
             .is_some_and(|rest| !rest.is_empty())
-        || engraving_sentence(sentence)
+        || is_engraving_text(sentence)
         || trap_kind(sentence).is_some()
-}
-
-/// Whether a sentence is an engraving read-out.
-pub fn engraving_sentence(sentence: &str) -> bool {
-    let sentence = sentence.trim_start();
-    ENGRAVING_READS
-        .iter()
-        .any(|read| sentence.starts_with(read))
 }
 
 /// Whether a sentence reports the engraving under the hero being written, added to or wiped out.
@@ -896,11 +879,6 @@ fn push_bounded(notes: &mut Vec<String>, note: &str) {
     }
 }
 
-/// The text with `--More--` cut off.
-fn strip_more(text: &str) -> &str {
-    text.find("--More--").map_or(text, |at| &text[..at])
-}
-
 /// The row from character column `left` on.
 fn from_column(row: &str, left: usize) -> &str {
     row.char_indices()
@@ -927,15 +905,6 @@ fn last_parenthesised(message: &str) -> Option<&str> {
         end = close;
     }
     None
-}
-
-/// Whether `phrase` occurs in `text` starting at a word boundary and ending at one.
-fn contains_word(text: &str, phrase: &str) -> bool {
-    text.match_indices(phrase).any(|(at, _)| {
-        let before = text[..at].chars().next_back();
-        let after = text[at + phrase.len()..].chars().next();
-        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
-    })
 }
 
 /// The sentences of a message: each ends at `.`, `!` or `?` (or a closing quote after one) followed by white
@@ -1071,7 +1040,7 @@ mod tests {
             "You read: \"Elbereth\".",
             "You feel the words: \"Elbereth\".",
         ] {
-            assert!(engraving_sentence(read), "{read}");
+            assert!(is_engraving_text(read), "{read}");
             assert!(underfoot_sentence(read), "{read}");
         }
         for here in [
@@ -1080,7 +1049,7 @@ mod tests {
             "You see here a dagger.",
         ] {
             assert!(underfoot_sentence(here), "{here}");
-            assert!(!engraving_sentence(here), "{here}");
+            assert!(!is_engraving_text(here), "{here}");
         }
         assert!(underfoot_sentence("There is a dart trap here."));
         assert!(!underfoot_sentence("You hit the jackal!"));
@@ -1164,7 +1133,7 @@ mod tests {
         memory.ingest(&room("You write in the dust with your fingertip.", 402));
         let level = memory.current();
         let underfoot = level.and_then(|l| l.underfoot.get(&HERO));
-        assert!(underfoot.is_some_and(|u| u.notes.iter().all(|n| !engraving_sentence(n))));
+        assert!(underfoot.is_some_and(|u| u.notes.iter().all(|n| !is_engraving_text(n))));
         assert_eq!(underfoot.and_then(|u| u.turn), None);
         assert!(level.is_some_and(|l| l.engravings.contains(HERO)));
     }
