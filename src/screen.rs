@@ -477,7 +477,7 @@ impl View {
             Phase::Spell
         } else if self.yn.is_some() {
             Phase::Choice
-        } else if self.asking && !self.msg.is_empty() {
+        } else if self.asking && !self.msg.is_empty() && !self.counting() {
             Phase::Text
         } else if self.menu {
             Phase::Menu
@@ -488,6 +488,16 @@ impl View {
         } else {
             Phase::Unknown
         }
+    }
+
+    /// Whether the message line echoes a count being typed (`Count: 20`): the game waits for the command it
+    /// repeats, not for an answer.
+    pub fn counting(&self) -> bool {
+        self.asking
+            && self
+                .msg
+                .strip_prefix("Count: ")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     }
 
     /// Writes the screen as text into `out`, replacing its contents: rows with trailing spaces removed, joined by
@@ -947,6 +957,20 @@ mod tests {
 
     fn padded(text: &str) -> String {
         format!("{text:<80}")
+    }
+
+    #[test]
+    fn a_count_echo_is_no_prompt() {
+        let counting = view_at(&scr("Count: 20", &[" ---- ", " |.@.| ", " ---- "]), 0, 9);
+        assert!(counting.counting());
+        assert_eq!(counting.phase(), Phase::Unknown);
+        let named = view_at(
+            &scr("Count: what?", &[" ---- ", " |.@.| ", " ---- "]),
+            0,
+            12,
+        );
+        assert!(!named.counting());
+        assert_eq!(named.phase(), Phase::Text);
     }
 
     #[test]

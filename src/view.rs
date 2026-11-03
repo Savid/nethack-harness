@@ -729,13 +729,9 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
     let steps = i64::from(report.steps);
     if report.verb.starts_with("rest") {
         plural(steps, "search", out);
-        match report.turns {
-            Some(0) if steps > 0 => out.push_str(", no time passed"),
-            Some(turns) => {
-                out.push_str(", ");
-                plural(turns, "turn", out);
-            }
-            None => {}
+        if let Some(turns) = report.turns {
+            out.push_str(", ");
+            plural(turns, "turn", out);
         }
     } else {
         plural(steps, "step", out);
@@ -1059,7 +1055,7 @@ mod tests {
         report_line(&idle, None, &mut out);
         assert_eq!(
             out,
-            "rest 3: 1 search, no time passed; stopped: a message appeared, HP is full"
+            "rest 3: 1 search, 0 turns; stopped: a message appeared, HP is full"
         );
         out.clear();
         let closed = Report {

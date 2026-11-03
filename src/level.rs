@@ -283,10 +283,10 @@ impl Level {
             let p = Pos::from_index(i);
             let cell = view.grid.cell(p);
             let ch = cell.ch;
-            if Some(p) == view.hero || ch == ' ' || is_warning(ch) || ch == 'I' {
+            let colour = shade(cell.fg, cell.bold);
+            if Some(p) == view.hero || ch == ' ' || is_warning(ch, colour) || ch == 'I' {
                 continue;
             }
-            let colour = shade(cell.fg, cell.bold);
             let statue = !self.statues.is_empty() && self.statues.get(&p) == Some(&(ch, colour));
             if is_monster(ch) && !statue {
                 // A monster sensed while blind does not show its square.
@@ -1060,6 +1060,30 @@ mod tests {
             assert!(!level.passable(at(2, 5)));
             assert!(route(&level, at(2, 3), at(2, 7), &[]).is_none());
         }
+    }
+
+    #[test]
+    fn a_white_zero_is_a_warning_and_any_other_a_boulder() {
+        let mut g = map(&["", "   @.0.>"]);
+        paint(&mut g, 2, 5, Colour::Default, true);
+        let level = observed(&g, 2, 3);
+        assert_eq!(level.terrain(at(2, 5)), None);
+        assert!(!level.object_squares.contains(at(2, 5)));
+
+        let mut g = map(&["", "   @...>"]);
+        let mut level = observed(&g, 2, 3);
+        g.cells[2][5].ch = '0';
+        paint(&mut g, 2, 5, Colour::White, false);
+        visit(&mut level, &g, 2, 3, 401);
+        assert_eq!(level.terrain(at(2, 5)), Some('.'));
+        assert_eq!(
+            route(&level, at(2, 3), at(2, 7), &[]).map(|r| r.len()),
+            Some(4)
+        );
+
+        let level = observed(&map(&["", "   @.0.>"]), 2, 3);
+        assert_eq!(level.terrain(at(2, 5)), Some('0'));
+        assert!(route(&level, at(2, 3), at(2, 7), &[]).is_none());
     }
 
     #[test]

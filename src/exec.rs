@@ -375,7 +375,11 @@ impl Executor {
             }
             return news;
         }
-        if question(view) || view.phase() == Phase::Menu || !term.message_written() {
+        if question(view)
+            || view.phase() == Phase::Menu
+            || view.counting()
+            || !term.message_written()
+        {
             return false;
         }
         let text = view.msg.replace("--More--", "");
@@ -671,7 +675,8 @@ impl Executor {
                 return Ok(Stop::NoEffect);
             }
             step += 1;
-            if exploring || step < action.steps {
+            // A rest reports what interrupted its last search too; a walk that arrived is done.
+            if exploring || repeat || step < action.steps {
                 let mut changed = Changed::default();
                 let drained =
                     dropped(prior_hp, view.status.hp) || dropped(prior_pw, view.status.pw);
@@ -688,6 +693,7 @@ impl Executor {
                     changed.insert(Changed::TERRAIN);
                 }
                 if repeat
+                    && step < action.steps
                     && let (Some(hp), Some(hpmax)) = (hp, hpmax)
                     && hp < hpmax
                     && view.status.hp.unwrap_or(0) >= view.status.hpmax.unwrap_or(hpmax)

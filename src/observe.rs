@@ -369,7 +369,7 @@ impl Memory {
                     || glyph == '0'
                     || glyph == '`'
                     || is_monster(glyph)
-                    || is_warning(glyph)
+                    || ('1'..='5').contains(&glyph)
                     || is_item(glyph))
                 {
                     continue;
@@ -385,7 +385,7 @@ impl Memory {
                     Some(Plus::Door) => continue,
                     None if statue => EntityKind::Object,
                     None if is_monster(glyph) => EntityKind::Monster,
-                    None if glyph == 'I' || is_warning(glyph) => EntityKind::Unseen,
+                    None if glyph == 'I' || is_warning(glyph, shade) => EntityKind::Unseen,
                     None if is_item(glyph) || glyph == '0' => EntityKind::Object,
                     None if glyph == '`' && !is_floor_engraving(glyph, shade) => EntityKind::Object,
                     None => continue,
@@ -423,6 +423,7 @@ impl Memory {
             .checked_sub(1)
             .and_then(|n| self.messages[(n % MESSAGES as u64) as usize].as_ref());
         let new = !msg.is_empty()
+            && !view.counting()
             && self.aside_message.as_deref() != Some(msg)
             && last.is_none_or(|m| m.text != msg);
         if !new {
@@ -1583,10 +1584,18 @@ mod tests {
         let rows = [
             " ---------- ",
             " |.@eI3`)`| ",
-            " |..0.....| ",
+            " |..0..0..| ",
             " ---------- ",
         ];
-        let shown = coloured(&rows, &[(Pos::new(2, 9), Colour::Blue, true, false)], 2, 3);
+        let shown = coloured(
+            &rows,
+            &[
+                (Pos::new(2, 9), Colour::Blue, true, false),
+                (Pos::new(3, 7), Colour::White, false, false),
+            ],
+            2,
+            3,
+        );
         let mut memory = Memory::new();
         memory.ingest(&shown);
         let mut out = Vec::new();
@@ -1602,6 +1611,7 @@ mod tests {
                 (Pos::new(2, 7), '`', EntityKind::Object),
                 (Pos::new(2, 8), ')', EntityKind::Object),
                 (Pos::new(3, 4), '0', EntityKind::Object),
+                (Pos::new(3, 7), '0', EntityKind::Unseen),
             ]
         );
     }

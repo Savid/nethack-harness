@@ -118,9 +118,10 @@ pub fn is_monster(ch: char) -> bool {
     (ch.is_ascii_alphabetic() && ch != 'I') || matches!(ch, '@' | '&' | '\'' | ';' | ':' | '~')
 }
 
-/// Whether the symbol is a warning level digit `1`–`5`.
-pub fn is_warning(ch: char) -> bool {
-    matches!(ch, '1'..='5')
+/// Whether the symbol is a warning level: a digit `1`–`5`, or a `0` in bright white. A boulder is also drawn `0`,
+/// in any other colour.
+pub fn is_warning(ch: char, shade: Shade) -> bool {
+    matches!(ch, '1'..='5') || ch == '0' && shade.base == Base::White
 }
 
 /// Whether a `` ` `` is a floor engraving rather than a boulder: the game draws an engraving on room floor in bright
@@ -543,10 +544,20 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_is_a_warning_only_in_bright_white() {
+        assert!(is_warning('0', shade(Colour::Default, true)));
+        assert!(is_warning('0', shade(Colour::White, false)));
+        assert!(is_warning('0', shade(Colour::BrightWhite, false)));
+        assert!(!is_warning('0', shade(Colour::Default, false)));
+        assert!(!is_warning('0', shade(Colour::Brown, false)));
+    }
+
+    #[test]
     fn symbol_classes() {
         assert!(is_item('$') && is_item('"') && !is_item('`') && !is_item('0'));
         assert!(is_monster('d') && is_monster('@') && is_monster('~') && !is_monster('I'));
-        assert!(is_warning('1') && is_warning('5') && !is_warning('6') && !is_warning('0'));
+        assert!(is_warning('1', Shade::GRAY) && is_warning('5', Shade::GRAY));
+        assert!(!is_warning('6', Shade::GRAY));
         assert_eq!(feature_name('\\'), Some("throne"));
         assert_eq!(feature_name('#'), None);
         assert_eq!(liquid_name(Base::Red), Some("lava"));

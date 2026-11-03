@@ -412,6 +412,10 @@ impl<T: Terminal> Play<T> {
             (last.kind, last.target, last.route)
         });
         let hero = self.term.view().hero;
+        if refused_search(kind, outcome) {
+            report.stopped.push("no time passed".to_owned());
+            return report;
+        }
         match &outcome.stop {
             Stop::Held(error) | Stop::Closed(error) | Stop::Failed(error) => {
                 report.error = Some(error.clone());
@@ -521,13 +525,7 @@ impl<T: Terminal> Play<T> {
             Stop::Closed(_) => ExitCode::Closed,
             Stop::Failed(_) => ExitCode::Failed,
             Stop::GameOver => ExitCode::Over,
-            _ if action.kind == Kind::Search
-                && outcome.turns == Some(0)
-                && outcome.steps > 0
-                && (outcome.steps > 1 || outcome.stop != Stop::Completed) =>
-            {
-                ExitCode::Failed
-            }
+            _ if refused_search(action.kind, &outcome) => ExitCode::Failed,
             _ if report.done => ExitCode::Done,
             _ => ExitCode::Short,
         };
@@ -761,6 +759,20 @@ impl<T: Terminal> Play<T> {
             level.note_underfoot(hero, &notes, turn);
         }
     }
+}
+
+/// Whether a rest's searches passed no game time and changed nothing but, at most, the message: the game refused
+/// them. A fast hero's single search, or one that monsters acted during, can also leave the turn counter where it
+/// was, so a lone search that completed, or one that changed the status or brought a monster, is not refused.
+fn refused_search(kind: Kind, outcome: &Outcome) -> bool {
+    kind == Kind::Search
+        && outcome.turns == Some(0)
+        && match outcome.stop {
+            Stop::Completed => outcome.steps > 1,
+            Stop::NoEffect => outcome.steps > 0,
+            Stop::Changed => outcome.changed == exec::Changed::MESSAGE,
+            _ => false,
+        }
 }
 
 /// Appends squares joined by `separator`.
@@ -1583,6 +1595,88 @@ mod tests {
             report.stopped,
             ["a monster came into view or next to the hero (d 41,8)"]
         );
+    }
+
+    /// A room with a jackal beside the hero at 4,2, with `top` as the message and the given HP and turn.
+    fn jackal(top: &str, hp: u32, turn: u32) -> View {
+        let status = format!("Dlvl:3 $:0 HP:{hp}(16) Pw:2(2) AC:6 Xp:2 T:{turn}");
+        let rows = [" ------- ", " |..@d.| ", " |.....| ", " ------- "];
+        view(&screen(top, &rows, STATUS1, &status), 2, 4)
+    }
+
+    #[test]
+    fn a_rest_interrupted_while_the_turn_stands_still_stops_short() {
+        // A fast hero's search can end before the turn counter moves while monsters still act.
+        let mut play = play(vec![
+            jackal("", 12, 400),
+            jackal("The jackal bites!", 9, 400),
+        ]);
+        let reply = play.rest(5);
+        assert_eq!(reply.code, ExitCode::Short, "{}", reply.text);
+        assert!(
+            reply.text.starts_with(
+                "rest 5: 1 search, 0 turns; stopped: the status line changed, a message appeared"
+            ),
+            "{}",
+            reply.text
+        );
+        let calm = [" ------- ", " |..@..| ", " |.....| ", " ------- "];
+        let arrived = [" ------- ", " |..@..| ", " |....d| ", " ------- "];
+        let mut arrival = Play::new(
+            ScriptedTerm::new(vec![text("", &calm, 2, 4), text("", &arrived, 2, 4)]),
+            8,
+        );
+        assert_eq!(arrival.rest(5).code, ExitCode::Short);
+    }
+
+    #[test]
+    fn a_rest_reports_a_hit_on_its_last_search() {
+        let mut play = play(vec![
+            jackal("", 12, 400),
+            jackal("", 12, 401),
+            jackal("The jackal bites!", 9, 402),
+        ]);
+        let reply = play.rest(2);
+        assert_eq!(reply.code, ExitCode::Short, "{}", reply.text);
+        assert!(
+            reply.text.contains("2 searches, 2 turns; stopped:"),
+            "{}",
+            reply.text
+        );
+    }
+
+    #[test]
+    fn searches_that_pass_no_time_are_refused() {
+        let room = [" ------- ", " |..@..| ", " ------- "];
+        let mut play = play(vec![text("", &room, 2, 4)]);
+        let reply = play.rest(5);
+        assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
+        assert!(
+            reply
+                .text
+                .starts_with("rest 5: 3 searches, 0 turns; stopped: no time passed"),
+            "{}",
+            reply.text
+        );
+    }
+
+    #[test]
+    fn a_count_echo_is_not_a_text_prompt() {
+        let room = [" ------- ", " |..@..| ", " ------- "];
+        let mut play = play(vec![
+            at_turn("", &room, 2, 4, 400),
+            at_turn("", &room, 2, 4, 400),
+            at_turn("Count: 20", &room, 0, 9, 400),
+            at_turn("", &room, 2, 4, 420),
+        ]);
+        let reply = play.send(b"20s");
+        assert_eq!(sent(&play)[..3], ["2", "0", "s"]);
+        assert!(
+            reply.facts.answered.is_empty(),
+            "{:?}",
+            reply.facts.answered
+        );
+        assert!(!reply.text.contains("Count:"), "{}", reply.text);
     }
 
     #[test]
