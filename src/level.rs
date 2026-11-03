@@ -17,40 +17,34 @@ pub const REFUSED_STEPS: usize = 64;
 /// never cross them.
 const PASSABLE: &[char] = &['.', '#', '<', '>', '^', '{', '_', '\\'];
 
-/// What a `+` is: a closed door and a spellbook are both drawn `+`.
+/// What a `+` is: a closed door and a spellbook are both drawn `+`. A door sits in a wall line or was remembered
+/// as a door; an object lies on remembered ground or has floor beside it both across and along; otherwise the
+/// screen cannot tell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plus {
-    /// It sits in a wall line, or was remembered as a door.
     Door,
-    /// It lies on remembered ground or has floor beside it both across and along.
     Object,
-    /// The screen cannot tell.
     DoorOrObject,
 }
 
-/// What the game said about a square the hero stood on.
+/// What the game said about a square the hero stood on: the notes merged across readings (`There is …`, `You see
+/// here …`, engraving read-outs, trap sentences) and the turn of the last reading.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Underfoot {
-    /// The notes, merged across readings: `There is …`, `You see here …`, engraving read-outs, trap sentences.
     pub notes: Vec<String>,
-    /// The turn of the last reading.
     pub turn: Option<u32>,
 }
 
-/// A farlook or `:` reading of a square.
+/// A farlook or `:` reading of a square: the game's description, and the turn, glyph and colour when it was read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Inspection {
-    /// The game's description.
     pub description: String,
-    /// The turn it was read.
     pub turn: Option<u32>,
-    /// The glyph shown when it was read.
     pub glyph: char,
-    /// The colour shown when it was read.
     pub shade: Shade,
 }
 
-/// The squares a route can move to from one square.
+/// Up to eight squares, such as those a route can move to from one square, in the order added.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Near {
     buf: [Pos; 8],
@@ -58,7 +52,6 @@ pub struct Near {
 }
 
 impl Near {
-    /// Adds a square.
     pub fn push(&mut self, p: Pos) {
         if (self.len as usize) < self.buf.len() {
             self.buf[self.len as usize] = p;
@@ -66,17 +59,14 @@ impl Near {
         }
     }
 
-    /// The squares, in the order added.
     pub fn as_slice(&self) -> &[Pos] {
         &self.buf[..self.len as usize]
     }
 
-    /// How many squares.
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
-    /// Whether there are none.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -97,13 +87,6 @@ pub struct Paths {
 
 impl Default for Paths {
     fn default() -> Paths {
-        Paths::new()
-    }
-}
-
-impl Paths {
-    /// Empty search state.
-    pub fn new() -> Paths {
         Paths {
             previous: Box::new([None; MAP_SQUARES]),
             cost: Box::new([(0, 0, 0); MAP_SQUARES]),
@@ -111,7 +94,9 @@ impl Paths {
             queue: BinaryHeap::new(),
         }
     }
+}
 
+impl Paths {
     /// Whether the last search reached `p`.
     pub fn reaches(&self, p: Pos) -> bool {
         self.reached.contains(p)
@@ -158,7 +143,7 @@ pub struct Level {
     pub id: u16,
     /// The status-line location when it was first seen, such as `Dlvl:3`.
     pub label: String,
-    /// Remembered glyph by square; `'\0'` where nothing is known.
+    /// Remembered glyph and colour by square; `'\0'` where nothing is known.
     terrain: Box<[char; MAP_SQUARES]>,
     colours: Box<[Option<Base>; MAP_SQUARES]>,
     /// Squares assumed floor because the hero stood there before any glyph showed.
@@ -177,22 +162,18 @@ pub struct Level {
     pub engravings: SquareSet,
     /// Times the hero stood on each square, counted once per turn.
     pub visits: BTreeMap<Pos, u32>,
-    /// Farlook and `:` readings by square.
     pub inspections: BTreeMap<Pos, Inspection>,
-    /// Trap names learned from messages, by square.
+    /// Trap names learned from messages.
     pub trap_kinds: BTreeMap<Pos, String>,
-    /// Statues: monster glyphs a farlook named as statues, with the colour shown.
+    /// Monster glyphs a farlook named as statues, with the colour shown.
     pub statues: BTreeMap<Pos, (char, Shade)>,
-    /// What the game said underfoot, by square.
     pub underfoot: BTreeMap<Pos, Underfoot>,
-    /// Refused steps as (square, direction key), oldest first.
+    /// Refused steps as (square, direction key), oldest first, and the squares they start from.
     refused: Vec<(Pos, u8)>,
-    /// The squares refused steps start from, for a quick test while routing.
     refused_from: SquareSet,
 }
 
 impl Level {
-    /// An empty level.
     pub fn new(id: u16, label: &str) -> Level {
         Level {
             id,
@@ -215,12 +196,10 @@ impl Level {
         }
     }
 
-    /// The remembered terrain glyph at `p`.
     pub fn terrain(&self, p: Pos) -> Option<char> {
         p.index().map(|i| self.terrain[i]).filter(|&ch| ch != '\0')
     }
 
-    /// The remembered colour of the terrain at `p`.
     pub fn colour(&self, p: Pos) -> Option<Base> {
         p.index().and_then(|i| self.colours[i])
     }
@@ -234,7 +213,6 @@ impl Level {
             .map(|(i, &g)| (Pos::from_index(i), g))
     }
 
-    /// Remembers terrain `ch` at `p`.
     pub fn remember_terrain(&mut self, p: Pos, ch: char, colour: Option<Base>) {
         let Some(i) = p.index() else {
             return;
@@ -385,15 +363,13 @@ impl Level {
         self.refused_from.clear();
     }
 
-    /// The name of the remembered terrain at `p` that the game checks before a plain move enters it: water, lava,
-    /// a trap, or a coloured `#` such as a gas cloud.
-    pub fn guarded(&self, p: Pos) -> Option<String> {
-        match self.terrain(p)? {
-            '}' | '^' => self.kind(p).map(str::to_owned),
-            '#' if !self.corridor(p) => {
-                Some(format!("{} #", self.colour(p).unwrap_or(Base::Gray).name()))
-            }
-            _ => None,
+    /// Whether the game checks the remembered terrain at `p` before a plain move enters it: water, lava, a trap,
+    /// or a coloured `#` such as a gas cloud.
+    pub fn guarded(&self, p: Pos) -> bool {
+        match self.terrain(p) {
+            Some('}' | '^') => true,
+            Some('#') => !self.corridor(p),
+            _ => false,
         }
     }
 
@@ -734,7 +710,7 @@ mod tests {
         for &q in occupied {
             blocked.insert(q);
         }
-        let mut paths = Paths::new();
+        let mut paths = Paths::default();
         level.paths(start, &blocked, &mut paths);
         paths
     }
@@ -764,15 +740,14 @@ mod tests {
             let mut level = observed(&g, 2, 3);
             assert!(!level.corridor(at(2, 4)));
             assert!(route(&level, at(2, 3), at(2, 5), &[]).is_none());
-            let name = format!("{} #", shade(colour, false).base.name());
-            assert_eq!(level.guarded(at(2, 4)), Some(name));
+            assert!(level.guarded(at(2, 4)));
             // Out of sight, the structure is still remembered.
             visit(&mut level, &map(&["", "   @ >"]), 2, 3, 401);
             assert!(route(&level, at(2, 3), at(2, 5), &[]).is_none());
         }
         let level = observed(&map(&["", "   @#>"]), 2, 3);
         assert!(level.corridor(at(2, 4)));
-        assert_eq!(level.guarded(at(2, 4)), None);
+        assert!(!level.guarded(at(2, 4)));
         assert_eq!(
             route(&level, at(2, 3), at(2, 5), &[]),
             Some(vec![at(2, 4), at(2, 5)])
@@ -866,7 +841,7 @@ mod tests {
         paint(&mut g, 2, 4, Colour::Blue, false);
         let level = observed(&g, 2, 3);
         assert_eq!(level.kind(at(2, 4)), Some("water"));
-        assert_eq!(level.guarded(at(2, 4)).as_deref(), Some("water"));
+        assert!(level.guarded(at(2, 4)));
         assert!(!level.passable(at(2, 4)));
         assert!(route(&level, at(2, 3), at(2, 5), &[]).is_none());
         paint(&mut g, 2, 4, Colour::Red, false);
@@ -882,7 +857,7 @@ mod tests {
             route(&level, at(2, 3), at(2, 7), &[]),
             Some(vec![at(2, 4), at(2, 5), at(2, 6), at(2, 7)])
         );
-        assert_eq!(level.guarded(at(2, 5)).as_deref(), Some("trap"));
+        assert!(level.guarded(at(2, 5)) && level.kind(at(2, 5)) == Some("trap"));
         let rows = [" ------- ", " |@.^.>| ", " |.....| ", " ------- "];
         let level = observed(&map(&rows), 2, 2);
         let path = route(&level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
@@ -1047,7 +1022,7 @@ mod tests {
         let level = observed(&g, 2, 3);
         assert!(level.corridor(at(2, 5)));
         assert!(level.engravings.contains(at(2, 5)));
-        assert_eq!(level.guarded(at(2, 5)), None);
+        assert!(!level.guarded(at(2, 5)));
         assert!(route(&level, at(2, 3), at(2, 7), &[]).is_some());
     }
 
@@ -1198,7 +1173,7 @@ mod tests {
     #[test]
     fn paths_are_reused_and_report_distances() {
         let level = observed(&map(&["", "   @#####"]), 2, 3);
-        let mut paths = Paths::new();
+        let mut paths = Paths::default();
         level.paths(at(2, 3), &SquareSet::new(), &mut paths);
         assert_eq!(paths.distance(at(2, 8)), Some(5));
         assert_eq!(paths.distance(at(2, 3)), Some(0));

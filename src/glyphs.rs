@@ -17,14 +17,6 @@ pub enum Base {
     Gray,
 }
 
-impl Base {
-    pub fn name(self) -> &'static str {
-        [
-            "black", "red", "green", "brown", "blue", "magenta", "cyan", "white", "gray",
-        ][self as usize]
-    }
-}
-
 /// A cell's colour as the game chose it: a base colour and whether it is the bright variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Shade {

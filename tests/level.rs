@@ -57,7 +57,7 @@ fn observed(name: &str) -> (Level, View) {
 }
 
 fn search(level: &Level, start: Pos) -> Paths {
-    let mut paths = Paths::new();
+    let mut paths = Paths::default();
     level.paths(start, &SquareSet::new(), &mut paths);
     paths
 }
@@ -79,9 +79,8 @@ fn routes_never_cross_remembered_lava() {
         .collect();
     assert_eq!(liquid.len(), 9);
     assert!(liquid.iter().all(|&p| level.kind(p) == Some("lava")));
-    assert_eq!(
-        level.guarded(Pos::new(11, 56)).as_deref(),
-        Some("lava"),
+    assert!(
+        level.guarded(Pos::new(11, 56)),
         "the square west of the hero"
     );
     let paths = search(&level, hero);
@@ -104,7 +103,7 @@ fn routes_cross_a_recorded_trap_only_without_another_route() {
     let (level, view) = observed("trap-room");
     let hero = view.hero.unwrap_or_default();
     let trap = Pos::new(8, 59);
-    assert_eq!(level.guarded(trap).as_deref(), Some("trap"));
+    assert!(level.guarded(trap) && level.kind(trap) == Some("trap"));
     let paths = search(&level, hero);
     assert_eq!(route(&paths, trap), Some(vec![trap]));
     let south = route(&paths, Pos::new(19, 60)).unwrap_or_default();

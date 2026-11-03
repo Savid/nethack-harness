@@ -68,7 +68,6 @@ pub enum LinkError {
 }
 
 impl LinkError {
-    /// The exit code a command that failed this way ends with.
     pub fn code(&self) -> ExitCode {
         match self {
             LinkError::Held(_) => ExitCode::Held,
@@ -93,12 +92,12 @@ impl std::fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
-/// What one exchange returned; the output bytes are in `Link::output`.
+/// What one exchange returned, its output bytes aside: whether the output does not continue the previous one
+/// (truncated, or the cursor went back), so the screen is reset first, and whether the game is blocked reading a
+/// key with all its output delivered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Exchange {
-    /// The output does not continue the previous one (truncated, or the cursor went back): reset the screen first.
     pub reset: bool,
-    /// The game is blocked reading a key with all its output delivered.
     pub waiting: bool,
 }
 
@@ -107,6 +106,7 @@ pub struct Link {
     path: PathBuf,
     stream: Option<UnixStream>,
     cursor: u64,
+    /// The server has answered once, so a vanished socket means a closed terminal.
     answered: bool,
     request: Vec<u8>,
     /// The request body while it is built.
@@ -246,11 +246,7 @@ impl Link {
     /// The body of the last response as text, trimmed and cut short for a message.
     fn quote(&self) -> String {
         let text = String::from_utf8_lossy(&self.response[self.body.clone()]);
-        let text = text.trim();
-        match text.char_indices().nth(QUOTE_MAX) {
-            Some((at, _)) => text[..at].to_owned(),
-            None => text.to_owned(),
-        }
+        text.trim().chars().take(QUOTE_MAX).collect()
     }
 
     /// Decodes a 200 body into `output`; returns the cursor, `truncated` and `waiting`.
@@ -352,7 +348,6 @@ impl Link {
         }
     }
 
-    /// A new connection.
     fn connect(&mut self) -> Result<UnixStream, LinkError> {
         let stream = UnixStream::connect(&self.path).map_err(|e| self.gone(&e))?;
         stream
@@ -459,7 +454,6 @@ fn dropped(e: &std::io::Error) -> bool {
     )
 }
 
-/// The offset of `needle` in `hay`.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -688,11 +682,9 @@ pub trait Terminal {
     /// Sends `keys` as one batch and returns once the game waits for a key, re-reading while it stays busy; a
     /// game still busy after `BUSY_READS` re-reads is `LinkError::Busy`.
     fn send(&mut self, keys: &[u8]) -> Result<(), LinkError>;
-    /// The current screen.
     fn view(&self) -> &View;
     /// Whether the game wrote to the message rows of the current view since the last `send`.
     fn message_written(&self) -> bool;
-    /// The positioning-prompt tracker.
     fn prompts(&self) -> &PromptContext;
 }
 
@@ -776,24 +768,17 @@ impl Terminal for Term {
         let late = || {
             LinkError::Busy("the command ran out of time; the game may still be busy".to_owned())
         };
-        if self.deadline.is_some_and(|at| Instant::now() >= at) {
-            return Err(late());
-        }
         self.vt.clear_touched();
-        let mut exchange = self.link.exchange(keys, WAIT_MS)?;
-        self.apply(exchange, Some(keys));
-        for _ in 0..BUSY_READS {
-            if exchange.waiting {
-                return Ok(());
-            }
+        for read in 0..=BUSY_READS {
             if self.deadline.is_some_and(|at| Instant::now() >= at) {
                 return Err(late());
             }
-            exchange = self.link.exchange(&[], WAIT_MS)?;
-            self.apply(exchange, None);
-        }
-        if exchange.waiting {
-            return Ok(());
+            let typed = (read == 0).then_some(keys);
+            let exchange = self.link.exchange(typed.unwrap_or_default(), WAIT_MS)?;
+            self.apply(exchange, typed);
+            if exchange.waiting {
+                return Ok(());
+            }
         }
         Err(LinkError::Busy(format!(
             "the game is still busy after {} reads; later keys were not sent",

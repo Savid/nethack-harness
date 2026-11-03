@@ -962,7 +962,7 @@ pub fn needs_redraw(keys: &[u8], after_run: bool, view: &View) -> bool {
 fn step_keys(level: &Level, view: &View, from: Pos, target: Pos) -> Option<([u8; 2], usize)> {
     let key = from.direction_to(target)?;
     let pet = view.pet(target) && is_monster(view.ch(target));
-    Some(if level.guarded(target).is_none() && !pet {
+    Some(if !level.guarded(target) && !pet {
         ([b'm', key], 2)
     } else {
         ([key, 0], 1)
@@ -1187,7 +1187,7 @@ mod tests {
             };
             assert_eq!(outcome.stop == expected, refused, "{:?}", outcome.stop);
             let level = memory.current().expect("a level");
-            let mut paths = Paths::new();
+            let mut paths = Paths::default();
             level.paths(Pos::new(2, 2), &SquareSet::new(), &mut paths);
             let length = if refused { 2 } else { 1 };
             assert_eq!(paths.distance(Pos::new(3, 3)), Some(length));
