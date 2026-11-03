@@ -159,8 +159,14 @@ fn direct_play_through_the_binary() {
     assert_eq!(server.inputs().first(), Some(&b"\x12".to_vec()));
 
     server.push((0..200).map(|_| Step::Output(SCREEN.to_vec())));
+    let before = server.received().len();
     let sent = session.run(&["send", "-\\e"]);
     assert_eq!(code(&sent), 0, "{}{}", stdout(&sent), stderr(&sent));
+    let reads = server.received()[before..]
+        .iter()
+        .filter(|r| r.input.is_empty())
+        .count();
+    assert_eq!(reads, 1, "one read of the screen per command");
     let inputs = server.inputs();
     assert_eq!(
         inputs[inputs.len() - 2..],

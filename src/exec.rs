@@ -266,7 +266,8 @@ impl Executor {
         }
     }
 
-    /// Runs `action` to its first boundary, ingesting every screen into `memory`. Keys actions record each prompt
+    /// Runs `action` to its first boundary, ingesting every screen into `memory`. The caller has read the screen
+    /// since the game last took input, so nothing is re-read first. Keys actions record each prompt
     /// passed and the key that answered it, and flag keys typed into a text prompt; nothing is answered on the
     /// caller's behalf. Walks and rests stop for a monster only if no monster of the same glyph and colour was
     /// within one square of it at the previous step; `I` and warning digits never stop them. When the game ends
@@ -336,7 +337,6 @@ impl Executor {
         outcome: &mut Outcome,
         turn: &mut Option<u32>,
     ) -> Result<Stop, Stop> {
-        term.poll().map_err(Stop::Link)?;
         let view = term.view();
         memory.ingest(view);
         *turn = view.status.turn;
