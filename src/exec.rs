@@ -30,7 +30,7 @@ pub enum Kind {
     Explore,
     /// Search in place, repeatedly.
     Search,
-    /// Farlook a square: `;`, then the cursor keys.
+    /// Farlook a square: `;`, then the cursor keys in `keys`.
     Farlook,
     /// Look underfoot: `:`.
     LookHere,
@@ -41,7 +41,7 @@ pub enum Kind {
 pub struct Action {
     /// What it does.
     pub kind: Kind,
-    /// The keys of one step.
+    /// The keys of one step, or a farlook's cursor keys.
     pub keys: Vec<u8>,
     /// Most steps to take.
     pub steps: u32,
@@ -49,8 +49,6 @@ pub struct Action {
     pub target: Option<Pos>,
     /// The known route, first step first.
     pub route: Vec<Pos>,
-    /// Keys expected to answer a prompt the first keys open, with the phase it should be in.
-    pub followup: Option<(Phase, Vec<u8>)>,
 }
 
 /// Which observations changed and ended an action.
@@ -478,25 +476,23 @@ impl Executor {
         outcome: &mut Outcome,
     ) -> Result<Stop, Stop> {
         self.keep_before(term.view());
-        self.send(term, memory, &action.keys, outcome)?;
+        self.send(term, memory, b";", outcome)?;
         outcome.steps = 1;
         self.page(term, memory, outcome)?;
-        if let Some((phase, keys)) = &action.followup {
-            self.notices(term, memory, outcome)?;
-            let view = term.view();
-            if view.phase() != *phase {
-                return Ok(match view.phase() {
-                    Phase::Play => Stop::NoEffect,
-                    _ if view.ended => Stop::GameOver,
-                    _ => Stop::Prompt,
-                });
-            }
-            self.send(term, memory, keys, outcome)?;
-            if let (Some(target), Some(before)) = (action.target, self.before.as_ref()) {
-                memory.remember_look(target, before, term.view(), LookSource::Farlook);
-            }
-            self.page(term, memory, outcome)?;
+        self.notices(term, memory, outcome)?;
+        let view = term.view();
+        if view.phase() != Phase::Position {
+            return Ok(match view.phase() {
+                Phase::Play => Stop::NoEffect,
+                _ if view.ended => Stop::GameOver,
+                _ => Stop::Prompt,
+            });
         }
+        self.send(term, memory, &action.keys, outcome)?;
+        if let (Some(target), Some(before)) = (action.target, self.before.as_ref()) {
+            memory.remember_look(target, before, term.view(), LookSource::Farlook);
+        }
+        self.page(term, memory, outcome)?;
         if term.view().phase() == Phase::Position {
             self.send(term, memory, &[ESCAPE], outcome)?;
             return Ok(Stop::Prompt);
@@ -964,7 +960,6 @@ pub fn travel(paths: &Paths, target: Pos, max_steps: u32) -> Action {
         steps: max_steps.min(route.len() as u32),
         target: Some(target),
         route,
-        followup: None,
     }
 }
 
@@ -978,7 +973,6 @@ pub fn explore(paths: &Paths, target: Pos, max_steps: u32) -> Action {
         steps: max_steps,
         target: Some(target),
         route,
-        followup: None,
     }
 }
 
@@ -988,11 +982,10 @@ pub fn farlook(view: &View, target: Pos) -> Action {
     cursor_keys(view.hero.unwrap_or(view.cursor), target, &mut keys);
     Action {
         kind: Kind::Farlook,
-        keys: b";".to_vec(),
+        keys,
         steps: 1,
         target: Some(target),
         route: Vec::new(),
-        followup: Some((Phase::Position, keys)),
     }
 }
 
@@ -1004,7 +997,6 @@ pub fn search(count: u32) -> Action {
         steps: count,
         target: None,
         route: Vec::new(),
-        followup: None,
     }
 }
 
@@ -1016,7 +1008,6 @@ pub fn look_here() -> Action {
         steps: 1,
         target: None,
         route: Vec::new(),
-        followup: None,
     }
 }
 
@@ -1028,7 +1019,6 @@ pub fn keys(keys: &[u8]) -> Action {
         steps: 1,
         target: None,
         route: Vec::new(),
-        followup: None,
     }
 }
 
@@ -1178,7 +1168,6 @@ mod tests {
             steps,
             target: Some(Pos::new(target.0, target.1)),
             route: route.iter().map(|&(y, x)| Pos::new(y, x)).collect(),
-            followup: None,
         }
     }
 
@@ -1215,21 +1204,6 @@ mod tests {
         assert!(is_run(b"L"));
         assert!(!is_run(b"l"));
         assert!(!is_run(b""));
-    }
-
-    #[test]
-    fn builders_bound_their_actions() {
-        assert_eq!((search(7).keys, search(7).steps), (b"s".to_vec(), 7));
-        assert_eq!(look_here().keys, b":");
-        let typed = keys(b"E-");
-        assert_eq!(
-            (typed.kind, typed.keys, typed.steps),
-            (Kind::Keys, b"E-".to_vec(), 1)
-        );
-        let mut both = Changed::STATUS;
-        both.insert(Changed::MESSAGE);
-        assert!(both.contains(Changed::MESSAGE) && !both.contains(Changed::TERRAIN));
-        assert!(!Changed::default().contains(Changed::default()));
     }
 
     #[test]

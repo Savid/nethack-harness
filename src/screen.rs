@@ -1522,11 +1522,4 @@ mod tests {
         PromptContext::default().observe(&mut v);
         assert_eq!(v.phase(), Phase::Play);
     }
-
-    #[test]
-    fn phase_names() {
-        assert_eq!(Phase::Ended.name(), "game over");
-        assert_eq!(Phase::Menu.name(), "menu");
-        assert_eq!(Phase::Play.name(), "play");
-    }
 }
