@@ -1,0 +1,14 @@
+Dlvl:1 $:0 HP:11(11) Pw:7(7) AC:9 Xp:1 T:1
+Claude the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
+   52
+   2345678
+13 --.----
+14 |{..f.|
+15 |..@..-
+16 |..%..|
+17 -------
+you: 55,15  here: unknown
+monsters: f pet 56,14 adjacent u
+seen: { fountain 53,14 (2); - open door 58,15 (3)
+items: % 55,16 (adjacent j)
+frontier: 54,13 (2); 58,15 (3)

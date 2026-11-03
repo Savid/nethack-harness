@@ -1,0 +1,25 @@
+Dlvl:1 $:1665 HP:12(12) Pw:5(5) AC:8 Xp:1 T:1
+Hero the Rhizotomist St:8 Dx:9 Co:18 In:7 Wi:15 Ch:18 Neutral
+screen (menu):
+                        Coins
+                        $ - 1665 gold pieces
+                        Weapons
+                        a - a +0 scalpel (weapon in right hand)
+                        Armor
+                 -----  b - an uncursed +1 pair of leather gloves (being worn)
+                 |@d.+  Comestibles
+                 |Z..|  k - 6 uncursed apples
+                 |..(|  Spellbooks
+                 -.---  h - a blessed spellbook of healing
+                        i - a blessed spellbook of extra healing
+                        j - a blessed spellbook of stone to flesh
+                        Potions
+                        d - 2 blessed potions of healing
+                        e - 2 uncursed potions of healing
+                        f - 4 uncursed potions of extra healing
+                        Wands
+                        g - a wand of sleep (0:6)
+                        Tools
+                        c - an uncursed stethoscope
+                        (end)
+keys: $ a b k h i j d e f g c select, \r accepts; \e cancels

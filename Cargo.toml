@@ -1,0 +1,27 @@
+[package]
+name = "nethack-harness"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "A NetHack observation and execution adapter for a caller driving one game over a terminal socket"
+license = "MIT"
+repository = "https://github.com/Savid/nethack-harness"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nethack-harness"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

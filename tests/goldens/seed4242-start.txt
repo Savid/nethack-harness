@@ -1,0 +1,14 @@
+Dlvl:1 $:1665 HP:12(12) Pw:5(5) AC:8 Xp:1 T:1
+Hero the Rhizotomist St:8 Dx:9 Co:18 In:7 Wi:15 Ch:18 Neutral
+   17 20
+   78901
+ 5 -----
+ 6 |@d.+
+ 7 |Z..|
+ 8 |..(|
+ 9 -.---
+you: 18,6  here: unknown
+monsters: d pet 19,6 adjacent l; Z 18,7 adjacent j
+seen: + door 21,6 (2)
+items: ( 20,8 (2)
+frontier: 18,9 (3)

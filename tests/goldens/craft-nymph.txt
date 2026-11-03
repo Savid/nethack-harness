@@ -1,0 +1,11 @@
+Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:400
+Hero the Stripling St:16 Dx:12 Co:14 In:9 Wi:10 Ch:8 Lawful
+   1
+   12345678
+ 1 --------
+ 2 |......|
+ 3 |..@n..|
+ 4 |......|
+ 5 --------
+you: 4,3  here: unknown
+monsters: n 5,3 adjacent l

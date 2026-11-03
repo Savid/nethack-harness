@@ -1,0 +1,13 @@
+Dlvl:2 $:0 HP:11(16) Pw:2(2) AC:6 Xp:1 T:77
+Claude the Stripling St:18/01 Dx:10 Co:18 In:10 Wi:9 Ch:9 Neutral
+   50        60
+   0123456789012345
+ 2 ----------------
+ 3 |...........$..|
+ 4 .......@.......|
+ 5 |.....:........|
+ 6 -------.--------
+you: 57,4  here: unknown
+monsters: : 56,5 adjacent b
+items: $ 62,3 (5)
+frontier: 57,6 (2); 50,4 (7)

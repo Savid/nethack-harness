@@ -4,35 +4,40 @@ on:
     tags: ["v*"]
 permissions:
   contents: read
+env:
+  CARGO_TERM_COLOR: never
+  TARGET: x86_64-unknown-linux-musl
+  SIZE_LIMIT: 1572864          # 1.5 MiB
 jobs:
   release:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nuc, nethack-harness]
     permissions:
       contents: write          # create the release and upload its assets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.11"
-      - name: Test
-        run: python -m unittest discover -s tests -v
-      - name: Build the zipapp
+      - name: The tag names the crate version
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          python tools/build_pyz.py --commit "$GITHUB_SHA" --out dist/nethack-harness.pyz
-          python tools/build_pyz.py --commit "$GITHUB_SHA" --out dist/check.pyz
-          cmp dist/nethack-harness.pyz dist/check.pyz      # reproducible
-          rm dist/check.pyz
-          out=$(python3 dist/nethack-harness.pyz --version)
-          echo "$out"
-          [ "$out" = "${TAG#v} (commit $GITHUB_SHA)" ]       # the tag, the package version and the commit agree
-          (cd dist && sha256sum nethack-harness.pyz > SHA256SUMS)
+          version=$(cargo pkgid | sed 's/.*[#@]//')
+          echo "crate $version, tag $TAG"
+          [ "v$version" = "$TAG" ]
+      - run: cargo test --locked
+      - run: rustup target add "$TARGET"
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp "target/$TARGET/release/nethack-harness" dist/nethack-harness
+          size=$(stat -c %s dist/nethack-harness)
+          echo "nethack-harness: $size bytes (limit $SIZE_LIMIT)"
+          [ "$size" -le "$SIZE_LIMIT" ]
+          (cd dist && sha256sum nethack-harness > nethack-harness.sha256)
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/nethack-harness.pyz dist/SHA256SUMS --verify-tag --notes-from-tag --title "$TAG"
+        run: gh release create "$TAG" dist/nethack-harness dist/nethack-harness.sha256 --verify-tag --notes-from-tag --title "$TAG"
