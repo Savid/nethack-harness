@@ -1,9 +1,9 @@
 //! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view.
 
 use crate::exec::{self, Executor, Kind, Outcome, Stop};
-use crate::level::{Paths, door_sides};
+use crate::level::door_sides;
 use crate::link::{LinkError, Terminal};
-use crate::observe::{Entity, EntityKind, Memory};
+use crate::observe::{Entity, Memory};
 use crate::screen::{Phase, strip_more};
 use crate::types::{Answered, ExitCode, Pos, Reply, Report, SquareSet};
 use crate::view::{Landmark, Names, Renderer, Scene, landmarks};
@@ -32,20 +32,14 @@ pub struct Play<T: Terminal> {
     exec: Executor,
     names: Names,
     renderer: Renderer,
-    paths: Paths,
-    terrain_paths: Paths,
     fresh: Vec<String>,
     reported: u64,
     last_square: Option<(u16, Pos)>,
-    items: SquareSet,
-    items_level: Option<u16>,
     max_steps: u32,
-    entities: Vec<Entity>,
     unnamed: Vec<Entity>,
     landmarks: Vec<Landmark>,
     edges: Vec<(Pos, u32)>,
     route: Vec<Pos>,
-    occupied: SquareSet,
     answered: Vec<Answered>,
     last: Option<Last>,
 }
@@ -84,20 +78,14 @@ impl<T: Terminal> Play<T> {
             exec: Executor::new(),
             names: Names::default(),
             renderer: Renderer::default(),
-            paths: Paths::new(),
-            terrain_paths: Paths::new(),
             fresh: Vec::new(),
             reported: 0,
             last_square: None,
-            items: SquareSet::new(),
-            items_level: None,
             max_steps: max_steps.clamp(1, STEPS_MAX),
-            entities: Vec::new(),
             unnamed: Vec::new(),
             landmarks: Vec::new(),
             edges: Vec::new(),
             route: Vec::new(),
-            occupied: SquareSet::new(),
             answered: Vec::new(),
             last: None,
         }
@@ -177,9 +165,9 @@ impl<T: Terminal> Play<T> {
                 .current()
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
         let action = if explore {
-            exec::explore(&self.paths, goal, self.max_steps)
+            exec::explore(&self.renderer.routes.paths, goal, self.max_steps)
         } else {
-            exec::travel(&self.paths, goal, self.max_steps)
+            exec::travel(&self.renderer.routes.paths, goal, self.max_steps)
         };
         self.execute(&verb, &action)
     }
@@ -232,7 +220,7 @@ impl<T: Terminal> Play<T> {
         }
         let word = target.trim().to_lowercase();
         if word == "frontier" {
-            level.frontier_targets(&self.paths, &mut self.edges);
+            level.frontier_targets(&self.renderer.routes.paths, &mut self.edges);
             out.extend(
                 self.edges
                     .iter()
@@ -240,7 +228,7 @@ impl<T: Terminal> Play<T> {
             );
             return Ok(());
         }
-        landmarks(level, &self.entities, out);
+        landmarks(level, &self.renderer.routes.entities, out);
         out.retain(|place| {
             let glyph = place
                 .glyph
@@ -270,10 +258,12 @@ impl<T: Terminal> Play<T> {
         let (Some(level), Some(hero)) = (self.memory.current(), self.term.view().hero) else {
             return none;
         };
-        level.paths(hero, &SquareSet::new(), &mut self.terrain_paths);
+        let routes = &mut self.renderer.routes;
+        let occupied = routes.occupied.clone();
+        let terrain = routes.terrain(level, hero);
         let mut blockers = SquareSet::new();
         let goals: Vec<Pos> = if frontier {
-            let reached = self.terrain_paths.reached();
+            let reached = terrain.reached();
             reached.iter().filter(|&p| level.frontier(p)).collect()
         } else {
             places
@@ -282,9 +272,9 @@ impl<T: Terminal> Play<T> {
                 .collect()
         };
         for goal in goals {
-            if self.terrain_paths.route(goal, &mut self.route) {
+            if terrain.route(goal, &mut self.route) {
                 for &q in &self.route {
-                    if self.occupied.contains(q) {
+                    if occupied.contains(q) {
                         blockers.insert(q);
                     }
                 }
@@ -508,10 +498,6 @@ impl<T: Terminal> Play<T> {
         let rendered = self.renderer.render(&scene);
         self.fresh.clear();
         self.answered.clear();
-        if let Some((level, items)) = self.renderer.listed_items() {
-            self.items.clone_from(items);
-            self.items_level = Some(level);
-        }
         match rendered {
             Ok((text, facts)) => Reply { code, text, facts },
             Err(message) => Reply::message(
@@ -525,20 +511,11 @@ impl<T: Terminal> Play<T> {
         }
     }
 
-    /// Fills the entity buffer and the squares monsters block, and routes from the hero around them. A route
-    /// step into the highlighted pet swaps places with it, so the pet blocks nothing.
+    /// Routes from the hero around the monsters in view, in the renderer's buffers.
     fn route_from_hero(&mut self) {
-        let view = self.term.view();
-        self.memory.entities(view, &mut self.entities);
-        self.occupied.clear();
-        for entity in &self.entities {
-            if matches!(entity.kind, EntityKind::Monster | EntityKind::Unseen) && !entity.pet {
-                self.occupied.insert(entity.pos);
-            }
-        }
-        if let (Some(level), Some(hero)) = (self.memory.current(), view.hero) {
-            level.paths(hero, &self.occupied, &mut self.paths);
-        }
+        self.renderer
+            .routes
+            .from_hero(&self.memory, self.term.view());
     }
 
     /// The square to walk to: the nearest goal of `places` a route reaches, preferring one the hero is not on.
@@ -547,7 +524,7 @@ impl<T: Terminal> Play<T> {
         let mut here: Option<Pos> = None;
         for place in places {
             for &goal in place.goals.as_slice() {
-                match self.paths.distance(goal) {
+                match self.renderer.routes.paths.distance(goal) {
                     Some(0) if here.is_none_or(|h| goal < h) => here = Some(goal),
                     Some(steps) if best.is_none_or(|b| (steps, goal) < b) => {
                         best = Some((steps, goal));
@@ -585,8 +562,9 @@ impl<T: Terminal> Play<T> {
         let Some(level) = self.memory.current().map(|level| level.id) else {
             return;
         };
-        self.memory.entities(view, &mut self.entities);
-        self.names.retain_visible(level, &self.entities);
+        let entities = &mut self.renderer.routes.entities;
+        self.memory.entities(view, entities);
+        self.names.retain_visible(level, entities);
     }
 
     /// Names each monster in view by farlook. A name is kept while the monster stays on its square looking the
@@ -598,10 +576,10 @@ impl<T: Terminal> Play<T> {
             return;
         };
         let turn = view.status.turn;
-        self.memory.entities(view, &mut self.entities);
-        self.names.retain_visible(level, &self.entities);
-        self.names
-            .unnamed(level, hero, &self.entities, &mut self.unnamed);
+        let entities = &mut self.renderer.routes.entities;
+        self.memory.entities(view, entities);
+        self.names.retain_visible(level, entities);
+        self.names.unnamed(level, hero, entities, &mut self.unnamed);
         let unnamed = std::mem::take(&mut self.unnamed);
         for entity in &unnamed {
             if !self.plain() {
@@ -650,7 +628,10 @@ impl<T: Terminal> Play<T> {
             return;
         }
         let object = level.inferred_floor.contains(hero)
-            || self.items_level == Some(level.id) && self.items.contains(hero);
+            || self
+                .renderer
+                .listed_items()
+                .is_some_and(|(listed, items)| listed == level.id && items.contains(hero));
         let engraving = level.engravings.contains(hero)
             || known.is_some_and(|known| {
                 known

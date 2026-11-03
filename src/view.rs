@@ -212,18 +212,57 @@ struct Listed {
     text: String,
 }
 
+/// Routes from the hero: the entities in view, the squares monsters and unseen things hold, the routes around
+/// them, and the routes over terrain alone, searched only when asked for.
+#[derive(Default)]
+pub struct Routes {
+    /// The entities in view.
+    pub entities: Vec<Entity>,
+    /// Squares a monster or an unseen thing other than the pet holds.
+    pub occupied: SquareSet,
+    /// Routes from the hero around `occupied`.
+    pub paths: Paths,
+    terrain: Paths,
+    terrain_from: Option<(u16, Pos)>,
+}
+
+impl Routes {
+    /// Takes the entities of `view` and routes from its hero around them. A route step into the highlighted pet
+    /// swaps places with it, so the pet blocks nothing.
+    pub fn from_hero(&mut self, memory: &Memory, view: &View) {
+        memory.entities(view, &mut self.entities);
+        self.occupied.clear();
+        for entity in &self.entities {
+            if matches!(entity.kind, EntityKind::Monster | EntityKind::Unseen) && !entity.pet {
+                self.occupied.insert(entity.pos);
+            }
+        }
+        self.terrain_from = None;
+        if let (Some(level), Some(hero)) = (memory.current(), view.hero) {
+            level.paths(hero, &self.occupied, &mut self.paths);
+        }
+    }
+
+    /// Routes from `hero` over `level`'s terrain as if no monster stood anywhere, searched once per hero square.
+    pub fn terrain(&mut self, level: &Level, hero: Pos) -> &Paths {
+        if self.terrain_from != Some((level.id, hero)) {
+            level.paths(hero, &SquareSet::new(), &mut self.terrain);
+            self.terrain_from = Some((level.id, hero));
+        }
+        &self.terrain
+    }
+}
+
 /// Renders views, reusing its route and entity buffers.
 #[derive(Default)]
 pub struct Renderer {
-    paths: Paths,
-    terrain_paths: Paths,
-    entities: Vec<Entity>,
+    /// The routes the last map view was rendered with.
+    pub routes: Routes,
     line: String,
     landmarks: Vec<Landmark>,
     seen: Vec<Listed>,
     items: Vec<Listed>,
     edges: Vec<(Pos, u32)>,
-    occupied: SquareSet,
     listed_items: SquareSet,
     listed_level: Option<u16>,
 }
@@ -427,15 +466,7 @@ impl Renderer {
         facts: &mut Facts,
     ) {
         let view = scene.view;
-        scene.memory.entities(view, &mut self.entities);
-        self.occupied.clear();
-        for entity in &self.entities {
-            if matches!(entity.kind, EntityKind::Monster | EntityKind::Unseen) && !entity.pet {
-                self.occupied.insert(entity.pos);
-            }
-        }
-        level.paths(hero, &self.occupied, &mut self.paths);
-        level.paths(hero, &SquareSet::new(), &mut self.terrain_paths);
+        self.routes.from_hero(scene.memory, view);
 
         self.line.clear();
         here(level, hero, &mut self.line);
@@ -445,7 +476,7 @@ impl Renderer {
 
         self.monsters(scene, level.id, hero, text, facts);
 
-        landmarks(level, &self.entities, &mut self.landmarks);
+        landmarks(level, &self.routes.entities, &mut self.landmarks);
         self.seen.clear();
         self.items.clear();
         self.listed_items.clear();
@@ -467,14 +498,16 @@ impl Renderer {
                 .goals
                 .as_slice()
                 .iter()
-                .filter_map(|&goal| self.paths.distance(goal))
+                .filter_map(|&goal| self.routes.paths.distance(goal))
                 .min();
-            let blocked = steps.is_none()
-                && landmark
+            let blocked = steps.is_none() && {
+                let terrain = self.routes.terrain(level, hero);
+                landmark
                     .goals
                     .as_slice()
                     .iter()
-                    .any(|&goal| self.terrain_paths.reaches(goal));
+                    .any(|&goal| terrain.reaches(goal))
+            };
             let glyph = landmark.glyph.unwrap_or(' ');
             let item = landmark.label == "item";
             let mut entry = String::new();
@@ -549,7 +582,7 @@ impl Renderer {
             out.extend(entries.drain(..).map(|entry| entry.place));
         }
 
-        level.frontier_targets(&self.paths, &mut self.edges);
+        level.frontier_targets(&self.routes.paths, &mut self.edges);
         if !self.edges.is_empty() {
             newline(text);
             text.push_str("frontier: ");
@@ -583,10 +616,11 @@ impl Renderer {
     ) {
         let turn = scene.view.status.turn;
         // A stable sort keeps row-then-column order among monsters at the same distance.
-        self.entities
+        self.routes
+            .entities
             .sort_by_key(|entity| entity.pos.chebyshev(hero));
         let mut first = true;
-        for entity in &self.entities {
+        for entity in &self.routes.entities {
             if !matches!(entity.kind, EntityKind::Monster | EntityKind::Unseen) {
                 continue;
             }
