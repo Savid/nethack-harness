@@ -582,17 +582,17 @@ pub struct Answered {
     pub text_entry: bool,
 }
 
-/// Decodes the key escape syntax: `\e \r \n \t \\ \xHH`; any other character stands for its code, which must be
-/// at most 0xff.
+/// Decodes the key escape syntax: `\e \r \n \t \\ \xHH`; any other character must be ASCII and stands for its
+/// code, so `\xHH` is the only way to send a byte above 0x7f.
 pub fn unescape(keys: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(keys.len());
     let mut chars = keys.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
-            out.push(
-                u8::try_from(u32::from(ch))
-                    .map_err(|_| "send takes ASCII keys; write other bytes as \\xHH".to_owned())?,
-            );
+            if !ch.is_ascii() {
+                return Err("send takes ASCII keys; write other bytes as \\xHH".to_owned());
+            }
+            out.push(ch as u8);
             continue;
         }
         let rest = chars.as_str();
@@ -646,7 +646,8 @@ mod tests {
             unescape(r"E-\eab\r\x12\\q\z").unwrap(),
             b"E-\x1bab\r\x12\\q\\z"
         );
-        assert!(unescape("é").is_ok());
+        assert!(unescape("é").is_err());
+        assert_eq!(unescape(r"\xe9").unwrap(), [0xe9]);
         assert!(unescape("☃").is_err());
     }
 
