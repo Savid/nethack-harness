@@ -4,7 +4,7 @@
 //! Each request with non-empty input takes the next script step. Output steps append their bytes to the output
 //! buffer and advance the cursor; the reply carries the bytes after the request's `after`, `truncated` when
 //! `after` is older than the buffer start, and `waiting` as the step says. A request with empty input is a pure
-//! read and never takes a step. A request with input while the script is exhausted goes to the responder, if one is
+//! read and never takes a step; with `wait` it lets a busy game settle, printing what it prints on settling. A request with input while the script is exhausted goes to the responder, if one is
 //! set, which returns what the game prints; without one it is answered like a game that printed nothing and waits. Like the real server, the buffer keeps the last 64 KiB, and a reply body over
 //! 2048 bytes is sent chunked.
 
@@ -68,6 +68,8 @@ struct Game {
     start: u64,
     script: VecDeque<Step>,
     busy: bool,
+    /// What the busy game prints once it settles.
+    settles: Vec<u8>,
     stuck: bool,
     received: Vec<Received>,
     connections: u32,
@@ -153,6 +155,22 @@ impl FakeTerminalServer {
             stop,
             thread: Some(thread),
         }
+    }
+
+    /// Starts a server like `start` whose game is still starting: it has printed `initial` and is busy, and the
+    /// first read with `wait` finds it settled, having printed `settled`.
+    pub fn starting(
+        dir: &Path,
+        initial: &[u8],
+        settled: &[u8],
+        script: Vec<Step>,
+    ) -> FakeTerminalServer {
+        let server = FakeTerminalServer::start(dir, initial, script);
+        let mut game = lock(&server.game);
+        game.busy = true;
+        game.settles = settled.to_vec();
+        drop(game);
+        server
     }
 
     /// The socket path.
@@ -272,7 +290,9 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
         status: 200,
     };
     if received.input.is_empty() {
-        if request.wait > 0 {
+        if request.wait > 0 && g.busy {
+            let settles = std::mem::take(&mut g.settles);
+            g.print(&settles);
             g.busy = false;
         }
     } else {

@@ -2,7 +2,7 @@
 
 use crate::exec::{self, Executor, Kind, Outcome, Stop};
 use crate::level::door_sides;
-use crate::link::{LinkError, Terminal};
+use crate::link::{LinkError, Term, Terminal};
 use crate::observe::{Entity, Memory};
 use crate::screen::{Phase, strip_more};
 use crate::types::{Answered, ExitCode, Pos, Reply, Report, SquareSet};
@@ -636,6 +636,18 @@ impl<T: Terminal> Play<T> {
         }
         self.exec
             .run(&mut self.term, &mut self.memory, &exec::look_here());
+    }
+}
+
+impl Play<Term> {
+    /// Brings a screen that was never completely drawn in step with the game (`Term::sync`) and dismisses the
+    /// `--More--` pages it opens with, such as the game's welcome, keeping their messages for the next view.
+    pub fn sync(&mut self) -> Result<(), LinkError> {
+        if self.term.complete() {
+            return Ok(());
+        }
+        self.term.sync()?;
+        self.exec.dismiss(&mut self.term, &mut self.memory)
     }
 }
 

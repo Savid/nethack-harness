@@ -190,6 +190,83 @@ fn direct_play_through_the_binary() {
     assert_eq!(server.connections(), 1);
 }
 
+/// The game's start-up splash, drawn on a cleared screen while the game is still busy starting.
+const SPLASH: &[u8] = b"\x1b[?1049h\x1b[H\x1b[2J\x1b[5;1HNetHack, Copyright 1985-2026\r\
+\x1b[6;1H         By Stichting Mathematisch Centrum and M. Stephenson.\r\x1b[12;1H";
+
+/// The game's turn counter after `send s` on `SCREEN` or the welcome screen.
+fn searches(turn: u32) -> Responder {
+    let mut turn = turn;
+    Box::new(move |input: &[u8]| {
+        if input != b"s" {
+            return Vec::new();
+        }
+        turn += 1;
+        format!(
+            "\x1b[H\x1b[K\x1b[24;1HDlvl:1 $:0 HP:12(16) Pw:2(2) AC:6 Xp:1 T:{turn}\x1b[K\x1b[4;22H"
+        )
+        .into_bytes()
+    })
+}
+
+#[test]
+fn the_first_look_waits_for_a_starting_game_and_pages_its_welcome() {
+    let dir = scratch("e2e-starting");
+    let welcome = String::from_utf8_lossy(SCREEN).replace("T:10", "T:1")
+        + "\x1b[HHello Hero, welcome to NetHack!--More--";
+    let server = FakeTerminalServer::starting(
+        &dir,
+        SPLASH,
+        welcome.as_bytes(),
+        vec![Step::Output(
+            b"\x1b[H\x1b[KYou are lucky!  Full moon tonight.\x1b[4;22H".to_vec(),
+        )],
+    );
+    server.respond(searches(1));
+    let session = Session::new(&dir, server.path());
+    let look = session.run(&["look"]);
+    let text = stdout(&look);
+    assert_eq!(code(&look), 0, "{text}{}", stderr(&look));
+    assert!(!text.contains("screen ("), "{text}");
+    assert!(text.contains("|.@..|"), "{text}");
+    assert!(
+        text.contains("msg: Hello Hero, welcome to NetHack!\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("msg: You are lucky!  Full moon tonight."),
+        "{text}"
+    );
+    let first = &server.received()[0];
+    assert!(first.input.is_empty() && first.wait > 0, "{first:?}");
+    assert_eq!(server.inputs().first(), Some(&b" ".to_vec()));
+    assert!(!server.inputs().contains(&b"\x12".to_vec()));
+
+    let sent = session.run(&["send", "s"]);
+    assert_eq!(code(&sent), 0, "{}{}", stdout(&sent), stderr(&sent));
+    assert!(stdout(&sent).contains("T:2"), "{}", stdout(&sent));
+    assert_eq!(server.inputs().last(), Some(&b"s".to_vec()));
+}
+
+#[test]
+fn a_stale_splash_is_redrawn_before_the_first_look() {
+    let dir = scratch("e2e-splash");
+    let stale = b"\x1b[5;1HNetHack, Copyright 1985-2026\x1b[12;1H";
+    let server = FakeTerminalServer::start(&dir, stale, vec![Step::Output(SCREEN.to_vec())]);
+    server.respond(searches(10));
+    let session = Session::new(&dir, server.path());
+    let look = session.run(&["look"]);
+    let text = stdout(&look);
+    assert_eq!(code(&look), 0, "{text}{}", stderr(&look));
+    assert!(!text.contains("Copyright"), "{text}");
+    assert!(text.contains("|.@..|") && text.contains("T:10"), "{text}");
+    assert_eq!(server.inputs().first(), Some(&b"\x12".to_vec()));
+
+    let sent = session.run(&["send", "s"]);
+    assert!(stdout(&sent).contains("T:11"), "{}", stdout(&sent));
+    assert_eq!(server.inputs().last(), Some(&b"s".to_vec()));
+}
+
 #[test]
 fn game_over_is_code_3() {
     let dir = scratch("e2e-over");

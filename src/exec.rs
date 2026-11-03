@@ -376,6 +376,19 @@ impl Executor {
         !memory.about_pet(text)
     }
 
+    /// Dismisses the `--More--` pages on screen, such as a game's welcome, taking their messages into `memory`.
+    pub fn dismiss(
+        &mut self,
+        term: &mut dyn Terminal,
+        memory: &mut Memory,
+    ) -> Result<(), LinkError> {
+        memory.ingest(term.view());
+        match self.page(term, memory, &mut Outcome::default()) {
+            Err(Stop::Link(error)) => Err(error),
+            _ => Ok(()),
+        }
+    }
+
     /// Dismisses `--More--` pages; true when any page held news.
     fn page(
         &mut self,

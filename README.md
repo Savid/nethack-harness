@@ -243,6 +243,11 @@ short (exit code 2) and the keys after the batch are not sent. Screen shape (the
 drawn, `--More--`, a menu footer, the cursor on row 0) only classifies what the game is waiting for, never when it
 is done.
 
+Before its first command, and again whenever the output restarts, the daemon reads with `wait: 3000`, so a game
+still starting up has drawn its first screen. If no full clear of the screen has been seen, it asks the game to
+redraw (`^R`). It then dismisses the `--More--` pages the screen opens with, such as the welcome, and reports
+their text with the next view. No caller key is spent on any of this.
+
 A reply must arrive in full within its `wait` plus 5 s. A connection that fails partway through a reply fails the
 command (exit code 1) and is replaced for the next one. Input is never sent twice: a kept connection is checked
 before input goes out on it, and one that closes after taking input without answering is reported as an unknown

@@ -303,12 +303,7 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
         return (Reply::message(ExitCode::Done, "stopped"), After::Exit);
     }
     play.term_mut().deadline(Instant::now() + COMMAND_TIME);
-    let synced = if play.term().complete() {
-        Ok(())
-    } else {
-        play.term_mut().sync()
-    };
-    let reply = match (synced, command) {
+    let reply = match (play.sync(), command) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
         (Ok(()), Checked::Look) => play.look(),
         (Ok(()), Checked::Send(keys)) => play.send(&keys),

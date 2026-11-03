@@ -725,9 +725,11 @@ impl Term {
         self.deadline = Some(at);
     }
 
-    /// Reads the screen and, if the emulator has never seen a full clear, asks the game to redraw (`^R`).
+    /// Reads the screen once the game waits for a key, so a game still starting up has drawn its first screen, and,
+    /// if the emulator has never seen a full clear, asks the game to redraw (`^R`).
     pub fn sync(&mut self) -> Result<(), LinkError> {
-        self.poll()?;
+        let exchange = self.link.exchange(&[], WAIT_MS)?;
+        self.apply(exchange, None);
         if !self.vt.complete() {
             self.send(b"\x12")?;
         }
