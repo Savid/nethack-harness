@@ -1,7 +1,6 @@
 //! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view.
 
 use crate::exec::{self, Executor, Kind, Outcome, Stop};
-use crate::level::door_sides;
 use crate::link::{LinkError, Term, Terminal};
 use crate::observe::{Entity, Memory};
 use crate::screen::{Phase, strip_more};
@@ -91,12 +90,10 @@ impl<T: Terminal> Play<T> {
         }
     }
 
-    /// The terminal.
     pub fn term(&self) -> &T {
         &self.term
     }
 
-    /// The terminal, mutably.
     pub fn term_mut(&mut self) -> &mut T {
         &mut self.term
     }
@@ -105,12 +102,8 @@ impl<T: Terminal> Play<T> {
     /// (only new or moved ones, at most `FARLOOKS`) and re-reads a known engraving or object square underfoot with
     /// `:` when the turn has advanced since its last reading; both take no game time.
     pub fn look(&mut self) -> Reply {
-        if let Err(error) = self.term.poll() {
-            return self.failure("look", &error);
-        }
-        self.memory.ingest(self.term.view());
-        if self.term.view().ended {
-            self.finish_game();
+        if let Some(reply) = self.read("look") {
+            return reply;
         }
         self.inquire();
         let code = self.over().unwrap_or(ExitCode::Done);
@@ -196,12 +189,7 @@ impl<T: Terminal> Play<T> {
                 return Err(format!("{target} is off the map"));
             }
             if level.terrain(p) == Some('+') {
-                out.push(Landmark {
-                    pos: p,
-                    glyph: Some('+'),
-                    label: "door".to_owned(),
-                    goals: door_sides(p),
-                });
+                out.push(Landmark::door(p));
             } else {
                 out.push(Landmark::at(p, None, "chosen square"));
             }
@@ -270,14 +258,11 @@ impl<T: Terminal> Play<T> {
             }
         }
         if !blockers.is_empty() {
-            let mut text = format!("the known route to {target} is blocked by a monster at ");
-            for (i, p) in blockers.iter().take(3).enumerate() {
-                if i > 0 {
-                    text.push_str(" or ");
-                }
-                text.push_str(&p.to_string());
-            }
-            return text;
+            let at: Vec<String> = blockers.iter().take(3).map(|p| p.to_string()).collect();
+            return format!(
+                "the known route to {target} is blocked by a monster at {}",
+                at.join(" or ")
+            );
         }
         match places {
             [place]
@@ -295,11 +280,9 @@ impl<T: Terminal> Play<T> {
     pub fn report(&self, verb: &str, outcome: &Outcome) -> Report {
         let mut report = Report {
             verb: verb.to_owned(),
-            done: false,
-            stopped: Vec::new(),
             steps: outcome.steps,
             turns: outcome.turns,
-            error: None,
+            ..Report::default()
         };
         let (kind, target, route) = self.last.map_or((Kind::Keys, None, 0), |last| {
             (last.kind, last.target, last.route)
@@ -378,8 +361,9 @@ impl<T: Terminal> Play<T> {
             && view.status.location.is_some()
     }
 
-    /// Reads the screen before a command; a link failure or a finished game is answered here, sending nothing.
-    fn prepare(&mut self, verb: &str) -> Option<Reply> {
+    /// Reads the screen into memory, paging through the end of a game that has just ended; a link failure is
+    /// answered here.
+    fn read(&mut self, verb: &str) -> Option<Reply> {
         if let Err(error) = self.term.poll() {
             return Some(self.failure(verb, &error));
         }
@@ -387,15 +371,17 @@ impl<T: Terminal> Play<T> {
         if self.term.view().ended {
             self.finish_game();
         }
-        if let Some(code) = self.over() {
-            let report = Report {
-                verb: verb.to_owned(),
-                error: Some("the game is over; nothing was sent".to_owned()),
-                ..Report::default()
-            };
-            return Some(self.reply(code, Some(report)));
-        }
         None
+    }
+
+    /// Reads the screen before a command; a link failure or a finished game is answered here, sending nothing.
+    fn prepare(&mut self, verb: &str) -> Option<Reply> {
+        if let Some(reply) = self.read(verb) {
+            return Some(reply);
+        }
+        let code = self.over()?;
+        let report = failed(verb, "the game is over; nothing was sent");
+        Some(self.reply(code, Some(report)))
     }
 
     /// Runs a caller's action and answers with its report and the view after it.
@@ -459,12 +445,7 @@ impl<T: Terminal> Play<T> {
         let Some(code) = self.over() else {
             return Reply::message(error.code(), format!("{verb}: {error}"));
         };
-        let report = Report {
-            verb: verb.to_owned(),
-            error: Some(error.to_string()),
-            ..Report::default()
-        };
-        self.reply(code, Some(report))
+        self.reply(code, Some(failed(verb, &error.to_string())))
     }
 
     /// Renders the view with `report` under `code`; a refused view is answered with its reason instead.
@@ -645,6 +626,15 @@ impl Play<Term> {
         }
         self.term.sync()?;
         self.exec.dismiss(&mut self.term, &mut self.memory)
+    }
+}
+
+/// The report of a command labelled `verb` that failed with `error`.
+fn failed(verb: &str, error: &str) -> Report {
+    Report {
+        verb: verb.to_owned(),
+        error: Some(error.to_owned()),
+        ..Report::default()
     }
 }
 

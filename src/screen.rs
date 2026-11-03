@@ -588,7 +588,7 @@ fn set_str(slot: &mut Option<String>, value: Option<&str>) {
 }
 
 /// The byte offset of character column `col` in `row`, or its length past the end.
-fn byte_at(row: &str, col: usize) -> usize {
+pub fn byte_at(row: &str, col: usize) -> usize {
     row.char_indices().nth(col).map_or(row.len(), |(i, _)| i)
 }
 

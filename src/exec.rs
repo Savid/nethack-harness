@@ -151,6 +151,22 @@ impl Outcome {
         }
         self.messages.push(text);
     }
+
+    /// Adds an answered prompt, leaving out the earliest beyond `REPORTED`.
+    fn answer(&mut self, answered: Answered) {
+        if self.answered.len() >= REPORTED {
+            self.answered.remove(0);
+            self.answered_left_out += 1;
+        }
+        self.answered.push(answered);
+    }
+}
+
+/// The terminal and memory one action works on, and what it has done so far.
+struct Io<'a> {
+    term: &'a mut dyn Terminal,
+    memory: &'a mut Memory,
+    outcome: Outcome,
 }
 
 /// Which remembered terrain ends an action when it changes.
@@ -174,8 +190,6 @@ pub struct Executor {
     /// Text-window lines and menu entries being read.
     window: Vec<String>,
     entries: Vec<MenuEntry>,
-    /// The keys of one route step.
-    step: Vec<u8>,
     /// The screen an information command was asked from.
     before: Option<View>,
     /// When the action began: the level it was on, its remembered terrain (`'\0'` where none) and colours, the
@@ -200,7 +214,6 @@ impl Default for Executor {
             now: Vec::new(),
             window: Vec::new(),
             entries: Vec::new(),
-            step: Vec::with_capacity(2),
             before: None,
             terrain: Box::new(['\0'; MAP_SQUARES]),
             colours: Box::new([None; MAP_SQUARES]),
@@ -227,92 +240,95 @@ impl Executor {
         memory: &mut Memory,
         action: &Action,
     ) -> Outcome {
-        let mut outcome = Outcome::default();
+        let mut io = Io {
+            term,
+            memory,
+            outcome: Outcome::default(),
+        };
         let aside = matches!(action.kind, Kind::Farlook | Kind::LookHere);
-        if aside {
-            memory.set_aside(true);
-        }
-        self.ended_before = false;
-        let mut turn = None;
-        outcome.stop = match self.execute(term, memory, action, &mut outcome, &mut turn) {
+        io.memory.set_aside(aside);
+        let turn = io.term.view().status.turn;
+        io.outcome.stop = match self.execute(&mut io, action) {
             Ok(stop) | Err(stop) => stop,
         };
-        if aside {
-            memory.set_aside(false);
+        io.memory.set_aside(false);
+        if let (Some(before), Some(after)) = (turn, io.term.view().status.turn) {
+            io.outcome.turns = Some(i64::from(after) - i64::from(before));
         }
-        if let (Some(before), Some(after)) = (turn, term.view().status.turn) {
-            outcome.turns = Some(i64::from(after) - i64::from(before));
-        }
-        if outcome.stop == Stop::GameOver && !self.ended_before {
-            let end = self.finish_game(term, memory);
+        if io.outcome.stop == Stop::GameOver && !self.ended_before {
+            let end = self.finish_game(io.term, io.memory);
             for text in end.messages {
-                outcome.message(text);
+                io.outcome.message(text);
             }
             for answered in end.answered {
-                outcome.answered.push(answered);
-                if outcome.answered.len() > REPORTED {
-                    outcome.answered.remove(0);
-                    outcome.answered_left_out += 1;
-                }
+                io.outcome.answer(answered);
             }
-            outcome.stop = end.stop;
+            io.outcome.stop = end.stop;
         }
-        outcome
+        io.outcome
     }
 
     /// Pages through the end of the game, declining the disclosure questions and dismissing `--More--`, until the
     /// tombstone or the farewell is captured into `memory`. Each question answered is recorded. A game that goes
     /// on (life saving) completes.
     pub fn finish_game(&mut self, term: &mut dyn Terminal, memory: &mut Memory) -> Outcome {
-        let mut outcome = Outcome::default();
-        outcome.stop = match self.finish(term, memory, &mut outcome) {
+        let mut io = Io {
+            term,
+            memory,
+            outcome: Outcome::default(),
+        };
+        io.outcome.stop = match self.finish(&mut io) {
             Ok(stop) | Err(stop) => stop,
         };
-        outcome
+        io.outcome
     }
 
-    fn execute(
+    /// Dismisses the `--More--` pages on screen, such as a game's welcome, taking their messages into `memory`.
+    pub fn dismiss(
         &mut self,
         term: &mut dyn Terminal,
         memory: &mut Memory,
-        action: &Action,
-        outcome: &mut Outcome,
-        turn: &mut Option<u32>,
-    ) -> Result<Stop, Stop> {
-        let view = term.view();
-        memory.ingest(view);
-        *turn = view.status.turn;
+    ) -> Result<(), LinkError> {
+        memory.ingest(term.view());
+        let mut io = Io {
+            term,
+            memory,
+            outcome: Outcome::default(),
+        };
+        match self.page(&mut io) {
+            Err(Stop::Link(error)) => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    fn execute(&mut self, io: &mut Io, action: &Action) -> Result<Stop, Stop> {
+        let view = io.term.view();
+        io.memory.ingest(view);
         self.ended_before = view.ended;
         if view.ended && action.kind != Kind::Keys {
             return Ok(Stop::GameOver);
         }
-        memory.begin(view);
+        io.memory.begin(view);
         match action.kind {
-            Kind::Keys => self.type_keys(term, memory, &action.keys, outcome),
-            Kind::Farlook => self.farlook(term, memory, action, outcome),
-            Kind::LookHere => self.look_here(term, memory, action, outcome),
-            Kind::Travel | Kind::Explore | Kind::Search => self.walk(term, memory, action, outcome),
+            Kind::Keys => self.type_keys(io, &action.keys),
+            Kind::Farlook => self.farlook(io, action),
+            Kind::LookHere => self.look_here(io, action),
+            Kind::Travel | Kind::Explore | Kind::Search => self.walk(io, action),
         }
     }
 
     /// Sends `keys` as one batch and takes in the screen it leaves; true when the game wrote news.
-    fn send(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        keys: &[u8],
-        outcome: &mut Outcome,
-    ) -> Result<bool, Stop> {
-        term.send(keys).map_err(Stop::Link)?;
+    fn send(&mut self, io: &mut Io, keys: &[u8]) -> Result<bool, Stop> {
+        io.term.send(keys).map_err(Stop::Link)?;
         self.after_run = is_run(keys);
-        Ok(self.take(term, memory, outcome))
+        Ok(self.take(io))
     }
 
     /// Takes the current screen into memory and its message into `outcome`; true when it is a message not about a
     /// pet.
-    fn take(&mut self, term: &dyn Terminal, memory: &mut Memory, outcome: &mut Outcome) -> bool {
-        let view = term.view();
-        memory.ingest(view);
+    fn take(&mut self, io: &mut Io) -> bool {
+        let view = io.term.view();
+        io.memory.ingest(view);
         self.window.clear();
         if view.more && view.more_window(&mut self.window) {
             let mut news = false;
@@ -322,8 +338,8 @@ impl Executor {
                 if text.is_empty() {
                     continue;
                 }
-                news |= !memory.about_pet(text);
-                outcome.message(if first {
+                news |= !io.memory.about_pet(text);
+                io.outcome.message(if first {
                     text.to_owned()
                 } else {
                     format!("  {text}")
@@ -335,7 +351,7 @@ impl Executor {
         if question(view)
             || view.phase() == Phase::Menu
             || view.counting()
-            || !term.message_written()
+            || !io.term.message_written()
         {
             return false;
         }
@@ -343,38 +359,20 @@ impl Executor {
         if text.is_empty() {
             return false;
         }
-        outcome.message(text.to_owned());
-        !memory.about_pet(text)
-    }
-
-    /// Dismisses the `--More--` pages on screen, such as a game's welcome, taking their messages into `memory`.
-    pub fn dismiss(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-    ) -> Result<(), LinkError> {
-        memory.ingest(term.view());
-        match self.page(term, memory, &mut Outcome::default()) {
-            Err(Stop::Link(error)) => Err(error),
-            _ => Ok(()),
-        }
+        io.outcome.message(text.to_owned());
+        !io.memory.about_pet(text)
     }
 
     /// Dismisses `--More--` pages; true when any page held news.
-    fn page(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        outcome: &mut Outcome,
-    ) -> Result<bool, Stop> {
+    fn page(&mut self, io: &mut Io) -> Result<bool, Stop> {
         let mut news = false;
         for _ in 0..PAGES {
-            if term.view().phase() != Phase::More {
+            if io.term.view().phase() != Phase::More {
                 return Ok(news);
             }
-            news |= self.send(term, memory, b" ", outcome)?;
+            news |= self.send(io, b" ")?;
         }
-        if term.view().phase() == Phase::More {
+        if io.term.view().phase() == Phase::More {
             return Err(Stop::Failed(format!(
                 "--More-- pages did not finish after {PAGES} pages"
             )));
@@ -383,15 +381,10 @@ impl Executor {
     }
 
     /// Dismisses `--More--` pages and text windows, which have no entries to choose, before an expected prompt.
-    fn notices(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        outcome: &mut Outcome,
-    ) -> Result<(), Stop> {
+    fn notices(&mut self, io: &mut Io) -> Result<(), Stop> {
         for _ in 0..PAGES {
-            self.page(term, memory, outcome)?;
-            let view = term.view();
+            self.page(io)?;
+            let view = io.term.view();
             if view.phase() != Phase::Menu {
                 return Ok(());
             }
@@ -400,7 +393,7 @@ impl Executor {
             if !self.entries.is_empty() {
                 return Ok(());
             }
-            self.send(term, memory, &[ESCAPE], outcome)?;
+            self.send(io, &[ESCAPE])?;
         }
         Err(Stop::Failed(format!(
             "text windows did not finish after {PAGES} pages"
@@ -409,19 +402,13 @@ impl Executor {
 
     /// The caller's keys, one byte at a time, except that text typed into a free-text prompt goes as one batch up
     /// to the key that ends it. Each key that meets a prompt is recorded against it.
-    fn type_keys(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        keys: &[u8],
-        outcome: &mut Outcome,
-    ) -> Result<Stop, Stop> {
+    fn type_keys(&mut self, io: &mut Io, keys: &[u8]) -> Result<Stop, Stop> {
         let after_run = self.after_run;
         // The prompt the previous key answered, while further keys may extend its answer.
         let mut open: Option<Phase> = None;
         let mut i = 0;
         while i < keys.len() {
-            let view = term.view();
+            let view = io.term.view();
             let phase = view.phase();
             let mut end = i + 1;
             if asks(view) {
@@ -431,40 +418,34 @@ impl Executor {
                         .position(|&k| matches!(k, b'\r' | b'\n' | ESCAPE))
                         .map_or(keys.len(), |k| i + k + 1);
                 }
-                record(view, phase, open, &keys[i..end], outcome);
+                record(view, phase, open, &keys[i..end], &mut io.outcome);
                 open = matches!(phase, Phase::Text | Phase::Position).then_some(phase);
             } else {
                 open = None;
             }
-            term.send(&keys[i..end]).map_err(Stop::Link)?;
-            outcome.steps += (end - i) as u32;
-            self.take(term, memory, outcome);
+            io.term.send(&keys[i..end]).map_err(Stop::Link)?;
+            io.outcome.steps += (end - i) as u32;
+            self.take(io);
             i = end;
         }
         self.after_run = is_run(keys);
-        if needs_redraw(keys, after_run, term.view()) {
-            self.send(term, memory, &[REDRAW], outcome)?;
+        if needs_redraw(keys, after_run, io.term.view()) {
+            self.send(io, &[REDRAW])?;
             self.after_run = false;
         }
-        self.page(term, memory, outcome)?;
-        Ok(settled(term.view()))
+        self.page(io)?;
+        Ok(settled(io.term.view()))
     }
 
     /// A farlook: `;`, any notices in the way, the cursor keys, the reading, and an Escape if the game still
     /// waits for a position.
-    fn farlook(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        action: &Action,
-        outcome: &mut Outcome,
-    ) -> Result<Stop, Stop> {
-        self.keep_before(term.view());
-        self.send(term, memory, b";", outcome)?;
-        outcome.steps = 1;
-        self.page(term, memory, outcome)?;
-        self.notices(term, memory, outcome)?;
-        let view = term.view();
+    fn farlook(&mut self, io: &mut Io, action: &Action) -> Result<Stop, Stop> {
+        self.keep_before(io.term.view());
+        self.send(io, b";")?;
+        io.outcome.steps = 1;
+        self.page(io)?;
+        self.notices(io)?;
+        let view = io.term.view();
         if view.phase() != Phase::Position {
             return Ok(match view.phase() {
                 Phase::Play => Stop::NoEffect,
@@ -472,36 +453,32 @@ impl Executor {
                 _ => Stop::Prompt,
             });
         }
-        self.send(term, memory, &action.keys, outcome)?;
+        self.send(io, &action.keys)?;
         if let (Some(target), Some(before)) = (action.target, self.before.as_ref()) {
-            memory.remember_look(target, before, term.view(), LookSource::Farlook);
+            io.memory
+                .remember_look(target, before, io.term.view(), LookSource::Farlook);
         }
-        self.page(term, memory, outcome)?;
-        if term.view().phase() == Phase::Position {
-            self.send(term, memory, &[ESCAPE], outcome)?;
+        self.page(io)?;
+        if io.term.view().phase() == Phase::Position {
+            self.send(io, &[ESCAPE])?;
             return Ok(Stop::Prompt);
         }
-        Ok(settled(term.view()))
+        Ok(settled(io.term.view()))
     }
 
     /// A look underfoot: `:`, its pages, and the reading of the hero's square.
-    fn look_here(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        action: &Action,
-        outcome: &mut Outcome,
-    ) -> Result<Stop, Stop> {
-        self.keep_before(term.view());
-        self.send(term, memory, &action.keys, outcome)?;
-        outcome.steps = 1;
-        self.page(term, memory, outcome)?;
+    fn look_here(&mut self, io: &mut Io, action: &Action) -> Result<Stop, Stop> {
+        self.keep_before(io.term.view());
+        self.send(io, &action.keys)?;
+        io.outcome.steps = 1;
+        self.page(io)?;
         if let Some(before) = self.before.as_ref()
             && let Some(hero) = before.hero
         {
-            memory.remember_look(hero, before, term.view(), LookSource::Here);
+            io.memory
+                .remember_look(hero, before, io.term.view(), LookSource::Here);
         }
-        Ok(settled(term.view()))
+        Ok(settled(io.term.view()))
     }
 
     /// Keeps `view` as the screen an information command was asked from, reusing the buffer it last held.
@@ -513,13 +490,7 @@ impl Executor {
     }
 
     /// Travel, exploration and searching: one step at a time, stopping at the first boundary.
-    fn walk(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        action: &Action,
-        outcome: &mut Outcome,
-    ) -> Result<Stop, Stop> {
+    fn walk(&mut self, io: &mut Io, action: &Action) -> Result<Stop, Stop> {
         let exploring = action.kind == Kind::Explore;
         let moving = matches!(action.kind, Kind::Travel | Kind::Explore);
         let repeat = action.kind == Kind::Search;
@@ -528,69 +499,57 @@ impl Executor {
             Kind::Travel => Watch::Features,
             _ => Watch::All,
         };
-        self.remember_start(memory);
-        let start = term.view();
+        self.remember_start(io.memory);
+        let start = io.term.view();
         self.status.clone_from(&start.status);
         let (cond, engulfed) = (start.cond, start.engulfed);
         let (hp, hpmax) = (start.status.hp, start.status.hpmax);
-        monsters(memory, start, &mut self.previous);
+        monsters(io.memory, start, &mut self.previous);
         let mut idle = 0;
         let mut step = 0;
         while step < action.steps {
-            let view = term.view();
+            let view = io.term.view();
             let origin = view.hero;
             let (prior, prior_turn) = (view.fingerprint(), view.status.turn);
             let (prior_hp, prior_pw) = (view.status.hp, view.status.pw);
-            let mut buf = [0u8; 2];
             let mut target = None;
+            let buf;
             let keys: &[u8] = if moving {
-                let Some(from) = origin else {
-                    return Ok(Stop::RouteChanged);
-                };
-                let Some(level) = memory.current() else {
-                    return Ok(Stop::RouteChanged);
-                };
+                let from = origin.ok_or(Stop::RouteChanged)?;
+                let level = io.memory.current().ok_or(Stop::RouteChanged)?;
                 let to = match action.route.get(step as usize) {
                     Some(&to) => to,
-                    None => {
-                        let options = level.continuations(from, &self.covered);
-                        match options.as_slice() {
-                            [] => return Ok(Stop::CorridorEnds),
-                            [to] => *to,
-                            _ => return Ok(Stop::BranchDiscovered),
-                        }
-                    }
+                    None => match level.continuations(from, &self.covered).as_slice() {
+                        [] => return Ok(Stop::CorridorEnds),
+                        [to] => *to,
+                        _ => return Ok(Stop::BranchDiscovered),
+                    },
                 };
-                self.step.clear();
-                if !step_keys(level, view, from, to, &mut self.step) {
-                    return Ok(Stop::RouteChanged);
-                }
-                let len = self.step.len().min(buf.len());
-                buf[..len].copy_from_slice(&self.step[..len]);
+                buf = step_keys(level, view, from, to).ok_or(Stop::RouteChanged)?;
                 target = Some(to);
-                &buf[..len]
+                &buf.0[..buf.1]
             } else {
                 &action.keys
             };
             let after_run = self.after_run;
-            let mut news = self.send(term, memory, keys, outcome)?;
-            outcome.steps += 1;
-            if needs_redraw(keys, after_run, term.view()) {
-                news |= self.send(term, memory, &[REDRAW], outcome)?;
+            let mut news = self.send(io, keys)?;
+            io.outcome.steps += 1;
+            if needs_redraw(keys, after_run, io.term.view()) {
+                news |= self.send(io, &[REDRAW])?;
             }
-            news |= self.page(term, memory, outcome)?;
-            let view = term.view();
+            news |= self.page(io)?;
+            let view = io.term.view();
             if moving
                 && view.hero == origin
                 && view.phase() == Phase::Play
-                && memory.about_pet(&view.msg)
+                && io.memory.about_pet(&view.msg)
             {
                 // The pet in the way stops a step without moving; the step is tried once more.
-                news |= self.send(term, memory, keys, outcome)?;
-                outcome.steps += 1;
-                news |= self.page(term, memory, outcome)?;
+                news |= self.send(io, keys)?;
+                io.outcome.steps += 1;
+                news |= self.page(io)?;
             }
-            let view = term.view();
+            let view = io.term.view();
             if view.ended {
                 return Ok(Stop::GameOver);
             }
@@ -605,7 +564,8 @@ impl Executor {
                     && view.status.turn == prior_turn
                     && !is_monster(view.ch(to));
                 if refused {
-                    if let (Some(level), Some(key)) = (memory.current_mut(), from.direction_to(to))
+                    if let (Some(level), Some(key)) =
+                        (io.memory.current_mut(), from.direction_to(to))
                     {
                         level.refuse(from, key);
                     }
@@ -621,7 +581,7 @@ impl Executor {
                 if let Some(hero) = view.hero {
                     self.covered.insert(hero);
                 }
-                if self.discovered(memory) {
+                if self.discovered(io.memory) {
                     return Ok(Stop::FeatureDiscovered);
                 }
             }
@@ -649,7 +609,7 @@ impl Executor {
                 if view.engulfed != engulfed {
                     changed.insert(Changed::ENGULFED);
                 }
-                if self.terrain_changed(memory, watch) {
+                if self.terrain_changed(io.memory, watch) {
                     changed.insert(Changed::TERRAIN);
                 }
                 if repeat
@@ -660,17 +620,17 @@ impl Executor {
                 {
                     changed.insert(Changed::HP_FULL);
                 }
-                monsters(memory, view, &mut self.now);
+                monsters(io.memory, view, &mut self.now);
                 if let Some(arrival) = arrival(&self.previous, &self.now, view.hero) {
                     changed.insert(Changed::ENTITIES);
-                    outcome.arrival = Some(arrival);
+                    io.outcome.arrival = Some(arrival);
                 }
                 std::mem::swap(&mut self.previous, &mut self.now);
                 if news {
                     changed.insert(Changed::MESSAGE);
                 }
                 if !changed.is_empty() {
-                    outcome.changed = changed;
+                    io.outcome.changed = changed;
                     return Ok(Stop::Changed);
                 }
             }
@@ -760,14 +720,9 @@ impl Executor {
         })
     }
 
-    fn finish(
-        &mut self,
-        term: &mut dyn Terminal,
-        memory: &mut Memory,
-        outcome: &mut Outcome,
-    ) -> Result<Stop, Stop> {
+    fn finish(&mut self, io: &mut Io) -> Result<Stop, Stop> {
         for _ in 0..PAGES {
-            let view = term.view();
+            let view = io.term.view();
             if matches!(
                 view.end,
                 Some(EndKind::Tombstone | EndKind::Farewell | EndKind::Ascended)
@@ -785,16 +740,16 @@ impl Executor {
                 _ => b' ',
             };
             if key != b' ' {
-                record(view, phase, None, &[key], outcome);
+                record(view, phase, None, &[key], &mut io.outcome);
             }
-            match self.send(term, memory, &[key], outcome) {
-                Ok(_) => outcome.steps += 1,
+            match self.send(io, &[key]) {
+                Ok(_) => io.outcome.steps += 1,
                 // The game exits after its last screen; what was captured stands.
-                Err(_) if memory.end().is_some() => return Ok(Stop::GameOver),
+                Err(_) if io.memory.end().is_some() => return Ok(Stop::GameOver),
                 Err(stop) => return Err(stop),
             }
         }
-        if term.view().ended {
+        if io.term.view().ended {
             Ok(Stop::GameOver)
         } else {
             Err(Stop::Failed(format!(
@@ -827,26 +782,21 @@ fn asks(view: &View) -> bool {
 /// Records `keys` as the answer to the prompt on `view`, extending the last entry when the previous keys went to
 /// the same free-text or positioning prompt, and leaving out the earliest prompts beyond `REPORTED`.
 fn record(view: &View, phase: Phase, open: Option<Phase>, keys: &[u8], outcome: &mut Outcome) {
-    let answered = &mut outcome.answered;
     let text = strip_more(&view.msg).trim();
     let prompt = if text.is_empty() { phase.name() } else { text };
     let same = open == Some(phase)
-        && answered.last().is_some_and(|last| match phase {
+        && outcome.answered.last().is_some_and(|last| match phase {
             Phase::Text => prompt.starts_with(last.prompt.as_str()),
             _ => prompt == last.prompt,
         });
     if !same {
-        if answered.len() >= REPORTED {
-            answered.remove(0);
-            outcome.answered_left_out += 1;
-        }
-        answered.push(Answered {
+        outcome.answer(Answered {
             prompt: prompt.to_owned(),
             key: String::new(),
             text_entry: phase == Phase::Text,
         });
     }
-    if let Some(last) = answered.last_mut() {
+    if let Some(last) = outcome.answered.last_mut() {
         for &key in keys {
             escape_key(key, &mut last.key);
         }
@@ -1006,19 +956,17 @@ pub fn needs_redraw(keys: &[u8], after_run: bool, view: &View) -> bool {
         && !view.menu
 }
 
-/// The direction key a plain step into `target` takes from `level`'s memory: the `m` prefix is left off where the
-/// game checks the square first (water, lava, traps, gas) or where the pet stands, so the game's own check or
-/// swap applies.
-pub fn step_keys(level: &Level, view: &View, from: Pos, target: Pos, out: &mut Vec<u8>) -> bool {
-    let Some(key) = from.direction_to(target) else {
-        return false;
-    };
+/// The keys of a plain step from `from` into `target`, and how many there are: the direction key, after an `m`
+/// prefix except where `level`'s memory says the game checks the square first (water, lava, traps, gas) or where
+/// the pet stands, so the game's own check or swap applies.
+fn step_keys(level: &Level, view: &View, from: Pos, target: Pos) -> Option<([u8; 2], usize)> {
+    let key = from.direction_to(target)?;
     let pet = view.pet(target) && is_monster(view.ch(target));
-    if level.guarded(target).is_none() && !pet {
-        out.push(b'm');
-    }
-    out.push(key);
-    true
+    Some(if level.guarded(target).is_none() && !pet {
+        ([b'm', key], 2)
+    } else {
+        ([key, 0], 1)
+    })
 }
 
 #[cfg(test)]

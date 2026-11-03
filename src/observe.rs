@@ -6,7 +6,7 @@ use crate::glyphs::{
     trap_kind,
 };
 use crate::level::{Inspection, Level, Plus, Underfoot, plus_kind};
-use crate::screen::{EndKind, MenuEntry, Phase, View, strip_more};
+use crate::screen::{EndKind, MenuEntry, Phase, View, byte_at, strip_more};
 use crate::types::{COLS, End, Inventory, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
 
 /// Messages kept for the view.
@@ -26,56 +26,33 @@ const INVENTORY_LINES: usize = 128;
 const INVENTORY_PAGES: u32 = 64;
 
 /// The headings the game puts over each object class in an inventory menu.
+#[rustfmt::skip]
 const HEADINGS: [&str; 17] = [
-    "Illegal objects",
-    "Weapons",
-    "Armor",
-    "Rings",
-    "Amulets",
-    "Tools",
-    "Comestibles",
-    "Potions",
-    "Scrolls",
-    "Spellbooks",
-    "Wands",
-    "Coins",
-    "Gems/Stones",
-    "Boulders/Statues",
-    "Iron balls",
-    "Chains",
-    "Venoms",
+    "Illegal objects", "Weapons", "Armor", "Rings", "Amulets", "Tools", "Comestibles", "Potions", "Scrolls",
+    "Spellbooks", "Wands", "Coins", "Gems/Stones", "Boulders/Statues", "Iron balls", "Chains", "Venoms",
 ];
 
 /// How the game reports writing, adding to or wiping out the engraving under the hero.
+#[rustfmt::skip]
 const ENGRAVING_CHANGES: [&str; 10] = [
-    "You write in the ",
-    "You engrave in the ",
-    "You engrave on the ",
-    "You burn into the ",
-    "You melt into the ",
-    "You scribble on the ",
-    "You scrawl on the ",
-    "You add to the ",
-    "You wipe out the message",
+    "You write in the ", "You engrave in the ", "You engrave on the ", "You burn into the ", "You melt into the ",
+    "You scribble on the ", "You scrawl on the ", "You add to the ", "You wipe out the message",
     "The engraving now reads: ",
 ];
 
 /// The empty-inventory answer to an inventory display.
 const EMPTY_INVENTORY: &str = "Not carrying anything.";
 
-/// One message the game wrote.
+/// One message the game wrote, and the turn it appeared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
-    /// The turn it appeared.
     pub turn: Option<u32>,
-    /// Its text.
     pub text: String,
 }
 
 /// What a screen square shows, for the view and the stop rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityKind {
-    /// A monster symbol.
     Monster,
     /// `I` or a warning digit: something sensed but not seen.
     Unseen,
@@ -88,13 +65,9 @@ pub enum EntityKind {
 /// One entity in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entity {
-    /// Its square.
     pub pos: Pos,
-    /// Its glyph.
     pub glyph: char,
-    /// Its colour.
     pub shade: Shade,
-    /// What it is.
     pub kind: EntityKind,
     /// Highlighted as the hero's pet.
     pub pet: bool,
@@ -102,12 +75,10 @@ pub struct Entity {
     pub statue: bool,
 }
 
-/// Where a reading of a square came from.
+/// Where a reading of a square came from: a farlook (`;`) of another square or a look underfoot (`:`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LookSource {
-    /// A farlook (`;`) of another square.
     Farlook,
-    /// A look underfoot (`:`).
     Here,
 }
 
@@ -212,12 +183,11 @@ impl Memory {
         self.current.and_then(|i| self.levels.get(i))
     }
 
-    /// The level the hero is on, mutably.
     pub fn current_mut(&mut self) -> Option<&mut Level> {
         self.current.and_then(|i| self.levels.get_mut(i))
     }
 
-    /// How many messages have been remembered in total.
+    /// How many messages have been remembered in all.
     pub fn message_total(&self) -> u64 {
         self.message_total
     }
@@ -237,7 +207,7 @@ impl Memory {
         let mut any = false;
         let mut all = true;
         let mut count = 0;
-        for sentence in Sentences::new(strip_more(message)) {
+        for sentence in sentences(strip_more(message)) {
             count += 1;
             let about = self
                 .pets
@@ -361,12 +331,10 @@ impl Memory {
         }
     }
 
-    /// The last inventory menu the game showed.
     pub fn inventory(&self) -> Option<&Inventory> {
         self.inventory.as_ref()
     }
 
-    /// The end-of-game text captured so far.
     pub fn end(&self) -> Option<&End> {
         self.end.as_ref()
     }
@@ -438,7 +406,7 @@ impl Memory {
                 continue;
             }
             items = line == "Things that are here:";
-            for sentence in Sentences::new(line) {
+            for sentence in sentences(line) {
                 if engraving_change(sentence) {
                     self.rewritten = true;
                 } else if underfoot_sentence(sentence) {
@@ -491,12 +459,7 @@ impl Memory {
                     .push((page, format!("{} - {}", entry.key, entry.text)));
             }
         }
-        let all = if pages == 64 {
-            u64::MAX
-        } else {
-            (1u64 << pages) - 1
-        };
-        if self.inventory_pages == all {
+        if self.inventory_pages == u64::MAX >> (64 - pages) {
             self.inventory_lines.sort_by_key(|&(page, _)| page);
             let lines = self
                 .inventory_lines
@@ -799,12 +762,12 @@ fn engraving_change(sentence: &str) -> bool {
 /// heading, and lettered entries. An object prompt's listing of only the items it accepts is left out.
 fn inventory_menu(view: &View) -> bool {
     let (left, rows) = view.menu_window();
-    if before_column(&view.rows[0], left).contains("?*]") {
+    if view.rows[0][..byte_at(&view.rows[0], left)].contains("?*]") {
         return false;
     }
     let first = view.rows[..rows.min(ROWS)]
         .iter()
-        .map(|row| from_column(row, left).trim())
+        .map(|row| row[byte_at(row, left)..].trim())
         .find(|line| !line.is_empty());
     let Some(first) = first else {
         return false;
@@ -879,20 +842,6 @@ fn push_bounded(notes: &mut Vec<String>, note: &str) {
     }
 }
 
-/// The row from character column `left` on.
-fn from_column(row: &str, left: usize) -> &str {
-    row.char_indices()
-        .nth(left)
-        .map_or("", |(at, _)| &row[at..])
-}
-
-/// The row up to character column `left`.
-fn before_column(row: &str, left: usize) -> &str {
-    row.char_indices()
-        .nth(left)
-        .map_or(row, |(at, _)| &row[..at])
-}
-
 /// The text inside the last pair of parentheses holding no others: a farlook's `(floating eye)`.
 fn last_parenthesised(message: &str) -> Option<&str> {
     let mut end = message.len();
@@ -909,29 +858,16 @@ fn last_parenthesised(message: &str) -> Option<&str> {
 
 /// The sentences of a message: each ends at `.`, `!` or `?` (or a closing quote after one) followed by white
 /// space, never inside a quotation, so an engraving read-out stays whole.
-struct Sentences<'a> {
-    text: &'a str,
-    at: usize,
-}
-
-impl<'a> Sentences<'a> {
-    fn new(text: &'a str) -> Sentences<'a> {
-        Sentences { text, at: 0 }
-    }
-}
-
-impl<'a> Iterator for Sentences<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<&'a str> {
-        let rest = self.text.get(self.at..)?;
-        let trimmed = rest.trim_start();
-        if trimmed.is_empty() {
-            self.at = self.text.len();
+fn sentences(text: &str) -> impl Iterator<Item = &str> {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let rest = text.get(at..)?.trim_start();
+        if rest.is_empty() {
+            at = text.len();
             return None;
         }
-        let start = self.text.len() - trimmed.len();
-        let bytes = self.text.as_bytes();
+        let start = text.len() - rest.len();
+        let bytes = text.as_bytes();
         let mut quoted = false;
         for i in start..bytes.len() {
             let b = bytes[i];
@@ -942,13 +878,13 @@ impl<'a> Iterator for Sentences<'a> {
                 && (matches!(b, b'.' | b'!' | b'?')
                     || (b == b'"' && i > start && matches!(bytes[i - 1], b'.' | b'!' | b'?')));
             if ends && bytes.get(i + 1).is_some_and(u8::is_ascii_whitespace) {
-                self.at = i + 1;
-                return Some(&self.text[start..=i]);
+                at = i + 1;
+                return Some(&text[start..=i]);
             }
         }
-        self.at = self.text.len();
-        Some(self.text[start..].trim_end())
-    }
+        at = text.len();
+        Some(text[start..].trim_end())
+    })
 }
 
 #[cfg(test)]
@@ -1011,7 +947,7 @@ mod tests {
     fn sentences_keep_a_quoted_engraving_whole() {
         let text = "Something is written here in the dust.  You read: \"Ad aerarium. Vale!\".  \
                     You read: \"Hi!\"  You see here a dagger.";
-        let found: Vec<&str> = Sentences::new(text).collect();
+        let found: Vec<&str> = sentences(text).collect();
         assert_eq!(
             found,
             [
@@ -1021,9 +957,9 @@ mod tests {
                 "You see here a dagger.",
             ]
         );
-        assert_eq!(Sentences::new("  ").count(), 0);
+        assert_eq!(sentences("  ").count(), 0);
         assert_eq!(
-            Sentences::new("You stop. Hachi is in the way").collect::<Vec<_>>(),
+            sentences("You stop. Hachi is in the way").collect::<Vec<_>>(),
             ["You stop.", "Hachi is in the way"]
         );
     }
