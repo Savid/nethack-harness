@@ -12,7 +12,7 @@ fn every_fixture_is_taken_in() {
     let mut out = Vec::new();
     for name in fixture_names() {
         let view = load_view(&name);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&view);
         memory.ingest(&view);
         memory.entities(&view, &mut out);
@@ -30,7 +30,7 @@ fn every_fixture_is_taken_in() {
 #[test]
 fn a_bright_blue_backtick_is_an_engraving_and_any_other_a_boulder() {
     let view = load_view("seed1001-0150");
-    let mut memory = Memory::new();
+    let mut memory = Memory::default();
     memory.ingest(&view);
     let mut out = Vec::new();
     memory.entities(&view, &mut out);
@@ -44,7 +44,7 @@ fn a_bright_blue_backtick_is_an_engraving_and_any_other_a_boulder() {
 
 #[test]
 fn the_inventory_menu_is_captured() {
-    let mut memory = Memory::new();
+    let mut memory = Memory::default();
     memory.ingest(&load_view("seed4242-start"));
     memory.ingest(&load_view("seed4242-inventory"));
     let inventory = memory.inventory().cloned().unwrap_or_default();
@@ -60,7 +60,7 @@ fn the_inventory_menu_is_captured() {
 
 #[test]
 fn the_disclosure_question_begins_the_end() {
-    let mut memory = Memory::new();
+    let mut memory = Memory::default();
     memory.ingest(&load_view("seed4242-start"));
     assert!(memory.end().is_none());
     memory.ingest(&load_view("seed4242-quit"));
@@ -72,7 +72,7 @@ fn the_disclosure_question_begins_the_end() {
 
 #[test]
 fn a_farlook_of_the_pet_names_it() {
-    let mut memory = Memory::new();
+    let mut memory = Memory::default();
     let before = load_view("seed4242-start");
     memory.ingest(&before);
     let after = load_view("seed4242-farlook-more");

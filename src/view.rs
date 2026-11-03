@@ -66,11 +66,6 @@ fn nameable(entity: &Entity) -> bool {
 }
 
 impl Names {
-    /// No names.
-    pub fn new() -> Names {
-        Names::default()
-    }
-
     /// The cached name and look turn for `entity` on `level`.
     pub fn get(&self, level: u16, entity: &Entity) -> Option<(&str, u32)> {
         self.entries
@@ -218,6 +213,7 @@ struct Listed {
 }
 
 /// Renders views, reusing its route and entity buffers.
+#[derive(Default)]
 pub struct Renderer {
     paths: Paths,
     terrain_paths: Paths,
@@ -230,12 +226,6 @@ pub struct Renderer {
     occupied: SquareSet,
     listed_items: SquareSet,
     listed_level: Option<u16>,
-}
-
-impl Default for Renderer {
-    fn default() -> Renderer {
-        Renderer::new()
-    }
 }
 
 /// Whether a phase is a prompt drawn over the map.
@@ -282,38 +272,21 @@ fn plural(count: i64, word: &str, out: &mut String) {
 }
 
 impl Renderer {
-    /// A renderer with empty buffers.
-    pub fn new() -> Renderer {
-        Renderer {
-            paths: Paths::new(),
-            terrain_paths: Paths::new(),
-            entities: Vec::new(),
-            line: String::new(),
-            landmarks: Vec::new(),
-            seen: Vec::new(),
-            items: Vec::new(),
-            edges: Vec::new(),
-            occupied: SquareSet::new(),
-            listed_items: SquareSet::new(),
-            listed_level: None,
-        }
-    }
-
     /// The squares the last map view listed under `items:`, with the level they were on.
     pub fn listed_items(&self) -> Option<(u16, &SquareSet)> {
         self.listed_level.map(|level| (level, &self.listed_items))
     }
 
-    /// Writes the text view into `text` and its machine form into `facts`, replacing both. Fails with `ASCII`
-    /// when the map or a prompt screen holds non-ASCII symbols.
-    pub fn render(
-        &mut self,
-        scene: &Scene,
-        text: &mut String,
-        facts: &mut Facts,
-    ) -> Result<(), String> {
-        text.clear();
-        facts.clear();
+    /// The text view and its machine form. Fails with `ASCII` when the map or a prompt screen holds non-ASCII
+    /// symbols.
+    pub fn render(&mut self, scene: &Scene) -> Result<(String, Facts), String> {
+        let mut text = String::with_capacity(4096);
+        let mut facts = Facts::default();
+        self.write(scene, &mut text, &mut facts)?;
+        Ok((text, facts))
+    }
+
+    fn write(&mut self, scene: &Scene, text: &mut String, facts: &mut Facts) -> Result<(), String> {
         let view = scene.view;
         let phase = view.phase();
         let map_shown = phase == Phase::Play || over_map(phase);
@@ -975,7 +948,7 @@ mod tests {
     fn names_last_while_the_monster_stays_and_looks_the_same() {
         let jackal = monster(6, 36, 'd', Base::Brown);
         let newt = monster(5, 30, ':', Base::Brown);
-        let mut names = Names::new();
+        let mut names = Names::default();
         names.insert(1, &jackal, "jackal", 7);
         assert_eq!(names.get(1, &jackal), Some(("jackal", 7)));
         assert_eq!(names.get(2, &jackal), None);
@@ -1004,7 +977,7 @@ mod tests {
             ..monster(10, 41, '%', Base::Red)
         });
         entities.push(monster(10, 42, '~', Base::Red));
-        let mut names = Names::new();
+        let mut names = Names::default();
         names.insert(1, &entities[11], "jackal", 1);
         let mut out = Vec::new();
         names.unnamed(1, hero, &entities, &mut out);
@@ -1084,7 +1057,7 @@ mod tests {
     fn the_view_lists_answered_prompts_and_the_inventory() {
         let rows = screen("", &[" ------ ", " |.@..| ", " ------ "], STATUS1, STATUS2);
         let shown = view(&rows, 2, 3);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&shown);
         let answered = [
             Answered {
@@ -1098,7 +1071,7 @@ mod tests {
                 text_entry: true,
             },
         ];
-        let names = Names::new();
+        let names = Names::default();
         let scene = Scene {
             view: &shown,
             memory: &memory,
@@ -1107,11 +1080,7 @@ mod tests {
             report: None,
             answered: &answered,
         };
-        let mut text = String::new();
-        let mut facts = Facts::default();
-        Renderer::new()
-            .render(&scene, &mut text, &mut facts)
-            .unwrap();
+        let (text, _) = Renderer::default().render(&scene).unwrap();
         assert_eq!(
             text.lines().last(),
             Some(

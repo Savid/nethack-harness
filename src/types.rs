@@ -479,33 +479,6 @@ pub struct Facts {
     pub end: Option<End>,
 }
 
-impl Facts {
-    /// Empties every field, keeping allocated capacity.
-    pub fn clear(&mut self) {
-        self.dlvl = None;
-        self.turn = None;
-        self.hp = None;
-        self.hpmax = None;
-        self.xl = None;
-        self.ac = None;
-        self.hunger = None;
-        self.pos = None;
-        self.here = None;
-        self.prompt = None;
-        self.msgs.clear();
-        self.monsters.clear();
-        self.items.clear();
-        self.seen.clear();
-        self.frontier.clear();
-        self.stairs_down = None;
-        self.stairs_up = None;
-        self.inventory = None;
-        self.report = None;
-        self.answered.clear();
-        self.end = None;
-    }
-}
-
 /// A monster in view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Monster {

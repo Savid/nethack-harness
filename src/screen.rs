@@ -601,11 +601,6 @@ pub struct PromptContext {
 }
 
 impl PromptContext {
-    /// No positioning prompt open.
-    pub fn new() -> PromptContext {
-        PromptContext::default()
-    }
-
     /// Forgets any open positioning prompt.
     pub fn reset(&mut self) {
         self.position = false;
@@ -1453,7 +1448,7 @@ mod tests {
 
     #[test]
     fn descriptions_keep_targeting_until_confirmation() {
-        let mut context = PromptContext::new();
+        let mut context = PromptContext::default();
         let mut v = view(&scr("Move cursor to the desired position:", &[]));
         context.observe(&mut v);
         assert!(context.position);
@@ -1470,7 +1465,7 @@ mod tests {
     }
 
     fn targeting() -> (PromptContext, View) {
-        let mut context = PromptContext::new();
+        let mut context = PromptContext::default();
         let mut v = view(&scr("Move cursor to the desired position:", &[]));
         context.observe(&mut v);
         (context, v)
@@ -1542,7 +1537,7 @@ mod tests {
             "floor of a room [03,05]",
             &[" ---- ", " |.@.| ", " ---- "],
         ));
-        PromptContext::new().observe(&mut v);
+        PromptContext::default().observe(&mut v);
         assert_eq!(v.phase(), Phase::Play);
     }
 

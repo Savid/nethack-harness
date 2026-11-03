@@ -55,7 +55,7 @@ impl ScriptedTerm {
             views,
             sent: Vec::new(),
             failures: Vec::new(),
-            prompts: PromptContext::new(),
+            prompts: PromptContext::default(),
         }
     }
 }

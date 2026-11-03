@@ -129,7 +129,7 @@ impl FixtureTerm {
     pub fn new(view: View) -> FixtureTerm {
         FixtureTerm {
             view,
-            prompts: PromptContext::new(),
+            prompts: PromptContext::default(),
         }
     }
 }

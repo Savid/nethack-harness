@@ -713,7 +713,7 @@ impl Term {
         Term {
             link: Link::new(path),
             vt,
-            prompts: PromptContext::new(),
+            prompts: PromptContext::default(),
             view,
             deadline: None,
         }

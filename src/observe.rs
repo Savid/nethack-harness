@@ -130,10 +130,11 @@ struct StairLink {
 }
 
 /// Memory across screens: levels, messages, notes, pets, inventory and the end of the game.
+#[derive(Default)]
 pub struct Memory {
     levels: Vec<Level>,
-    /// The id the next new level gets.
-    next_id: u16,
+    /// The id of the last level added.
+    last_id: u16,
     current: Option<usize>,
     links: Vec<StairLink>,
     /// The level and square the hero was last seen on in normal play.
@@ -169,46 +170,7 @@ pub struct Memory {
     end_window: bool,
 }
 
-impl Default for Memory {
-    fn default() -> Memory {
-        Memory::new()
-    }
-}
-
 impl Memory {
-    /// Nothing remembered.
-    pub fn new() -> Memory {
-        Memory {
-            levels: Vec::new(),
-            next_id: 1,
-            current: None,
-            links: Vec::new(),
-            origin: None,
-            visit: None,
-            turn: None,
-            messages: [const { None }; MESSAGES],
-            message_total: 0,
-            aside: false,
-            aside_message: None,
-            notes: Vec::new(),
-            reading: Vec::new(),
-            noted: Vec::new(),
-            window: Vec::new(),
-            rewritten: false,
-            pets: Vec::new(),
-            inventory: None,
-            reading_inventory: false,
-            inventory_pages: 0,
-            inventory_total: 0,
-            inventory_turn: None,
-            inventory_lines: Vec::new(),
-            entries: Vec::new(),
-            end: None,
-            end_screen: None,
-            end_window: false,
-        }
-    }
-
     /// Takes in a screen: messages, notes, inventory and end text always; level identity, terrain, underfoot
     /// notes and visits when the map is shown. A level change is a new status-line location, and it reconnects a
     /// known level when the hero left from, or arrives on or beside, a stair glyph matching a known stair link.
@@ -709,8 +671,8 @@ impl Memory {
     /// Adds a new level labelled `label` and returns its index. Beyond `LEVELS_PER_LABEL` levels with that label,
     /// the oldest that is not the current level is replaced, with the stair links that lead to or from it.
     fn add_level(&mut self, label: &str) -> usize {
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+        self.last_id = self.last_id.saturating_add(1);
+        let id = self.last_id;
         let mut same = self
             .levels
             .iter()
@@ -1127,7 +1089,7 @@ mod tests {
 
     #[test]
     fn messages_are_kept_in_a_ring_without_repeats() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         for n in 0..30 {
             let screen = room(&format!("Message {n}"), 400 + n);
             memory.ingest(&screen);
@@ -1146,7 +1108,7 @@ mod tests {
 
     #[test]
     fn answers_shown_aside_are_not_remembered() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("You hit the jackal.", 400));
         memory.set_aside(true);
         memory.ingest(&room("e  a floating eye (floating eye)", 400));
@@ -1160,7 +1122,7 @@ mod tests {
 
     #[test]
     fn engraving_read_outs_are_kept_underfoot_and_a_newer_one_replaces_the_old() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         memory.ingest(&room(
             "Something is written here in the dust.  You read: \"Elbereth\".",
@@ -1189,7 +1151,7 @@ mod tests {
 
     #[test]
     fn writing_or_wiping_an_engraving_drops_the_old_reading() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         memory.ingest(&room(
             "Something is written here in the dust.  You read: \"Elbereth\".",
@@ -1209,7 +1171,7 @@ mod tests {
 
     #[test]
     fn a_look_underfoot_replaces_what_was_remembered_there() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         let before = room("", 400);
         memory.ingest(&before);
         memory.ingest(&room(
@@ -1245,7 +1207,7 @@ mod tests {
 
     #[test]
     fn what_the_game_says_is_underfoot_is_kept_for_that_square() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&map("", &ROOM, 2, 3));
         memory.ingest(&map(
             "There is a staircase down here.  You see here a dagger.",
@@ -1274,7 +1236,7 @@ mod tests {
     #[test]
     fn a_trap_reported_by_a_message_is_remembered_where_the_hero_stands() {
         let rows = [" ------- ", " |.@...| ", " ------- "];
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&map("", &rows, 2, 3));
         memory.ingest(&map(
             "A little dart shoots out at you!  You are hit by a little dart.",
@@ -1286,7 +1248,7 @@ mod tests {
         assert_eq!(level.and_then(|l| l.terrain(HERO)), Some('^'));
         assert_eq!(level.and_then(|l| l.kind(HERO)), Some("dart trap"));
 
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&map("", &rows, 2, 3));
         memory.ingest(&map("There is a dart trap here.--More--", &[], 0, 34));
         memory.ingest(&map("", &rows, 2, 3));
@@ -1302,7 +1264,7 @@ mod tests {
 
     #[test]
     fn an_inventory_menu_is_captured_whoever_opened_it() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         let menu = [
             format!("{:24}a - a pair of gloves", ""),
@@ -1332,7 +1294,7 @@ mod tests {
 
     #[test]
     fn an_inventory_is_kept_only_once_every_page_was_shown() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         let first = map("Weapons", &[" a - a dagger", " (1 of 2)"], 2, 10);
         let second = map("Comestibles", &[" b - an apple", " (2 of 2)"], 2, 10);
@@ -1363,7 +1325,7 @@ mod tests {
 
     #[test]
     fn a_menu_of_other_things_is_not_an_inventory() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         memory.ingest(&map(
             "Pick up what?",
@@ -1414,7 +1376,7 @@ mod tests {
 
     #[test]
     fn the_end_of_the_game_is_captured_verbatim() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 399));
         memory.ingest(&map_at(
             "The jackal bites!  You die...--More--",
@@ -1467,7 +1429,7 @@ mod tests {
 
     #[test]
     fn without_a_tombstone_the_summary_line_names_the_end() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         let mut rows = vec![String::new(); ROWS];
         rows[0] = "Goodbye Hero the Stripling...".to_owned();
@@ -1489,7 +1451,7 @@ mod tests {
         let upper = [" -------- ", " |..{@>.| ", " -------- "];
         let on_stairs = [" -------- ", " |..{.@.| ", " -------- "];
         let lower = [" ---- ", " |.@.| ", " ---- "];
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&map_at("", &upper, "Dlvl:3", 400, 2, 5));
         let leaving = map_at("", &on_stairs, "Dlvl:3", 401, 2, 6);
         memory.ingest(&leaving);
@@ -1517,7 +1479,7 @@ mod tests {
         let lower = [" ------ ", " |.@<.| ", " ------ "];
         let on_up = [" ------ ", " |..@.| ", " ------ "];
         let back = [" -------- ", " |....@.| ", " -------- "];
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&map_at("", &upper, "Dlvl:3", 400, 2, 2));
         memory.ingest(&map_at(
             "There's a trap door here.",
@@ -1536,7 +1498,7 @@ mod tests {
     #[test]
     fn a_new_location_reached_without_stairs_is_a_new_level() {
         let room3 = [" ------- ", " |.@...| ", " ------- "];
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&map_at("", &room3, "Dlvl:3", 400, 2, 3));
         memory.ingest(&map_at("", &room3, "Dlvl:5", 401, 2, 3));
         memory.ingest(&map_at("", &room3, "Dlvl:3", 402, 2, 3));
@@ -1546,7 +1508,7 @@ mod tests {
     #[test]
     fn arrivals_no_stair_connects_keep_a_bounded_number_of_levels() {
         let room = [" ------- ", " |.@...| ", " ------- "];
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         for turn in 0..200 {
             let label = if turn % 2 == 0 { "Dlvl:3" } else { "Dlvl:4" };
             memory.ingest(&map_at("", &room, label, 400 + turn, 2, 3));
@@ -1560,7 +1522,7 @@ mod tests {
 
     #[test]
     fn each_location_is_its_own_level_and_prompts_keep_the_current_one() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         let prompt = map("Really attack the peaceful gnome? [yn] (n)", &[], 0, 40);
         memory.ingest(&prompt);
         assert!(memory.current().is_none());
@@ -1597,7 +1559,7 @@ mod tests {
             3,
         );
         assert!(swallowed.engulfed);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&swallowed);
         assert_eq!(memory.current().map(|l| l.known().count()), Some(0));
         let mut out = Vec::new();
@@ -1642,7 +1604,7 @@ mod tests {
             2,
             3,
         );
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&shown);
         let mut out = Vec::new();
         memory.entities(&shown, &mut out);
@@ -1666,7 +1628,7 @@ mod tests {
     fn a_spellbook_on_the_floor_is_an_object_and_a_door_in_a_wall_is_not() {
         let rows = [" ---+--- ", " |.@.+.| ", " |.....| ", " ------- "];
         let shown = map("", &rows, 2, 3);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&shown);
         let mut out = Vec::new();
         memory.entities(&shown, &mut out);
@@ -1678,7 +1640,7 @@ mod tests {
     fn a_farlook_records_its_description_and_an_interrupted_one_does_not() {
         let rows = [" ------- ", " |.@e..| ", " ------- "];
         let target = Pos::new(2, 4);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         let before = map("", &rows, 2, 3);
         memory.ingest(&before);
         let interrupted = map("Pick a monster, object or location.--More--", &[], 0, 50);
@@ -1702,7 +1664,7 @@ mod tests {
     fn a_farlooked_statue_is_an_object_and_tame_names_identify_the_pet() {
         let rows = [" ------- ", " |.@.d.| ", " ------- "];
         let target = Pos::new(2, 5);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         let before = map("", &rows, 2, 3);
         memory.ingest(&before);
         memory.remember_look(
@@ -1734,7 +1696,7 @@ mod tests {
 
     #[test]
     fn a_square_is_visited_once_per_turn() {
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(&room("", 400));
         memory.ingest(&room("", 400));
         memory.ingest(&room("You hear a door open.", 400));
@@ -1744,8 +1706,8 @@ mod tests {
 
     #[test]
     fn a_targeting_cursor_does_not_update_the_map_or_visits() {
-        let mut memory = Memory::new();
-        let mut prompts = PromptContext::new();
+        let mut memory = Memory::default();
+        let mut prompts = PromptContext::default();
         let mut first = map("", &ROOM, 2, 3);
         prompts.observe(&mut first);
         memory.ingest(&first);

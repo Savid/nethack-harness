@@ -91,9 +91,10 @@ impl Changed {
 }
 
 /// Why an action ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Stop {
     /// It did everything asked.
+    #[default]
     Completed,
     /// It took its most steps.
     StepLimit,
@@ -138,7 +139,7 @@ pub struct Arrival {
 }
 
 /// What an action did.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     /// Why it ended.
     pub stop: Stop,
@@ -162,21 +163,6 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// An empty outcome that completed.
-    pub fn new() -> Outcome {
-        Outcome {
-            stop: Stop::Completed,
-            changed: Changed::default(),
-            arrival: None,
-            steps: 0,
-            turns: None,
-            messages: Vec::new(),
-            answered: Vec::new(),
-            messages_left_out: 0,
-            answered_left_out: 0,
-        }
-    }
-
     /// Adds a message line, leaving out the earliest beyond `REPORTED`.
     fn message(&mut self, text: String) {
         if self.messages.len() >= REPORTED {
@@ -184,12 +170,6 @@ impl Outcome {
             self.messages_left_out += 1;
         }
         self.messages.push(text);
-    }
-}
-
-impl Default for Outcome {
-    fn default() -> Outcome {
-        Outcome::new()
     }
 }
 
@@ -278,7 +258,7 @@ impl Executor {
         memory: &mut Memory,
         action: &Action,
     ) -> Outcome {
-        let mut outcome = Outcome::new();
+        let mut outcome = Outcome::default();
         let aside = matches!(action.kind, Kind::Farlook | Kind::LookHere);
         if aside {
             memory.set_aside(true);
@@ -315,7 +295,7 @@ impl Executor {
     /// tombstone or the farewell is captured into `memory`. Each question answered is recorded. A game that goes
     /// on (life saving) completes.
     pub fn finish_game(&mut self, term: &mut dyn Terminal, memory: &mut Memory) -> Outcome {
-        let mut outcome = Outcome::new();
+        let mut outcome = Outcome::default();
         outcome.stop = match self.finish(term, memory, &mut outcome) {
             Ok(stop) | Err(stop) => stop,
         };
@@ -944,39 +924,13 @@ fn dropped(before: Option<i32>, after: Option<i32>) -> bool {
 
 /// Whether any status field other than turn, HP and Pw differs.
 fn status_moved(a: &Status, b: &Status) -> bool {
-    let Status {
-        location,
-        dlvl,
-        gold,
-        hp: _,
-        hpmax,
-        pw: _,
-        pwmax,
-        ac,
-        xl,
-        turn: _,
-        strength,
-        dex,
-        con,
-        int,
-        wis,
-        cha,
-        alignment,
-    } = a;
-    *location != b.location
-        || *dlvl != b.dlvl
-        || *gold != b.gold
-        || *hpmax != b.hpmax
-        || *pwmax != b.pwmax
-        || *ac != b.ac
-        || *xl != b.xl
-        || *strength != b.strength
-        || *dex != b.dex
-        || *con != b.con
-        || *int != b.int
-        || *wis != b.wis
-        || *cha != b.cha
-        || *alignment != b.alignment
+    let rest = |s: &Status| Status {
+        hp: None,
+        pw: None,
+        turn: None,
+        ..s.clone()
+    };
+    rest(a) != rest(b)
 }
 
 /// A remembered feature or `+`, or `None` for other terrain.
@@ -1214,7 +1168,7 @@ mod tests {
 
     fn start(views: Vec<View>) -> (ScriptedTerm, Memory) {
         let term = ScriptedTerm::new(views);
-        let mut memory = Memory::new();
+        let mut memory = Memory::default();
         memory.ingest(term.view());
         (term, memory)
     }

@@ -164,7 +164,7 @@ fn look_in_process() {
         let mut play = Play::new(
             StillTerm {
                 view: view.clone(),
-                prompts: PromptContext::new(),
+                prompts: PromptContext::default(),
             },
             64,
         );

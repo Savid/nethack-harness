@@ -5,7 +5,7 @@ use crate::level::{Paths, Underfoot, door_sides};
 use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::Phase;
-use crate::types::{Answered, ExitCode, Facts, Pos, Reply, Report, SquareSet};
+use crate::types::{Answered, ExitCode, Pos, Reply, Report, SquareSet};
 use crate::view::{LISTED, Landmark, Names, Renderer, Scene, landmarks};
 
 /// Most keys one `send` takes.
@@ -48,8 +48,6 @@ pub struct Play<T: Terminal> {
     occupied: SquareSet,
     answered: Vec<Answered>,
     last: Option<Last>,
-    text: String,
-    facts: Facts,
 }
 
 /// The phrase for each changed observation, in the order a report lists them.
@@ -82,10 +80,10 @@ impl<T: Terminal> Play<T> {
     pub fn new(term: T, max_steps: u32) -> Play<T> {
         Play {
             term,
-            memory: Memory::new(),
+            memory: Memory::default(),
             exec: Executor::new(),
-            names: Names::new(),
-            renderer: Renderer::new(),
+            names: Names::default(),
+            renderer: Renderer::default(),
             paths: Paths::new(),
             terrain_paths: Paths::new(),
             fresh: Vec::new(),
@@ -102,8 +100,6 @@ impl<T: Terminal> Play<T> {
             occupied: SquareSet::new(),
             answered: Vec::new(),
             last: None,
-            text: String::new(),
-            facts: Facts::default(),
         }
     }
 
@@ -578,9 +574,7 @@ impl<T: Terminal> Play<T> {
             report: report.as_ref(),
             answered: &self.answered,
         };
-        let rendered = self
-            .renderer
-            .render(&scene, &mut self.text, &mut self.facts);
+        let rendered = self.renderer.render(&scene);
         self.fresh.clear();
         self.answered.clear();
         if let Some((level, items)) = self.renderer.listed_items() {
@@ -588,11 +582,7 @@ impl<T: Terminal> Play<T> {
             self.items_level = Some(level);
         }
         match rendered {
-            Ok(()) => Reply {
-                code,
-                text: std::mem::take(&mut self.text),
-                facts: std::mem::take(&mut self.facts),
-            },
+            Ok((text, facts)) => Reply { code, text, facts },
             Err(message) => Reply::message(
                 if code == ExitCode::Done {
                     ExitCode::Failed
@@ -1585,7 +1575,7 @@ mod tests {
             }),
             steps: 3,
             turns: Some(3),
-            ..Outcome::new()
+            ..Outcome::default()
         };
         let report = play.report("rest 20", &outcome);
         assert!(!report.done);

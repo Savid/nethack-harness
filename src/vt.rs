@@ -133,19 +133,7 @@ impl Vt {
 
     /// Clears the screen and all parser state, as after a terminal reset.
     pub fn reset(&mut self) {
-        self.grid = Grid::new();
-        self.cursor = Pos::new(0, 0);
-        self.attr = Attr::default();
-        self.top = 0;
-        self.bottom = (ROWS - 1) as u8;
-        self.wrap = false;
-        self.saved = (Pos::new(0, 0), Attr::default());
-        self.dec = false;
-        self.escaping = false;
-        self.esc_len = 0;
-        self.utf8_len = 0;
-        self.complete = false;
-        self.touched = ALL_ROWS;
+        *self = Vt::new();
     }
 
     /// Interprets terminal output. UTF-8 split across calls is carried over; invalid UTF-8 becomes U+FFFD.
