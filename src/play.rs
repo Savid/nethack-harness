@@ -6,7 +6,7 @@ use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, strip_more};
 use crate::types::{Answered, ExitCode, Pos, Reply, Report, SquareSet};
-use crate::view::{LISTED, Landmark, Names, Renderer, Scene, landmarks};
+use crate::view::{Landmark, Names, Renderer, Scene, landmarks};
 
 /// Most keys one `send` takes.
 pub const KEYS_MAX: usize = 256;
@@ -257,127 +257,59 @@ impl<T: Terminal> Play<T> {
         Ok(())
     }
 
-    /// Why no known route reaches `target`, from remembered facts.
+    /// Why no known route reaches `target`: the monsters standing on every route over terrain, the target never
+    /// seen, or no route at all.
     pub fn unreachable(&mut self, target: &str, places: &[Landmark]) -> String {
         self.route_from_hero();
-        let Some(level) = self.memory.current() else {
-            return format!("no known route to {target}");
+        let frontier = target.trim().eq_ignore_ascii_case("frontier");
+        let none = if frontier {
+            "no reachable known square borders unexplored ones".to_owned()
+        } else {
+            format!("no known route to {target}")
         };
-        let Some(hero) = self.term.view().hero else {
-            return format!("no known route to {target}");
+        let (Some(level), Some(hero)) = (self.memory.current(), self.term.view().hero) else {
+            return none;
         };
         level.paths(hero, &SquareSet::new(), &mut self.terrain_paths);
         let mut blockers = SquareSet::new();
-        for place in places {
-            for &goal in place.goals.as_slice() {
-                if self.terrain_paths.route(goal, &mut self.route) {
-                    for &q in &self.route {
-                        if self.occupied.contains(q) {
-                            blockers.insert(q);
-                        }
+        let goals: Vec<Pos> = if frontier {
+            let reached = self.terrain_paths.reached();
+            reached.iter().filter(|&p| level.frontier(p)).collect()
+        } else {
+            places
+                .iter()
+                .flat_map(|place| place.goals.as_slice().to_vec())
+                .collect()
+        };
+        for goal in goals {
+            if self.terrain_paths.route(goal, &mut self.route) {
+                for &q in &self.route {
+                    if self.occupied.contains(q) {
+                        blockers.insert(q);
                     }
                 }
             }
         }
         if !blockers.is_empty() {
             let mut text = format!("the known route to {target} is blocked by a monster at ");
-            join(blockers.iter().take(3), " or ", &mut text);
+            for (i, p) in blockers.iter().take(3).enumerate() {
+                if i > 0 {
+                    text.push_str(" or ");
+                }
+                text.push_str(&p.to_string());
+            }
             return text;
         }
-        if let [place] = places
-            && place.label == "chosen square"
-        {
-            return if level.terrain(place.pos).is_none()
-                && !level.object_squares.contains(place.pos)
+        match places {
+            [place]
+                if place.label == "chosen square"
+                    && level.terrain(place.pos).is_none()
+                    && !level.object_squares.contains(place.pos) =>
             {
                 format!("{target} has not been seen")
-            } else {
-                format!("no known route to {target}")
-            };
-        }
-        if !target.trim().eq_ignore_ascii_case("frontier") {
-            return format!("no known route to {target}");
-        }
-        let mut facts = String::from("no reachable known square borders unexplored ones");
-        landmarks(level, &self.entities, &mut self.landmarks);
-        let mut doors = 0;
-        for place in &self.landmarks {
-            if place.label != "door" && place.label != "door or object" {
-                continue;
             }
-            if doors == LISTED {
-                break;
-            }
-            facts.push_str(if doors == 0 { "; doors: " } else { ", " });
-            doors += 1;
-            facts.push_str(&place.pos.to_string());
-            if place.label != "door" {
-                facts.push(' ');
-                facts.push_str(&place.label);
-            }
-            match place
-                .goals
-                .as_slice()
-                .iter()
-                .filter_map(|&goal| self.terrain_paths.distance(goal))
-                .min()
-            {
-                Some(steps) => facts.push_str(&format!(" ({steps})")),
-                None => facts.push_str(" (no route)"),
-            }
+            _ => none,
         }
-        let mut blocking = SquareSet::new();
-        for p in self.terrain_paths.reached().iter() {
-            if level.frontier(p) && self.terrain_paths.route(p, &mut self.route) {
-                for &q in &self.route {
-                    if self.occupied.contains(q) {
-                        blocking.insert(q);
-                    }
-                }
-            }
-        }
-        let mut monsters: Vec<Pos> = blocking.iter().collect();
-        monsters.extend(
-            self.occupied
-                .iter()
-                .filter(|&q| level.terrain(q).is_none() && !blocking.contains(q)),
-        );
-        if !monsters.is_empty() {
-            facts.push_str("; monsters in the way or on unexplored squares: ");
-            join(monsters.iter().copied().take(3), ", ", &mut facts);
-        }
-        let mut boulders = self
-            .entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Object && matches!(e.glyph, '0' | '`'))
-            .take(LISTED)
-            .peekable();
-        if boulders.peek().is_some() {
-            facts.push_str("; boulders: ");
-            for (i, boulder) in boulders.enumerate() {
-                if i > 0 {
-                    facts.push_str(", ");
-                }
-                facts.push_str(&format!("{} {}", boulder.glyph, boulder.pos));
-            }
-        }
-        let mut ends = level
-            .visits
-            .keys()
-            .filter(|&&p| level.corridor(p) && level.corridor_links(p).len() <= 1)
-            .take(LISTED)
-            .peekable();
-        if ends.peek().is_some() {
-            facts.push_str("; corridor ends: ");
-            for (i, &p) in ends.enumerate() {
-                if i > 0 {
-                    facts.push_str(", ");
-                }
-                let searched = level.searches.get(&p).copied().unwrap_or(0);
-                facts.push_str(&format!("{p} (searched {searched})"));
-            }
-        }
-        facts
     }
 
     /// The report for `outcome` of the command labelled `verb`.
@@ -746,16 +678,6 @@ fn refused_search(kind: Kind, outcome: &Outcome) -> bool {
             Stop::Changed => outcome.changed == exec::Changed::MESSAGE,
             _ => false,
         }
-}
-
-/// Appends squares joined by `separator`.
-fn join(squares: impl Iterator<Item = Pos>, separator: &str, out: &mut String) {
-    for (i, p) in squares.enumerate() {
-        if i > 0 {
-            out.push_str(separator);
-        }
-        out.push_str(&p.to_string());
-    }
 }
 
 #[cfg(test)]
@@ -1294,28 +1216,33 @@ mod tests {
         play.rest(2);
         let reply = play.go("frontier");
         assert_eq!(reply.code, ExitCode::Failed);
-        assert!(
-            reply
-                .text
-                .ends_with("corridor ends: 3,2 (searched 0), 5,4 (searched 2)"),
-            "{}",
-            reply.text
+        assert_eq!(
+            reply.text,
+            "no reachable known square borders unexplored ones"
         );
     }
 
     #[test]
-    fn no_frontier_lists_what_remains() {
-        // The + at 8,4 is in no wall line the screen shows and on no known floor: a door or an object.
-        let rows = [" -----", " |...|", " |.@.+", " |...|  +", " -----"];
+    fn no_frontier_says_so_or_names_the_monster_in_the_way() {
+        let rows = [" -----", " |...|", " |.@.+", " |...|", " -----"];
         let mut play = play(vec![text("", &rows, 3, 3)]);
         play.show();
         let reply = play.go("frontier");
-        assert!(
-            reply
-                .text
-                .contains("doors: 5,3 (1), 8,4 door or object (no route)"),
-            "{}",
-            reply.text
+        assert_eq!(reply.code, ExitCode::Failed);
+        assert_eq!(
+            reply.text,
+            "no reachable known square borders unexplored ones"
+        );
+        // The jackal stands in the doorway the hero saw empty a turn before.
+        let empty = [" -----", " |...|", " |.@..####", " |...|", " -----"];
+        let rows = [" -----", " |...|", " |.@.d####", " |...|", " -----"];
+        let mut blocked = Play::new(ScriptedTerm::new(vec![text("", &rows, 3, 3)]), 8);
+        blocked.memory.ingest(&text("", &empty, 3, 3));
+        blocked.show();
+        let reply = blocked.go("frontier");
+        assert_eq!(
+            reply.text,
+            "the known route to frontier is blocked by a monster at 5,3"
         );
     }
 

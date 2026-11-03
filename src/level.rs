@@ -177,8 +177,6 @@ pub struct Level {
     pub engravings: SquareSet,
     /// Times the hero stood on each square, counted once per turn.
     pub visits: BTreeMap<Pos, u32>,
-    /// Searches made from each square.
-    pub searches: BTreeMap<Pos, u32>,
     /// Farlook and `:` readings by square.
     pub inspections: BTreeMap<Pos, Inspection>,
     /// Trap names learned from messages, by square.
@@ -208,7 +206,6 @@ impl Level {
             open_doors: SquareSet::new(),
             engravings: SquareSet::new(),
             visits: BTreeMap::new(),
-            searches: BTreeMap::new(),
             inspections: BTreeMap::new(),
             trap_kinds: BTreeMap::new(),
             statues: BTreeMap::new(),

@@ -561,7 +561,6 @@ impl Executor {
             let origin = view.hero;
             let (prior, prior_turn) = (view.fingerprint(), view.status.turn);
             let (prior_hp, prior_pw) = (view.status.hp, view.status.pw);
-            let prior_engulfed = view.engulfed;
             let mut buf = [0u8; 2];
             let mut target = None;
             let keys: &[u8] = if moving {
@@ -610,12 +609,6 @@ impl Executor {
                 news |= self.send(term, memory, keys, outcome)?;
                 outcome.steps += 1;
                 news |= self.page(term, memory, outcome)?;
-            }
-            if repeat
-                && !prior_engulfed
-                && let (Some(from), Some(level)) = (origin, memory.current_mut())
-            {
-                *level.searches.entry(from).or_insert(0) += 1;
             }
             let view = term.view();
             if view.ended {
@@ -1472,8 +1465,6 @@ mod tests {
         let outcome = Executor::new().run(&mut term, &mut memory, &search(4));
         assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 4));
         assert_eq!(sent(&term), ["s", "s", "s", "s"]);
-        let level = memory.current().expect("a level");
-        assert_eq!(level.searches.get(&Pos::new(2, 3)), Some(&4));
     }
 
     #[test]
@@ -1498,21 +1489,6 @@ mod tests {
         assert_eq!(
             (outcome.stop, outcome.steps),
             (Stop::NoEffect, IDLE_SEARCHES)
-        );
-    }
-
-    #[test]
-    fn a_search_while_engulfed_credits_no_square() {
-        let inside = ["  /-\\", "  |@|", "  \\-/"].map(str::to_owned);
-        let before = shown(&lines("You are swallowed!", &inside, 12, 400), (2, 3));
-        let after = shown(&lines("You are swallowed!", &inside, 12, 401), (2, 3));
-        let (mut term, mut memory) = start(vec![before, after]);
-        let outcome = Executor::new().run(&mut term, &mut memory, &search(1));
-        assert_eq!((sent(&term), outcome.steps), (vec!["s".to_owned()], 1));
-        assert!(
-            memory
-                .current()
-                .is_none_or(|level| level.searches.is_empty())
         );
     }
 
