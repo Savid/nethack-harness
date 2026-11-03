@@ -12,6 +12,9 @@ pub const MESSAGES: usize = 20;
 const NOTES: usize = 32;
 /// Most tame names remembered; the oldest is forgotten beyond this.
 const PETS: usize = 16;
+/// Most levels remembered under one location label: branches share dungeon level numbers, and arrivals that no
+/// stair connects (a trap door, a level teleport) start a new copy; the oldest copy beyond this is forgotten.
+const LEVELS_PER_LABEL: usize = 3;
 /// Most end-of-game lines kept.
 const END_LINES: usize = 64;
 /// Most inventory lines kept from one menu.
@@ -129,6 +132,8 @@ struct StairLink {
 /// Memory across screens: levels, messages, notes, pets, inventory and the end of the game.
 pub struct Memory {
     levels: Vec<Level>,
+    /// The id the next new level gets.
+    next_id: u16,
     current: Option<usize>,
     links: Vec<StairLink>,
     /// The level and square the hero was last seen on in normal play.
@@ -175,6 +180,7 @@ impl Memory {
     pub fn new() -> Memory {
         Memory {
             levels: Vec::new(),
+            next_id: 1,
             current: None,
             links: Vec::new(),
             origin: None,
@@ -680,12 +686,7 @@ impl Memory {
         }
         let index = match found {
             Some(index) => index,
-            None => {
-                let index = self.levels.len();
-                let id = u16::try_from(index + 1).unwrap_or(u16::MAX);
-                self.levels.push(Level::new(id, label));
-                index
-            }
+            None => self.add_level(label),
         };
         self.current = Some(index);
         if let (Some((old, at)), true) = (from, stairs) {
@@ -701,6 +702,36 @@ impl Memory {
                     to: index,
                     arrival: hero,
                 }),
+            }
+        }
+    }
+
+    /// Adds a new level labelled `label` and returns its index. Beyond `LEVELS_PER_LABEL` levels with that label,
+    /// the oldest that is not the current level is replaced, with the stair links that lead to or from it.
+    fn add_level(&mut self, label: &str) -> usize {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let mut same = self
+            .levels
+            .iter()
+            .enumerate()
+            .filter(|&(i, level)| level.label == label && Some(i) != self.current);
+        let oldest = same
+            .clone()
+            .min_by_key(|(_, level)| level.id)
+            .map(|(i, _)| i);
+        match oldest {
+            Some(index) if same.nth(LEVELS_PER_LABEL - 1).is_some() => {
+                self.links.retain(|l| l.from != index && l.to != index);
+                if self.origin.is_some_and(|(i, _)| i == index) {
+                    self.origin = None;
+                }
+                self.levels[index] = Level::new(id, label);
+                index
+            }
+            _ => {
+                self.levels.push(Level::new(id, label));
+                self.levels.len() - 1
             }
         }
     }
@@ -1510,6 +1541,21 @@ mod tests {
         memory.ingest(&map_at("", &room3, "Dlvl:5", 401, 2, 3));
         memory.ingest(&map_at("", &room3, "Dlvl:3", 402, 2, 3));
         assert_eq!(level_id(&memory), Some(3));
+    }
+
+    #[test]
+    fn arrivals_no_stair_connects_keep_a_bounded_number_of_levels() {
+        let room = [" ------- ", " |.@...| ", " ------- "];
+        let mut memory = Memory::new();
+        for turn in 0..200 {
+            let label = if turn % 2 == 0 { "Dlvl:3" } else { "Dlvl:4" };
+            memory.ingest(&map_at("", &room, label, 400 + turn, 2, 3));
+        }
+        assert_eq!(memory.levels.len(), 2 * LEVELS_PER_LABEL);
+        assert_eq!(level_id(&memory), Some(200));
+        let mut ids: Vec<u16> = memory.levels.iter().map(|l| l.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [195, 196, 197, 198, 199, 200]);
     }
 
     #[test]
