@@ -505,8 +505,21 @@ impl<T: Terminal> Play<T> {
         });
         let mut outcome = self.exec.run(&mut self.term, &mut self.memory, action);
         self.fresh.clear();
+        if outcome.messages_left_out > 0 {
+            self.fresh.push(format!(
+                "({} earlier lines left out)",
+                outcome.messages_left_out
+            ));
+        }
         self.fresh.append(&mut outcome.messages);
         self.answered.clear();
+        if outcome.answered_left_out > 0 {
+            self.answered.push(Answered {
+                prompt: format!("{} earlier prompts left out", outcome.answered_left_out),
+                key: String::new(),
+                text_entry: false,
+            });
+        }
         self.answered.append(&mut outcome.answered);
         self.reported = self.memory.message_total();
         let report = self.report(verb, &outcome);

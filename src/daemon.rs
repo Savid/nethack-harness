@@ -5,10 +5,12 @@
 //! Request: `{"cmd": "look"|"send"|"go"|"rest"|"stop", "keys"?: str, "target"?: str, "count"?: u32}`; `keys` uses
 //! the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
 
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::fs::{File, OpenOptions, Permissions};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,8 +20,12 @@ use crate::types::{ExitCode, Reply, unescape};
 
 /// Longest request line accepted, in bytes.
 pub const REQUEST_MAX: usize = 4096;
-/// Longest the daemon waits on one client to send its request or take its reply.
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest a `go` target, in bytes.
+pub const TARGET_MAX: usize = 64;
+/// Longest the daemon waits on one client to send its whole request, and again to take its whole reply.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Longest one command keeps sending to the game; past it the command stops short.
+pub const COMMAND_TIME: Duration = Duration::from_secs(60);
 
 /// A request's command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -122,8 +128,12 @@ fn checked(request: &Request) -> Result<Checked<'_>, String> {
         Cmd::Go => {
             only(false, true, false)?;
             match request.target.as_deref().map(str::trim) {
-                Some(target) if !target.is_empty() => Ok(Checked::Go(target)),
-                _ => Err("go takes a target: x,y, a map glyph, a feature or frontier".to_owned()),
+                Some(target) if !target.is_empty() && target.len() <= TARGET_MAX => {
+                    Ok(Checked::Go(target))
+                }
+                _ => Err(format!(
+                    "go takes a target of 1 to {TARGET_MAX} bytes: x,y, a map glyph, a feature or frontier"
+                )),
             }
         }
         Cmd::Rest => {
@@ -144,13 +154,13 @@ pub fn serve(
     max_steps: u32,
     ready: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let listener = bind(socket)?;
+    let (listener, _held) = bind(socket)?;
     let mut play = Play::new(Term::new(terminal), max_steps);
     if let Err(e) = ready.write_all(b"ready\n").and_then(|()| ready.flush()) {
         let _ = std::fs::remove_file(socket);
         return Err(e);
     }
-    let mut line = String::with_capacity(256);
+    let mut line = Vec::with_capacity(256);
     let mut out = Vec::with_capacity(16 * 1024);
     let result = loop {
         let stream = match listener.accept() {
@@ -171,17 +181,20 @@ pub fn serve(
 fn answer(
     stream: &UnixStream,
     play: &mut Play<Term>,
-    line: &mut String,
+    line: &mut Vec<u8>,
     out: &mut Vec<u8>,
 ) -> After {
-    let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
-    let mut reader = BufReader::with_capacity(1024, stream);
-    let (reply, after) = match read_request(&mut reader, line) {
-        Ok(request) => handle(play, &request),
+    let (reply, after) = match read_line(stream, line) {
         // A connection that sends nothing, such as a liveness probe, gets no reply.
-        Err(_) if line.is_empty() => return After::Serve,
-        Err(why) => (Reply::message(ExitCode::Usage, why), After::Serve),
+        Ok(0) => return After::Serve,
+        Ok(_) => match parse_request(line) {
+            Ok(request) => handle(play, &request),
+            Err(why) => (Reply::message(ExitCode::Usage, why), After::Serve),
+        },
+        Err(e) => (
+            Reply::message(ExitCode::Usage, format!("cannot read the request: {e}")),
+            After::Serve,
+        ),
     };
     out.clear();
     if let Err(e) = serde_json::to_writer(&mut *out, &reply) {
@@ -189,8 +202,7 @@ fn answer(
         return After::Serve;
     }
     out.push(b'\n');
-    let mut writer = stream;
-    match writer.write_all(out) {
+    match write_all(stream, out) {
         Ok(()) => {
             if after == After::Exit && reply.code == ExitCode::Closed {
                 log(format_args!("exiting: {}", reply.text));
@@ -208,26 +220,77 @@ fn answer(
     }
 }
 
+/// The time left before `deadline`, or a timeout error once it has passed.
+fn left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|left| !left.is_zero())
+        .ok_or_else(|| ErrorKind::TimedOut.into())
+}
+
+/// Reads one request line from `stream` into `line` within `CLIENT_TIMEOUT` in all, however the client paces it;
+/// returns the bytes read, 0 for a connection that sent nothing. A line over `REQUEST_MAX` bytes is cut there.
+fn read_line(mut stream: &UnixStream, line: &mut Vec<u8>) -> std::io::Result<usize> {
+    let deadline = Instant::now() + CLIENT_TIMEOUT;
+    line.clear();
+    let mut chunk = [0u8; 512];
+    while !line.contains(&b'\n') && line.len() <= REQUEST_MAX {
+        stream.set_read_timeout(Some(left(deadline)?))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => line.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return Err(ErrorKind::TimedOut.into()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(line.len())
+}
+
+/// Writes all of `out` to `stream` within `CLIENT_TIMEOUT` in all.
+fn write_all(mut stream: &UnixStream, mut out: &[u8]) -> std::io::Result<()> {
+    let deadline = Instant::now() + CLIENT_TIMEOUT;
+    while !out.is_empty() {
+        stream.set_write_timeout(Some(left(deadline)?))?;
+        match stream.write(out) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => out = &out[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// Writes one line to the log, which is standard error.
 fn log(message: std::fmt::Arguments) {
     let _ = writeln!(std::io::stderr(), "nethack-harness: {message}");
 }
 
-/// Binds the listening socket, replacing a stale socket file no daemon answers on.
-pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
-    match UnixListener::bind(socket) {
-        Err(e) if e.kind() == ErrorKind::AddrInUse => {
-            if UnixStream::connect(socket).is_ok() {
-                return Err(std::io::Error::new(
-                    ErrorKind::AddrInUse,
-                    format!("a daemon already answers on {}", socket.display()),
-                ));
-            }
-            std::fs::remove_file(socket)?;
-            UnixListener::bind(socket)
-        }
-        other => other,
+/// Binds the listening socket, readable and writable by its owner only, and returns it with the lock on
+/// `<socket>.lock` that the daemon holds for as long as it serves. A socket file nobody holds the lock for is stale
+/// and replaced; while a daemon holds it, binding fails with `AddrInUse`.
+pub fn bind(socket: &Path) -> std::io::Result<(UnixListener, File)> {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    if lock.try_lock().is_err() {
+        return Err(std::io::Error::new(
+            ErrorKind::AddrInUse,
+            format!("a daemon already answers on {}", socket.display()),
+        ));
     }
+    match std::fs::remove_file(socket) {
+        Err(e) if e.kind() != ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let listener = UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, Permissions::from_mode(0o600))?;
+    Ok((listener, lock))
 }
 
 /// Answers one request.
@@ -239,23 +302,19 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
     if let Checked::Stop = command {
         return (Reply::message(ExitCode::Done, "stopped"), After::Exit);
     }
-    if !play.term().complete()
-        && let Err(e) = play.term_mut().sync()
-    {
-        let reply = Reply::message(e.code(), e.to_string());
-        let after = if reply.code == ExitCode::Closed {
-            After::Exit
-        } else {
-            After::Serve
-        };
-        return (reply, after);
-    }
-    let reply = match command {
-        Checked::Look => play.look(),
-        Checked::Send(keys) => play.send(&keys),
-        Checked::Go(target) => play.go(target),
-        Checked::Rest(count) => play.rest(count),
-        Checked::Stop => Reply::message(ExitCode::Done, "stopped"),
+    play.term_mut().deadline(Instant::now() + COMMAND_TIME);
+    let synced = if play.term().complete() {
+        Ok(())
+    } else {
+        play.term_mut().sync()
+    };
+    let reply = match (synced, command) {
+        (Err(e), _) => Reply::message(e.code(), e.to_string()),
+        (Ok(()), Checked::Look) => play.look(),
+        (Ok(()), Checked::Send(keys)) => play.send(&keys),
+        (Ok(()), Checked::Go(target)) => play.go(target),
+        (Ok(()), Checked::Rest(count)) => play.rest(count),
+        (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
     };
     let after = if reply.code == ExitCode::Closed {
         After::Exit
@@ -265,21 +324,14 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, After) {
     (reply, after)
 }
 
-/// Reads one request line from `input` into `line`, bounded in length, and decodes it; the error is the message a
-/// malformed request is answered with, under code 64.
-pub fn read_request(input: &mut dyn BufRead, line: &mut String) -> Result<Request, String> {
-    line.clear();
-    let read = input
-        .take(REQUEST_MAX as u64 + 1)
-        .read_line(line)
-        .map_err(|e| format!("cannot read the request: {e}"))?;
-    if read == 0 {
-        return Err("empty request".to_owned());
-    }
-    if read > REQUEST_MAX {
+/// Decodes one request line; the error is the message a malformed request is answered with, under code 64.
+pub fn parse_request(line: &[u8]) -> Result<Request, String> {
+    let end = line.iter().position(|&b| b == b'\n').unwrap_or(line.len());
+    if end >= REQUEST_MAX {
         return Err(format!("a request line takes at most {REQUEST_MAX} bytes"));
     }
-    serde_json::from_str(line.trim_end()).map_err(|e| format!("invalid request: {e}"))
+    serde_json::from_slice(line[..end].trim_ascii_end())
+        .map_err(|e| format!("invalid request: {e}"))
 }
 
 #[cfg(test)]
@@ -287,8 +339,7 @@ mod tests {
     use super::*;
 
     fn read(text: &str) -> Result<Request, String> {
-        let mut line = String::new();
-        read_request(&mut text.as_bytes(), &mut line)
+        parse_request(text.as_bytes())
     }
 
     fn request(cmd: Cmd) -> Request {
@@ -313,7 +364,12 @@ mod tests {
 
     #[test]
     fn malformed_requests_are_refused() {
-        assert!(read("").unwrap_err().contains("empty"));
+        assert!(read("").unwrap_err().contains("invalid request"));
+        assert!(
+            parse_request(b"{\"cmd\":\"go\",\"target\":\"\xff\"}\n")
+                .unwrap_err()
+                .contains("invalid request")
+        );
         assert!(
             read("{\"cmd\":\"dance\"}\n")
                 .unwrap_err()
@@ -359,6 +415,8 @@ mod tests {
         assert!(check(&go).is_err());
         go.target = Some("23,3".to_owned());
         assert!(check(&go).is_ok());
+        go.target = Some("x".repeat(TARGET_MAX + 1));
+        assert!(check(&go).is_err());
         go.count = Some(1);
         assert_eq!(check(&go).unwrap_err(), "go takes only a target");
         let mut rest = request(Cmd::Rest);

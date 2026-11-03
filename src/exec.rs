@@ -10,6 +10,9 @@ use crate::types::{Answered, MAP_BOTTOM, MAP_SQUARES, MAP_TOP, Pos, SquareSet, e
 
 /// Most `--More--` pages or text windows dismissed in one go.
 pub const PAGES: u32 = 32;
+/// Most message lines and most answered prompts one action reports; the earliest beyond this are counted instead,
+/// so a reply stays small however many pages the keys pass.
+pub const REPORTED: usize = 32;
 /// Repeated searches that leave the screen unchanged before a search stops.
 pub const IDLE_SEARCHES: u32 = 3;
 
@@ -152,6 +155,10 @@ pub struct Outcome {
     pub messages: Vec<String>,
     /// Prompts the keys passed and the key that answered each.
     pub answered: Vec<Answered>,
+    /// Earlier message lines left out of `messages`.
+    pub messages_left_out: u32,
+    /// Earlier prompts left out of `answered`.
+    pub answered_left_out: u32,
 }
 
 impl Outcome {
@@ -165,7 +172,18 @@ impl Outcome {
             turns: None,
             messages: Vec::new(),
             answered: Vec::new(),
+            messages_left_out: 0,
+            answered_left_out: 0,
         }
+    }
+
+    /// Adds a message line, leaving out the earliest beyond `REPORTED`.
+    fn message(&mut self, text: String) {
+        if self.messages.len() >= REPORTED {
+            self.messages.remove(0);
+            self.messages_left_out += 1;
+        }
+        self.messages.push(text);
     }
 }
 
@@ -277,8 +295,16 @@ impl Executor {
         }
         if outcome.stop == Stop::GameOver && !self.ended_before {
             let end = self.finish_game(term, memory);
-            outcome.messages.extend(end.messages);
-            outcome.answered.extend(end.answered);
+            for text in end.messages {
+                outcome.message(text);
+            }
+            for answered in end.answered {
+                outcome.answered.push(answered);
+                if outcome.answered.len() > REPORTED {
+                    outcome.answered.remove(0);
+                    outcome.answered_left_out += 1;
+                }
+            }
             outcome.stop = end.stop;
         }
         outcome
@@ -355,11 +381,11 @@ impl Executor {
                     continue;
                 }
                 news |= !memory.about_pet(text);
-                if first {
-                    outcome.messages.push(text.to_owned());
+                outcome.message(if first {
+                    text.to_owned()
                 } else {
-                    outcome.messages.push(format!("  {text}"));
-                }
+                    format!("  {text}")
+                });
                 first = false;
             }
             return news;
@@ -376,7 +402,7 @@ impl Executor {
         if text.is_empty() {
             return false;
         }
-        outcome.messages.push(text.to_owned());
+        outcome.message(text.to_owned());
         !memory.about_pet(text)
     }
 
@@ -451,7 +477,7 @@ impl Executor {
                         .position(|&k| matches!(k, b'\r' | b'\n' | ESCAPE))
                         .map_or(keys.len(), |k| i + k + 1);
                 }
-                record(view, phase, open, &keys[i..end], &mut outcome.answered);
+                record(view, phase, open, &keys[i..end], outcome);
                 open = matches!(phase, Phase::Text | Phase::Position).then_some(phase);
             } else {
                 open = None;
@@ -814,7 +840,7 @@ impl Executor {
                 _ => b' ',
             };
             if key != b' ' {
-                record(view, phase, None, &[key], &mut outcome.answered);
+                record(view, phase, None, &[key], outcome);
             }
             match self.send(term, memory, &[key], outcome) {
                 Ok(_) => outcome.steps += 1,
@@ -854,14 +880,9 @@ fn asks(view: &View) -> bool {
 }
 
 /// Records `keys` as the answer to the prompt on `view`, extending the last entry when the previous keys went to
-/// the same free-text or positioning prompt.
-fn record(
-    view: &View,
-    phase: Phase,
-    open: Option<Phase>,
-    keys: &[u8],
-    answered: &mut Vec<Answered>,
-) {
+/// the same free-text or positioning prompt, and leaving out the earliest prompts beyond `REPORTED`.
+fn record(view: &View, phase: Phase, open: Option<Phase>, keys: &[u8], outcome: &mut Outcome) {
+    let answered = &mut outcome.answered;
     let text = view.msg.replace("--More--", "");
     let text = text.trim();
     let prompt = if text.is_empty() { phase.name() } else { text };
@@ -871,6 +892,10 @@ fn record(
             _ => prompt == last.prompt,
         });
     if !same {
+        if answered.len() >= REPORTED {
+            answered.remove(0);
+            outcome.answered_left_out += 1;
+        }
         answered.push(Answered {
             prompt: prompt.to_owned(),
             key: String::new(),

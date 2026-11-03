@@ -15,7 +15,15 @@ fn a_stale_socket_file_is_replaced_and_a_live_one_kept() {
         bind(&socket).unwrap_err().kind(),
         std::io::ErrorKind::AddrInUse
     );
+    // A live daemon keeps its socket even when a connect to it would fail, as with a full queue.
+    std::fs::remove_file(&socket).unwrap();
+    assert_eq!(
+        bind(&socket).unwrap_err().kind(),
+        std::io::ErrorKind::AddrInUse
+    );
     drop(first);
+    let second = bind(&socket).unwrap();
+    drop(second);
     assert!(socket.exists());
-    let _second = bind(&socket).unwrap();
+    let _third = bind(&socket).unwrap();
 }

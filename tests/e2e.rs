@@ -3,6 +3,7 @@
 mod support;
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -262,6 +263,92 @@ fn a_game_that_never_settles_stops_the_keys_short() {
 }
 
 #[test]
+fn a_slow_client_cannot_hold_the_daemon() {
+    let dir = scratch("e2e-slow-client");
+    let server = FakeTerminalServer::start(&dir, SCREEN, vec![]);
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    let socket = session.socket();
+    let slow = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(socket).unwrap();
+        let _ = stream.write_all(b"{");
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(500));
+            if stream.write_all(b" ").is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let started = Instant::now();
+    let look = session.run(&["look"]);
+    assert_eq!(code(&look), 0, "{}", stderr(&look));
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    let _ = slow.join();
+}
+
+#[test]
+fn the_session_is_private_to_its_owner() {
+    let dir = scratch("e2e-private");
+    let server = FakeTerminalServer::start(&dir, SCREEN, vec![]);
+    let session = Session::new(&dir, server.path());
+    let look = Command::new("sh")
+        .arg("-c")
+        .arg("umask 000; exec \"$0\" \"$@\"")
+        .arg(BIN)
+        .arg("--dir")
+        .arg(&session.dir)
+        .arg("--socket")
+        .arg(server.path())
+        .arg("look")
+        .output()
+        .unwrap();
+    assert_eq!(code(&look), 0, "{}", stderr(&look));
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&session.dir), 0o700);
+    assert_eq!(mode(&session.socket()), 0o600);
+}
+
+#[test]
+fn an_oversized_target_is_a_usage_error() {
+    let dir = scratch("e2e-target");
+    let session = Session::new(&dir, &dir.join("absent.sock"));
+    let go = session.run(&["go", &"x".repeat(200_000)]);
+    assert_eq!(code(&go), 64, "{}", stderr(&go));
+    assert!(!session.dir.exists());
+}
+
+#[test]
+fn a_reply_stays_small_however_many_pages_the_keys_pass() {
+    let dir = scratch("e2e-pages");
+    let server = FakeTerminalServer::start(&dir, SCREEN, vec![]);
+    let mut page = 0u32;
+    server.respond(Box::new(move |_| {
+        page += 1;
+        let mut out = b"\x1b[H\x1b[2J".to_vec();
+        for line in 1..=22 {
+            out.extend_from_slice(
+                format!("\x1b[{line};1HPage {page} line {line}: the quick brown fox jumps over the lazy dog")
+                    .as_bytes(),
+            );
+        }
+        out.extend_from_slice(b"\x1b[23;1H--More--");
+        out
+    }));
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    let sent = session.run(&["--json", "send", &" ".repeat(256)]);
+    assert!(sent.stdout.len() < 32 * 1024, "{} bytes", sent.stdout.len());
+    let text = stdout(&sent);
+    assert!(text.contains("earlier lines left out"), "{text}");
+    assert!(text.contains("earlier prompts left out"), "{text}");
+}
+
+#[test]
 fn concurrent_clients_start_one_daemon() {
     let dir = scratch("e2e-concurrent");
     let server = FakeTerminalServer::start(&dir, SCREEN, vec![]);
@@ -327,6 +414,13 @@ fn the_socket_api_answers_one_line_per_connection() {
         BufReader::new(&stream).read_line(&mut reply).unwrap();
         serde_json::from_str(&reply).unwrap()
     };
+    let mut stream = UnixStream::connect(session.socket()).expect("connect to the daemon");
+    stream
+        .write_all(b"{\"cmd\":\"go\",\"target\":\"\xff\"}\n")
+        .unwrap();
+    let mut reply = String::new();
+    BufReader::new(&stream).read_line(&mut reply).unwrap();
+    assert!(reply.contains("\"code\":64"), "{reply}");
     let bad = ask("{\"cmd\":\"look\",\"keys\":\"x\"}\n");
     assert_eq!(bad["code"], 64);
     assert_eq!(bad["text"], "look takes no keys, target or count");

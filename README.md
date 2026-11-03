@@ -43,7 +43,7 @@ nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND
 
 | Option | Meaning |
 | --- | --- |
-| `--dir D` | Session directory holding `sock`, `lock` and `log` (default `.nethack-harness`). |
+| `--dir D` | Session directory holding `sock`, `sock.lock`, `lock` and `log` (default `.nethack-harness`). It is created readable by its owner only, and the socket is mode 0600. |
 | `--json` | Print the reply object instead of its text. |
 | `--socket PATH` | Terminal socket a newly started daemon connects to (default `/run/nethack/terminal.sock`). |
 | `--max-steps N` | Most steps one `go` takes, 1 to 64 (default 64); fixed when the daemon starts. |
@@ -84,7 +84,12 @@ disclosure questions and dismissing `--More--`, until the tombstone or the final
 them under `end:` and in `facts.end`. Afterwards every command answers with exit code 3 and sends nothing.
 
 The client connects to `<dir>/sock`. When nothing answers it takes `flock(<dir>/lock)`, checks again, starts
-`serve` in its own process group with standard error to `<dir>/log`, and waits up to 10 s for it to listen.
+`serve` in its own process group with standard error to `<dir>/log`, and waits up to 10 s for it to listen. The
+daemon holds `flock(<dir>/sock.lock)` while it serves, so a refused connect to a live daemon (its queue of waiting
+clients is full) is retried for up to 10 s rather than starting a second one.
+
+A command stops sending to the game after 60 s and stops short (exit code 2), so a slow or stuck game cannot hold
+the caller; the client waits at most 90 s for its reply.
 
 ### Exit codes
 
@@ -101,7 +106,8 @@ The client connects to `<dir>/sock`. When nothing answers it takes `flock(<dir>/
 ## Socket API
 
 A program may talk to the daemon directly. Connect to `<dir>/sock`, write one JSON request line (at most 4096
-bytes), read one JSON reply line. One request per connection; requests are served one at a time, in order.
+bytes, all of it within 2 s), read one JSON reply line. One request per connection; requests are served one at a
+time, in order.
 
 ```json
 {"cmd": "look"}
@@ -112,7 +118,8 @@ bytes), read one JSON reply line. One request per connection; requests are serve
 ```
 
 `keys` uses the escape syntax above. Each command takes exactly its own field: `send` requires `keys`, `go`
-requires `target`, `rest` requires `count` (1 to 200), and any other field is refused with code 64. The reply is
+requires `target` (at most 64 bytes), `rest` requires `count` (1 to 200), and any other field is refused with code
+64. The reply is
 
 ```json
 {"code": 0, "text": "…the text view…", "facts": {…}}
@@ -158,7 +165,7 @@ The parts, in order:
   is, and `done` or `stopped:` with each reason.
 - **Status**: the game's two status lines, spaces squashed.
 - **`msg:`**: each complete message written during the command, joined across wrapped rows. Text already on a
-  screen printed in full is not repeated.
+  screen printed in full is not repeated. A command reports its last 32 lines, after `(N earlier lines left out)`.
 - **Prompts**: `prompt:` with the question, `cursor:` while targeting, and `keys:` with the answers the screen
   offers. Menus, `--More--` windows and the end of the game print `screen (MODE):` and the screen rows instead of
   the map.
@@ -174,10 +181,12 @@ The parts, in order:
   nearest six by route with the route length, `(no route)` or `(blocked)`, then `+N more`.
 - **`inventory:`**: the last inventory menu the game showed, whoever opened it, with the turn it was shown.
 - **`answered:`**: each prompt the sent keys passed and the key that answered it, marked
-  `(typed into a text prompt)` when the keys went into a free-text prompt.
+  `(typed into a text prompt)` when the keys went into a free-text prompt; the last 32, after
+  `(N earlier prompts left out)`.
 - **`end:`**: the death line, then every end-of-game message line.
 
-An engraving on room floor (a bright blue `` ` ``) is passable floor; any other `` ` `` is a boulder. Traps that
+An engraving on room floor (a bright blue `` ` ``) is passable floor; any other `` ` `` is a boulder. A bright
+white `0` is warning level 0, a monster sensed but not seen; any other `0` is a boulder. Traps that
 messages name at the hero's square are remembered there like a `^`.
 
 ## Facts

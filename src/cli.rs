@@ -6,18 +6,19 @@
 //! starts `serve` detached in its own process group with output to `<dir>/log`, waiting at most 10 s for the
 //! daemon's `ready` line. `serve` runs the daemon in the foreground.
 
-use std::fs::OpenOptions;
+use std::fs::{DirBuilder, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::daemon::{Cmd, Request, check, serve};
+use crate::daemon::{COMMAND_TIME, Cmd, Request, check, serve};
 use crate::play::STEPS_MAX;
 use crate::types::ExitCode;
 
@@ -25,8 +26,10 @@ use crate::types::ExitCode;
 pub const DEFAULT_DIR: &str = ".nethack-harness";
 /// The terminal socket when `--socket` is not given.
 pub const DEFAULT_SOCKET: &str = "/run/nethack/terminal.sock";
-/// Longest a client waits for a daemon it started.
+/// Longest a client waits for a daemon it started, or for a busy one to accept it.
 pub const START_TIMEOUT_MS: u64 = 10_000;
+/// Longest a client waits for its reply: the daemon's own limit on a command, with room for one slow exchange.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] \
                          look | send KEYS | go TARGET | rest N | stop | serve";
@@ -149,7 +152,7 @@ pub fn run(args: &Args) -> i32 {
     match &args.command {
         Command::Serve => {
             let (socket, _, _) = paths(&args.dir);
-            let started = std::fs::create_dir_all(&args.dir).and_then(|()| {
+            let started = private_dir(&args.dir).and_then(|()| {
                 let mut stdout = std::io::stdout().lock();
                 serve(&socket, &args.socket, args.max_steps, &mut stdout)
             });
@@ -200,14 +203,25 @@ fn client(args: &Args, request: &Request) -> i32 {
         return fail(format_args!("cannot send the request: {e}"));
     }
     line.clear();
-    match BufReader::new(&stream).read_line(&mut line) {
+    let log = paths(&args.dir).2;
+    let read = stream
+        .set_read_timeout(Some(REPLY_TIMEOUT))
+        .and_then(|()| BufReader::new(&stream).read_line(&mut line));
+    match read {
         Ok(0) => {
             return fail(format_args!(
                 "the daemon closed the connection without a reply; see {}",
-                paths(&args.dir).2.display()
+                log.display()
             ));
         }
         Ok(_) => {}
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            return fail(format_args!(
+                "the daemon did not answer within {} s; see {}",
+                REPLY_TIMEOUT.as_secs(),
+                log.display()
+            ));
+        }
         Err(e) => return fail(format_args!("cannot read the reply: {e}")),
     }
     let answer: Answer = match serde_json::from_str(line.trim_end()) {
@@ -226,26 +240,54 @@ fn client(args: &Args, request: &Request) -> i32 {
     answer.code
 }
 
-/// Connects to the daemon in `dir`, starting one under the directory lock if nothing answers.
+/// Connects to the daemon in `dir`, starting one under the directory lock if nothing answers. A refused connect
+/// while a daemon holds the socket's lock means its queue of waiting clients is full, so the client retries with
+/// growing pauses instead of starting another.
 pub fn connect(args: &Args) -> std::io::Result<UnixStream> {
     let (socket, lock, _) = paths(&args.dir);
     match UnixStream::connect(&socket) {
         Err(e) if absent(&e) => {}
         other => return other,
     }
-    std::fs::create_dir_all(&args.dir)?;
+    private_dir(&args.dir)?;
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(lock)?;
     lock.lock()?;
-    match UnixStream::connect(&socket) {
-        Err(e) if absent(&e) => {}
-        other => return other,
+    let deadline = Instant::now() + Duration::from_millis(START_TIMEOUT_MS);
+    let mut pause = Duration::from_millis(10);
+    loop {
+        match UnixStream::connect(&socket) {
+            Err(e) if e.kind() == ErrorKind::ConnectionRefused && serving(&socket) => {
+                if Instant::now() + pause >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(500));
+            }
+            Err(e) if absent(&e) => break,
+            other => return other,
+        }
     }
     start(args)?;
     UnixStream::connect(&socket)
+}
+
+/// Whether a daemon holds the lock on `<socket>.lock`, so the socket is live.
+fn serving(socket: &Path) -> bool {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".lock");
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .is_ok_and(|file| file.try_lock().is_err())
+}
+
+/// Creates `dir` and any missing parents, a new directory readable by its owner only.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)
 }
 
 /// Starts `serve` detached and waits for its `ready` line.

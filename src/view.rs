@@ -437,6 +437,10 @@ impl Renderer {
                 if i > 0 {
                     text.push_str("; ");
                 }
+                if answered.key.is_empty() {
+                    let _ = write!(text, "({})", answered.prompt);
+                    continue;
+                }
                 let _ = write!(text, "\"{}\" \u{2190} {}", answered.prompt, answered.key);
                 if answered.text_entry {
                     text.push_str(" (typed into a text prompt)");
