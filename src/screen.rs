@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn message_split_at_a_space_continues_on_the_next_row() {
-        let first = "(The seed chose your character; your role, race, gender and alignment options";
+        let first = "(The seed chose your character; your role, rank, gender and alignment options";
         let v = view_at(
             &scr(first, &["were ignored.)--More--", "", " ---- ", " |.@.| "]),
             1,

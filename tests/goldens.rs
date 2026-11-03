@@ -1,36 +1,35 @@
-//! Golden parity: every screen fixture rendered by `Play::show` must match `tests/goldens/<fixture>.txt`, except
-//! the fixtures `tests/goldens/DIFFERENCES.md` lists under a `### <fixture>` heading with the reason.
+//! Golden views: every screen fixture rendered by `Play::show` must match `tests/goldens/<fixture>.txt`.
+//!
+//! Run with `GOLDENS_WRITE=1` to rewrite the goldens from the current view instead of comparing; review the diff.
 
 mod support;
 
 use nethack_harness::play::Play;
 use support::{Fixture, FixtureTerm, fixture_names, goldens_dir};
 
-/// The fixtures `DIFFERENCES.md` excuses.
-fn excused() -> Vec<String> {
-    let text = std::fs::read_to_string(goldens_dir().join("DIFFERENCES.md")).unwrap_or_default();
-    text.lines()
-        .filter_map(|line| line.strip_prefix("### "))
-        .map(|name| name.trim().trim_matches('`').to_owned())
-        .collect()
+/// The text a fresh game shows for fixture `name`, headed by `exit <code>` when the reply's code is not 0.
+fn render(name: &str) -> String {
+    let mut play = Play::new(FixtureTerm::new(Fixture::load(name).view()), 64);
+    let reply = play.show();
+    match reply.code.code() {
+        0 => reply.text,
+        code => format!("exit {code}\n{}", reply.text),
+    }
 }
 
 #[test]
-#[ignore = "runs once the view renders"]
 fn every_fixture_renders_its_golden() {
-    let excused = excused();
+    let write = std::env::var_os("GOLDENS_WRITE").is_some();
     let mut failures = Vec::new();
     for name in fixture_names() {
-        let golden = std::fs::read_to_string(goldens_dir().join(format!("{name}.txt")))
-            .expect("read golden");
-        let mut play = Play::new(FixtureTerm::new(Fixture::load(&name).view()), 64);
-        let reply = play.show();
-        let text = if reply.code.code() == 0 {
-            reply.text
-        } else {
-            format!("error: {}", reply.text)
-        };
-        if text.trim_end() != golden.trim_end() && !excused.contains(&name) {
+        let text = render(&name);
+        let path = goldens_dir().join(format!("{name}.txt"));
+        if write {
+            std::fs::write(&path, format!("{}\n", text.trim_end())).expect("write golden");
+            continue;
+        }
+        let golden = std::fs::read_to_string(&path).expect("read golden");
+        if text.trim_end() != golden.trim_end() {
             failures.push(format!("--- {name}: expected\n{golden}\n--- got\n{text}\n"));
         }
     }

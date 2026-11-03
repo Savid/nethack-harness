@@ -533,7 +533,7 @@ impl Executor {
         Ok(settled(term.view()))
     }
 
-    /// Keeps a copy of `view` as the screen an information command was asked from, reusing the last copy.
+    /// Keeps `view` as the screen an information command was asked from, reusing the buffer it last held.
     fn keep_before(&mut self, view: &View) {
         match &mut self.before {
             Some(before) => before.reparse(&view.grid, view.cursor),
@@ -557,7 +557,7 @@ impl Executor {
             Kind::Travel => Watch::Features,
             _ => Watch::All,
         };
-        self.snapshot(memory);
+        self.remember_start(memory);
         let start = term.view();
         self.status.clone_from(&start.status);
         let (cond, engulfed) = (start.cond, start.engulfed);
@@ -717,7 +717,7 @@ impl Executor {
     }
 
     /// Remembers the current level's terrain, colours, seen squares and open doors as the action's start.
-    fn snapshot(&mut self, memory: &Memory) {
+    fn remember_start(&mut self, memory: &Memory) {
         self.terrain.fill('\0');
         self.colours.fill(None);
         self.seen.clear();

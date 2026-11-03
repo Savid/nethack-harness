@@ -1,5 +1,5 @@
 Dlvl:3 $:0 HP:11(11) Pw:7(7) AC:9 Xp:1 T:540
-Claude the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
+Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
    23     30        40        50        60        70
    345678901234567890123456789012345678901234567890123456
  2 -----+-----

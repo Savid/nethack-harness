@@ -10,7 +10,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use support::scratch;
-use support::server::{FakeTerminalServer, Step};
+use support::server::{FakeTerminalServer, Responder, Step};
 
 const BIN: &str = env!("CARGO_BIN_EXE_nethack-harness");
 
@@ -325,4 +325,347 @@ fn the_socket_api_answers_one_line_per_connection() {
         (Some(0), Some("stopped"))
     );
     assert!(session.wait_gone());
+}
+
+/// What the mini game is waiting for.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    /// A command on the map.
+    Map,
+    /// A position for a farlook.
+    Pick,
+    /// A direction to fight in.
+    Direction,
+    /// The `You die...--More--` page.
+    Dying,
+    /// An end-of-game disclosure question.
+    Disclose,
+    /// The tombstone.
+    Tomb,
+}
+
+/// A small game behind the fake terminal: one lit room, a hero that moves and searches, a jackal that turns up
+/// after a set number of searches, farlook, look-here, and a death with its end-of-game pages.
+struct MiniGame {
+    hero: (u8, u8),
+    turn: u32,
+    searches: u32,
+    arrives_after: Option<u32>,
+    jackal: Option<(u8, u8)>,
+    stage: Stage,
+    pick: (u8, u8),
+    message: String,
+}
+
+impl MiniGame {
+    const LEFT: u8 = 20;
+    const RIGHT: u8 = 29;
+    const TOP: u8 = 2;
+    const BOTTOM: u8 = 6;
+
+    fn new(arrives_after: Option<u32>) -> MiniGame {
+        MiniGame {
+            hero: (22, 4),
+            turn: 10,
+            searches: 0,
+            arrives_after,
+            jackal: None,
+            stage: Stage::Map,
+            pick: (22, 4),
+            message: String::new(),
+        }
+    }
+
+    fn responder(mut self) -> (Vec<u8>, Responder) {
+        let first = self.screen();
+        (
+            first,
+            Box::new(move |input: &[u8]| {
+                for &key in input {
+                    self.key(key);
+                }
+                self.screen()
+            }),
+        )
+    }
+
+    fn delta(key: u8) -> Option<(i16, i16)> {
+        Some(match key {
+            b'h' => (-1, 0),
+            b'l' => (1, 0),
+            b'k' => (0, -1),
+            b'j' => (0, 1),
+            b'y' => (-1, -1),
+            b'u' => (1, -1),
+            b'b' => (-1, 1),
+            b'n' => (1, 1),
+            _ => return None,
+        })
+    }
+
+    fn shifted(at: (u8, u8), (dx, dy): (i16, i16)) -> (u8, u8) {
+        (
+            (i16::from(at.0) + dx).clamp(0, 79) as u8,
+            (i16::from(at.1) + dy).clamp(1, 21) as u8,
+        )
+    }
+
+    fn floor(at: (u8, u8)) -> bool {
+        (Self::LEFT + 1..Self::RIGHT).contains(&at.0)
+            && (Self::TOP + 1..Self::BOTTOM).contains(&at.1)
+    }
+
+    fn key(&mut self, key: u8) {
+        match self.stage {
+            Stage::Map => self.command(key),
+            Stage::Pick => match key {
+                b'@' => self.pick = self.hero,
+                b'.' | b',' | b';' | b':' => {
+                    self.message = if Some(self.pick) == self.jackal {
+                        "d        a dog or other canine (jackal)".to_owned()
+                    } else if self.pick == self.hero {
+                        "@        human or elf (peaceful Hero)".to_owned()
+                    } else {
+                        ".        floor of a room".to_owned()
+                    };
+                    self.stage = Stage::Map;
+                }
+                0x1b => {
+                    self.message.clear();
+                    self.stage = Stage::Map;
+                }
+                other => {
+                    if let Some(delta) = Self::delta(other) {
+                        self.pick = Self::shifted(self.pick, delta);
+                    }
+                }
+            },
+            Stage::Direction => {
+                self.stage = if Self::delta(key).is_some() {
+                    Stage::Dying
+                } else {
+                    Stage::Map
+                };
+            }
+            Stage::Dying => self.stage = Stage::Disclose,
+            Stage::Disclose => self.stage = Stage::Tomb,
+            Stage::Tomb => {}
+        }
+    }
+
+    fn command(&mut self, key: u8) {
+        self.message.clear();
+        match key {
+            b'm' | 0x12 | 0x1b => {}
+            b's' => {
+                self.turn += 1;
+                self.searches += 1;
+                if Some(self.searches) == self.arrives_after {
+                    self.jackal = Some((27, 4));
+                }
+            }
+            b':' => self.message = "You see no objects here.".to_owned(),
+            b';' => {
+                self.pick = self.hero;
+                self.message = "Pick a monster, object or location.".to_owned();
+                self.stage = Stage::Pick;
+            }
+            b'F' => self.stage = Stage::Direction,
+            other => match Self::delta(other) {
+                Some(delta) => {
+                    let to = Self::shifted(self.hero, delta);
+                    if Self::floor(to) && Some(to) != self.jackal {
+                        self.hero = to;
+                        self.turn += 1;
+                    } else {
+                        self.message = "You can't move there.".to_owned();
+                    }
+                }
+                None => self.message = format!("Unknown command '{}'.", other as char),
+            },
+        }
+    }
+
+    /// The whole screen, redrawn.
+    fn screen(&self) -> Vec<u8> {
+        let mut out = String::from("\x1b[H\x1b[2J");
+        let at =
+            |out: &mut String, x: u8, y: u8| out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+        if self.stage == Stage::Tomb {
+            let tomb = [
+                "                       ----------",
+                "                      /          \\",
+                "                     /    REST    \\",
+                "                    /      IN      \\",
+                "                   /     PEACE      \\",
+                "                  /                  \\",
+                "                  |       Hero       |",
+                "                  |      0 Au        |",
+                "                  |   killed by a    |",
+                "                  |      jackal      |",
+                "                  |                  |",
+                "                  |                  |",
+                "                  |       2026       |",
+                "                 *|     *  *  *      | *",
+                "        _________)/\\\\_//(\\/(/\\)/\\//\\/|_)_______",
+            ];
+            for (row, line) in tomb.iter().enumerate() {
+                at(&mut out, 0, row as u8 + 1);
+                out.push_str(line);
+            }
+            at(&mut out, 0, 17);
+            out.push_str("--More--");
+            at(&mut out, 8, 17);
+            return out.into_bytes();
+        }
+        for y in Self::TOP..=Self::BOTTOM {
+            at(&mut out, Self::LEFT, y);
+            for x in Self::LEFT..=Self::RIGHT {
+                out.push(if y == Self::TOP || y == Self::BOTTOM {
+                    '-'
+                } else if x == Self::LEFT || x == Self::RIGHT {
+                    '|'
+                } else {
+                    '.'
+                });
+            }
+        }
+        if let Some((x, y)) = self.jackal {
+            at(&mut out, x, y);
+            out.push_str("\x1b[33md\x1b[0m");
+        }
+        at(&mut out, self.hero.0, self.hero.1);
+        out.push('@');
+        let hp = if self.stage >= Stage::Dying { 0 } else { 12 };
+        at(&mut out, 0, 22);
+        out.push_str("Hero the Stripling   St:16 Dx:12 Co:14 In:9 Wi:10 Ch:8 Lawful");
+        at(&mut out, 0, 23);
+        out.push_str(&format!(
+            "Dlvl:1 $:0 HP:{hp}(16) Pw:2(2) AC:6 Xp:1 T:{}",
+            self.turn
+        ));
+        let message = match self.stage {
+            Stage::Dying => "You die...--More--",
+            Stage::Disclose => "Do you want your possessions identified? [ynq] (n)",
+            _ => self.message.as_str(),
+        };
+        at(&mut out, 0, 0);
+        out.push_str(message);
+        match self.stage {
+            Stage::Dying | Stage::Disclose => at(&mut out, message.len() as u8 + 1, 0),
+            Stage::Pick => at(&mut out, self.pick.0, self.pick.1),
+            _ => at(&mut out, self.hero.0, self.hero.1),
+        }
+        out.into_bytes()
+    }
+}
+
+/// A fake terminal server running `game`.
+fn serve_game(dir: &Path, game: MiniGame) -> FakeTerminalServer {
+    let (first, responder) = game.responder();
+    let server = FakeTerminalServer::start(dir, &first, vec![]);
+    server.respond(responder);
+    server
+}
+
+fn facts(output: &Output) -> serde_json::Value {
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).expect("a JSON reply");
+    reply["facts"].clone()
+}
+
+#[test]
+fn go_walks_to_a_square_and_reports_it() {
+    let dir = scratch("e2e-go");
+    let server = serve_game(&dir, MiniGame::new(None));
+    let session = Session::new(&dir, server.path());
+    let look = session.run(&["--json", "look"]);
+    assert_eq!(code(&look), 0, "{}{}", stdout(&look), stderr(&look));
+    assert_eq!(facts(&look)["pos"], serde_json::json!([22, 4]));
+    let went = session.run(&["--json", "go", "27,4"]);
+    assert_eq!(code(&went), 0, "{}{}", stdout(&went), stderr(&went));
+    let facts = facts(&went);
+    assert_eq!(facts["pos"], serde_json::json!([27, 4]));
+    assert_eq!(facts["turn"], 15);
+    assert_eq!(facts["report"]["done"], true);
+    assert_eq!(facts["report"]["steps"], 5);
+    let walked: Vec<Vec<u8>> = server
+        .inputs()
+        .into_iter()
+        .filter(|keys| keys.as_slice() == b"ml")
+        .collect();
+    assert_eq!(walked.len(), 5);
+    let text = stdout(&session.run(&["look"]));
+    assert!(text.contains("you: 27,4"), "{text}");
+}
+
+#[test]
+fn rest_searches_and_stops_short_when_a_monster_arrives() {
+    let dir = scratch("e2e-rest");
+    let server = serve_game(&dir, MiniGame::new(Some(3)));
+    let session = Session::new(&dir, server.path());
+    let rested = session.run(&["--json", "rest", "2"]);
+    assert_eq!(code(&rested), 0, "{}{}", stdout(&rested), stderr(&rested));
+    assert_eq!(facts(&rested)["report"]["steps"], 2);
+    assert_eq!(facts(&rested)["turn"], 12);
+
+    let interrupted = session.run(&["--json", "rest", "20"]);
+    assert_eq!(
+        code(&interrupted),
+        2,
+        "{}{}",
+        stdout(&interrupted),
+        stderr(&interrupted)
+    );
+    let facts = facts(&interrupted);
+    assert_eq!(facts["report"]["done"], false);
+    assert_eq!(facts["report"]["steps"], 1);
+    let stopped = facts["report"]["stopped"].to_string();
+    assert!(stopped.contains("27,4"), "{stopped}");
+    assert_eq!(facts["monsters"][0]["glyph"], "d");
+    assert_eq!(facts["monsters"][0]["name"], "jackal");
+    let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
+    assert_eq!(searches, 3);
+}
+
+#[test]
+fn a_death_is_paged_to_the_tombstone_and_reported_as_code_3() {
+    let dir = scratch("e2e-death");
+    let server = serve_game(&dir, MiniGame::new(None));
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    let died = session.run(&["--json", "send", "Fl"]);
+    assert_eq!(code(&died), 3, "{}{}", stdout(&died), stderr(&died));
+    let facts = facts(&died);
+    assert_eq!(facts["end"]["death"], "killed by a jackal");
+    let answered = facts["answered"].to_string();
+    assert!(answered.contains("possessions identified"), "{answered}");
+    let sent = server.inputs().len();
+
+    let over = session.run(&["send", "s"]);
+    assert_eq!(code(&over), 3);
+    assert!(
+        stdout(&over).contains("nothing was sent"),
+        "{}",
+        stdout(&over)
+    );
+    assert!(
+        stdout(&over).contains("end: killed by a jackal"),
+        "{}",
+        stdout(&over)
+    );
+    assert_eq!(code(&session.run(&["look"])), 3);
+    assert_eq!(server.inputs().len(), sent);
+}
+
+#[test]
+fn stop_ends_the_daemon() {
+    let dir = scratch("e2e-stop-running");
+    let server = serve_game(&dir, MiniGame::new(None));
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    assert!(session.socket().exists());
+    let stopped = session.run(&["stop"]);
+    assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
+    assert!(session.wait_gone());
+    assert_eq!(stdout(&session.run(&["stop"])), "no daemon is running\n");
 }

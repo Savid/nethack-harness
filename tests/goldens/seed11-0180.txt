@@ -1,5 +1,5 @@
 Dlvl:2 $:0 HP:18(18) Pw:9(9) AC:7 Xp:2 T:1532 Hungry
-Claude the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
+Player the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
    34    40        50        60        70
    456789012345678901234567890123456789012345
  3                                  ---------
@@ -21,6 +21,6 @@ Claude the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
 19 |.....$.|
 20 ---------
 you: 40,17  here: unknown
-seen: { fountain 53,15 (13); < up stairs 57,16 (17); - open door 61,6 (24); - open door 67,7 (30); + door 40,15 (no route)
-items: [ 41,17 (adjacent l); $ 40,19 (2); $ 54,6 (21); [ 53,5 (22); ! 69,6 (32); ! 69,7 (32); +22 more
+seen: + door 40,15 (1); { fountain 53,15 (13); < up stairs 57,16 (17); - open door 61,6 (24); - open door 67,7 (30)
+items: [ 41,17 (adjacent l); $ 40,19 (2); $ 54,6 (21); [ 53,5 (22); ! 69,6 (32); ! 69,7 (32); +21 more
 frontier: 50,15 (10); 35,14 (6); 56,9 (18); 64,8 (28); 66,7 (29)

@@ -1,105 +1,66 @@
 # Repository guidance
 
-## Purpose and boundaries
+## What this is
 
-This harness makes NetHack observable and controllable. Gameplay intelligence
-belongs outside it. Keep these responsibilities separate:
+A NetHack observation and execution adapter for a caller, human or program, driving one game over a terminal
+socket. Keep it generic: nothing here may depend on or name the systems that call it, where they run, or how they
+are deployed.
 
-- **Harness:** decode the UI, retain observed facts, expose mechanical primitives
-  and navigation geometry, execute the selected bounded action, and report results.
-- **Decision layer:** choose the next tool and arguments from the observations
-  and the caller's objective. It owns gameplay choices, including dangerous ones.
-- **LLM layer:** supply goals, game knowledge and strategy; review failures and
-  replan. Model routing and orchestration belong outside the game adapter.
+## Boundaries
 
-- The intended model split lets a decision engine execute concrete goals between
-  outer-LLM planning calls. Bounded execution must not require an outer-LLM call
-  per action; the caller owns the LLM planning loop, goal conditions and selection
-  of the next goal.
-- Keep the project generic and independent of external orchestration systems.
-  Deployment details, coordination, training objectives and reward functions
-  belong outside the game adapter.
-- Distinguish observations, remembered facts and uncertainty. Do not embed game
-  reference tables, tactical rankings, survival rules, hidden goals or policy.
-  Mechanical checks protect command integrity and freshness, not survival.
-- Actions name their targets and bounds. Execution may paginate information and
-  stop when observations change; it must not choose a different goal or action.
-- Use System One style JSON state and constrained choices. Select a tool, then
-  its concrete arguments when needed: one request asks both, with an argument
-  question per tool that has several actions, and a second request asks the
-  arguments only when the first had no room for them or the tool is the
-  named-command group, whose question is asked once it is chosen. Keep endpoint
-  and model configurable; count and record every request, retries included.
-  Prompt answers are direct choices.
-- Requests state each fact once, in compact lines where a fact is one of a list;
-  options refer to facts in the state by action ID or direction key rather than
-  repeating them. The observation and the decision log keep full detail. Measure
-  request size changes in real engine tokens and choices.
-- Treat every decision request as stateless: include its objective, observed
-  progress and complete choices for that stage. Keep caller handoff available
-  when the evidence or choices are insufficient, including argument selection.
-  Choices and the facts that describe them come from the same actions and
-  observation. Preserve targets, bounds, modifier meanings and observation
-  provenance; a command target is not a guaranteed resulting hero position.
-- Enforce caller-specified action bounds mechanically. Scope observed progress
-  to each explicit resume; consumed budgets and completed actions do not establish
-  that an objective succeeded. Goal completion and conditional replanning belong
-  to the external caller.
-- Endpoint failures pause play once transient ones have been retried within the
-  decision timeout. Record the observation, offered choices, engine response,
-  selected action, attempted input and observed result.
-- Surface navigation geometry before tool selection. When execution stalls or
-  a prompt violates its contract, return control with evidence for the LLM layer;
-  do not invent a recovery action or change the objective.
-- Use Python 3.9+ and standard-library runtime dependencies.
-- This is a hard cutover with fresh databases and one current API and storage
-  schema. Remove code that exists only to recognize, translate, repair, backfill
-  or preserve a prior schema, API or wire shape, along with its tests. Do not add
-  compatibility aliases or migrations, or tests asserting that old features are
-  absent. Keep schema, index and foreign-key creation that defines the new
-  database from scratch.
-- Comments should explain a non-obvious constraint or mechanism in the code;
-  omit change history, references to plans and labels that explain nothing.
+- **Decode, remember, route, execute, report.** The harness decodes the screen, remembers what was observed,
+  routes over observed geometry, runs bounded actions and reports what happened.
+- **No game knowledge or policy.** It never advises, ranks, vetoes or chooses, and holds no survival rules or
+  game reference tables. Decoding what a symbol or colour on screen is counts as UI decoding and belongs here.
+- **No answers on the caller's behalf.** Prompts are reported with the keys that answered them; the harness
+  answers only the end-of-game disclosure questions, to reach the final screens.
+- **Bounded actions.** Every action names its target and bounds and stops when observations change. It never
+  substitutes a different goal or action.
+- Distinguish what is on screen, what is remembered, and what is unknown.
+
+## Change rules
+
+- **Hard cutover.** One current CLI, socket API and terminal protocol. No compatibility code, shims, aliases,
+  fallbacks or notes about earlier shapes.
+- **If it is useless, cut it.** Every surface needs a user.
+- **Comments** say what code does or why a constraint exists. No history, plans or external references.
+- **Performance goals:** low resident memory, no idle wakeups, no polling, minimal writes. The daemon blocks in
+  `accept` with no timers, keeps all state in fixed-size structures reused across commands, and writes only its
+  log, on errors. Hot paths use fixed, reused buffers; no cache grows without bound.
+
+## Rust practice
+
+- Edition 2024; the toolchain is pinned in `rust-toolchain.toml`.
+- `#![forbid(unsafe_code)]`.
+- No `unwrap` or `expect` outside tests.
+- Small, flat modules.
+- Dependencies: std, serde and serde_json only. No async runtime and no HTTP client crate.
 
 ## Structure
 
-The modules below live in `nethack_harness/`:
+`src/`:
 
-- `term.py`, `screen.py`, `transport.py`: terminal emulation, parsing and I/O.
-- `perceive.py`, `level.py`, `knowledge.py`: observations, memory, geometry,
-  terminal symbols, direction bindings and the messages that name a trap underfoot.
-- `tools.py`, `actions.py`, `decide.py`, `execute.py`, `session.py`: command registry, action catalogue, endpoint
-  contract, bounded execution and the decision cycle.
-- `progress.py`: objective-scoped attempt evidence and bounded movement cycle detection.
-- `play.py`: direct play for a caller that decides for itself: the compact text
-  view and the `send`, `go` and `rest` commands over the same bounded actions.
-- `control.py`, `daemon.py`, `store.py`, `settings.py`: CLI, process lifecycle,
-  fresh SQLite schema and execution limits.
+- `vt.rs`, `screen.rs`: the terminal emulator and the parsed screen (`View`: messages, prompts, status, phase).
+- `glyphs.rs`: what symbols and colours on screen are.
+- `level.rs`: remembered terrain per level, routes and frontier.
+- `observe.rs`: memory across screens: messages, underfoot notes, inventory, end-of-game text, level identity.
+- `exec.rs`: bounded execution of keys, walks, searches, farlook and look-here.
+- `view.rs`, `play.rs`: the text view and facts, and the `look`, `send`, `go` and `rest` commands.
+- `link.rs`: the HTTP/1.1 link to the terminal server.
+- `daemon.rs`, `cli.rs`: the socket API and the command line.
 
 ## Verification
 
 Run from the repository root:
 
 ```sh
-python3 -m unittest discover -s tests -v
-python3 nethack_harness.py --version
-python3 -m nethack_harness help
-uv tool run ruff==0.16.10 check --select F,E9 --line-length 120 nethack_harness tests tools
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-CI tests Python 3.9 and 3.11. Tests use local sockets, fakes and subprocesses.
-Put regression tests beside the affected subsystem and verify meaningful
-observable behavior. Screen fixtures record observations, not preferred actions.
-Each added test must catch a concrete failure or protect a meaningful boundary.
-Avoid assertions that copy implementation details or freeze prompt wording;
-measure decision quality separately with actual endpoint trials.
-Use `tools/bench.py` with an explicit endpoint for gameplay measurements; report
-endpoint failures separately from completed game outcomes.
-When evaluating model-call savings, count outer-LLM and decision-engine requests
-and token usage separately, including reviews, retries and prompt answers.
-Compare total cost and latency at comparable gameplay progress; authored goal
-counts and frozen-request accuracy are not substitutes for this measurement.
-`tools/bench.py` currently measures only the decision endpoint, not an outer planner.
-
-For packaging changes, build and run the zipapp with `tools/build_pyz.py`.
-Update README examples and interface documentation with behavior changes.
+Tests use local sockets, fakes and subprocesses; `tests/support/server.rs` is a fake terminal server that
+implements `wait` and `waiting`. Put regression tests beside the affected module and test observable behaviour.
+Screen fixtures record observations, not preferred actions. View changes show up in `tests/goldens`: rewrite them
+with `GOLDENS_WRITE=1 cargo test --test goldens` and review the diff. Update README examples and interface
+documentation with behaviour changes.

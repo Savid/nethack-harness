@@ -383,6 +383,7 @@ fn dropped(e: &std::io::Error) -> bool {
         ErrorKind::BrokenPipe
             | ErrorKind::ConnectionReset
             | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
             | ErrorKind::UnexpectedEof
     )
 }

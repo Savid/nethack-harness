@@ -1,5 +1,5 @@
 Dlvl:2 $:0 HP:18(18) Pw:1(1) AC:6 Xp:1 T:662
-Claude the Stripling St:18/03 Dx:12 Co:17 In:8 Wi:9 Ch:8 Lawful
+Player the Stripling St:18/03 Dx:12 Co:17 In:8 Wi:9 Ch:8 Lawful
    11       20        30        40        50        60        70
    12345678901234567890123456789012345678901234567890123456789012345
  2                                                    -----
@@ -24,5 +24,5 @@ Claude the Stripling St:18/03 Dx:12 Co:17 In:8 Wi:9 Ch:8 Lawful
 you: 31,18  here: unknown
 monsters: e 32,18 adjacent l
 seen: > down stairs 33,19 (2); - open door 19,7 (17); | open door 18,8 (19); | open door 46,14 (19); _ altar 15,6 (21); - open door 51,18 (23); +5 more
-items: % 44,5 (19); " 46,5 (21); " 47,6 (22); " 48,7 (23); " 49,6 (24); " 50,5 (25); +9 more
+items: % 44,5 (19); " 46,5 (21); " 47,6 (22); " 48,7 (23); " 49,6 (24); " 50,5 (25); +8 more
 frontier: 28,11 (7); 42,6 (17); 37,6 (25); 18,9 (20); 53,11 (30); 56,15 (30); +3 more

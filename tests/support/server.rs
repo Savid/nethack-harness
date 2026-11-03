@@ -4,8 +4,8 @@
 //! Each request with non-empty input takes the next script step. Output steps append their bytes to the output
 //! buffer and advance the cursor; the reply carries the bytes after the request's `after`, `truncated` when
 //! `after` is older than the buffer start, and `waiting` as the step says. A request with empty input is a pure
-//! read and never takes a step. A request with input while the script is exhausted is answered like a game that
-//! printed nothing and waits. Like the real server, the buffer keeps the last 64 KiB, and a reply body over
+//! read and never takes a step. A request with input while the script is exhausted goes to the responder, if one is
+//! set, which returns what the game prints; without one it is answered like a game that printed nothing and waits. Like the real server, the buffer keeps the last 64 KiB, and a reply body over
 //! 2048 bytes is sent chunked.
 
 use std::collections::VecDeque;
@@ -41,6 +41,9 @@ pub enum Step {
     Slow(u64, Vec<u8>),
 }
 
+/// A game that answers each input the script leaves to it with the bytes it prints.
+pub type Responder = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
 /// One request the server received.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Received {
@@ -64,6 +67,7 @@ struct Game {
     received: Vec<Received>,
     connections: u32,
     streams: Vec<UnixStream>,
+    responder: Option<Responder>,
 }
 
 impl Game {
@@ -168,6 +172,11 @@ impl FakeTerminalServer {
     /// How many connections clients opened.
     pub fn connections(&self) -> u32 {
         lock(&self.game).connections
+    }
+
+    /// Hands every input the script does not take to `responder`.
+    pub fn respond(&self, responder: Responder) {
+        lock(&self.game).responder = Some(responder);
     }
 
     /// Appends steps to the script.
@@ -289,7 +298,13 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
                 g.print(&bytes);
                 g.busy = false;
             }
-            None => g.busy = false,
+            None => {
+                let printed = g.responder.as_mut().map(|respond| respond(&received.input));
+                if let Some(bytes) = printed {
+                    g.print(&bytes);
+                }
+                g.busy = false;
+            }
         }
     }
     g.received.push(received);

@@ -2,7 +2,6 @@
 //! socket. It decodes the screen, remembers what was observed, routes over observed geometry, runs bounded actions
 //! and reports what happened.
 #![forbid(unsafe_code)]
-#![allow(unused_variables, dead_code, clippy::ptr_arg)]
 
 pub mod cli;
 pub mod daemon;

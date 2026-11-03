@@ -1,5 +1,5 @@
 Dlvl:2 $:0 HP:14(14) Pw:3(3) AC:7 Xp:1 T:224
-Claude the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
+Player the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
    34    40        50        60        70
    456789012345678901234567890123456789012345
  3                                  ---------

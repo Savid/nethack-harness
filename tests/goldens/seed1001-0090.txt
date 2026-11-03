@@ -1,5 +1,5 @@
 Dlvl:2 $:0 HP:14(14) Pw:5(5) AC:4 Xp:1 T:451
-Claude the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
+Player the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
    37 40        50        60        70
    78901234567890123456789012345678901234567
  4         # #           --------------
