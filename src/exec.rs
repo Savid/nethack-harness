@@ -19,20 +19,16 @@ pub const IDLE_SEARCHES: u32 = 3;
 const ESCAPE: u8 = 0x1b;
 const REDRAW: u8 = 0x12;
 
-/// What an action does.
+/// What an action does: send the caller's keys, one byte at a time so each prompt is seen before the key that
+/// answers it; walk a known route; walk to a corridor end and follow the corridor beyond it; search in place
+/// repeatedly; farlook a square (`;`, then the cursor keys in `keys`); or look underfoot (`:`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// The caller's keys, sent one byte at a time so each prompt is seen before the key that answers it.
     Keys,
-    /// Walk a known route.
     Travel,
-    /// Walk to a corridor end, then follow the corridor beyond it.
     Explore,
-    /// Search in place, repeatedly.
     Search,
-    /// Farlook a square: `;`, then the cursor keys in `keys`.
     Farlook,
-    /// Look underfoot: `:`.
     LookHere,
 }
 
@@ -47,24 +43,20 @@ pub struct Action {
     pub route: Vec<Pos>,
 }
 
-/// Which observations changed and ended an action, as bit flags.
+/// Which observations changed and ended an action, as bit flags: the status line other than turn, HP and Pw (or
+/// HP or Pw dropped); the conditions; the hero engulfed or released; remembered terrain; a monster in view where
+/// no monster of its glyph and colour stood within one square at the step before; a message not about a pet; HP
+/// that was below its maximum reached it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Changed(pub u8);
 
 impl Changed {
-    /// The status line changed, other than turn, HP and Pw, or HP or Pw dropped.
     pub const STATUS: Changed = Changed(1);
     pub const CONDITIONS: Changed = Changed(2);
-    /// The hero was engulfed or released.
     pub const ENGULFED: Changed = Changed(4);
-    /// Remembered terrain changed.
     pub const TERRAIN: Changed = Changed(8);
-    /// A monster came into view where no monster of its glyph and colour stood within one square at the step
-    /// before.
     pub const ENTITIES: Changed = Changed(16);
-    /// The game wrote a message not about a pet.
     pub const MESSAGE: Changed = Changed(32);
-    /// HP that was below its maximum reached it.
     pub const HP_FULL: Changed = Changed(64);
 
     pub fn contains(self, other: Changed) -> bool {
@@ -80,34 +72,26 @@ impl Changed {
     }
 }
 
-/// Why an action ended.
+/// Why an action ended. A refused step left the hero in place with no turn passing, and is kept out of routes;
+/// `Changed` names what changed in `Outcome::changed`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Stop {
-    /// It did everything asked.
     #[default]
     Completed,
     StepLimit,
     Prompt,
-    /// The hero did not arrive where the step led.
     MovementInterrupted,
-    /// Nothing on screen changed.
     NoEffect,
-    /// The hero left the route.
     RouteChanged,
-    /// Exploring uncovered new terrain.
     FeatureDiscovered,
-    /// The corridor being followed branches.
     BranchDiscovered,
     CorridorEnds,
-    /// Observations in `Outcome::changed` changed.
     Changed,
-    /// A step left the hero in place with no turn passing; it is kept out of routes.
     Refused {
         from: Pos,
         to: Pos,
     },
     GameOver,
-    /// The terminal failed.
     Link(LinkError),
     /// The game kept showing pages past the bound.
     Failed(String),
@@ -143,23 +127,22 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// Adds a message line, leaving out the earliest beyond `REPORTED`.
     fn message(&mut self, text: String) {
-        if self.messages.len() >= REPORTED {
-            self.messages.remove(0);
-            self.messages_left_out += 1;
-        }
-        self.messages.push(text);
+        capped(&mut self.messages, &mut self.messages_left_out, text);
     }
 
-    /// Adds an answered prompt, leaving out the earliest beyond `REPORTED`.
     fn answer(&mut self, answered: Answered) {
-        if self.answered.len() >= REPORTED {
-            self.answered.remove(0);
-            self.answered_left_out += 1;
-        }
-        self.answered.push(answered);
+        capped(&mut self.answered, &mut self.answered_left_out, answered);
     }
+}
+
+/// Adds `item` to `list`, leaving out (and counting) the earliest beyond `REPORTED`.
+fn capped<T>(list: &mut Vec<T>, left_out: &mut u32, item: T) {
+    if list.len() >= REPORTED {
+        list.remove(0);
+        *left_out += 1;
+    }
+    list.push(item);
 }
 
 /// The terminal and memory one action works on, and what it has done so far.
@@ -581,40 +564,40 @@ impl Executor {
             step += 1;
             // A rest reports what interrupted its last search too; a walk that arrived is done.
             if exploring || repeat || step < action.steps {
-                let mut changed = Changed::default();
+                monsters(io.memory, view, &mut self.now);
+                let arrived = arrival(&self.previous, &self.now, view.hero);
+                std::mem::swap(&mut self.previous, &mut self.now);
                 let drained =
                     dropped(prior_hp, view.status.hp) || dropped(prior_pw, view.status.pw);
-                if status_moved(&self.status, &view.status) || drained {
-                    changed.insert(Changed::STATUS);
-                }
-                if view.cond != cond {
-                    changed.insert(Changed::CONDITIONS);
-                }
-                if view.engulfed != engulfed {
-                    changed.insert(Changed::ENGULFED);
-                }
-                if self.terrain_changed(io.memory, action.kind) {
-                    changed.insert(Changed::TERRAIN);
-                }
-                if repeat
+                let healed = repeat
                     && step < action.steps
-                    && let (Some(hp), Some(hpmax)) = (hp, hpmax)
-                    && hp < hpmax
-                    && view.status.hp.unwrap_or(0) >= view.status.hpmax.unwrap_or(hpmax)
-                {
-                    changed.insert(Changed::HP_FULL);
-                }
-                monsters(io.memory, view, &mut self.now);
-                if let Some(arrival) = arrival(&self.previous, &self.now, view.hero) {
-                    changed.insert(Changed::ENTITIES);
-                    io.outcome.arrival = Some(arrival);
-                }
-                std::mem::swap(&mut self.previous, &mut self.now);
-                if news {
-                    changed.insert(Changed::MESSAGE);
+                    && hp.zip(hpmax).is_some_and(|(hp, hpmax)| {
+                        hp < hpmax
+                            && view.status.hp.unwrap_or(0) >= view.status.hpmax.unwrap_or(hpmax)
+                    });
+                let mut changed = Changed::default();
+                for (flag, hit) in [
+                    (
+                        Changed::STATUS,
+                        drained || status_moved(&self.status, &view.status),
+                    ),
+                    (Changed::CONDITIONS, view.cond != cond),
+                    (Changed::ENGULFED, view.engulfed != engulfed),
+                    (
+                        Changed::TERRAIN,
+                        self.terrain_changed(io.memory, action.kind),
+                    ),
+                    (Changed::HP_FULL, healed),
+                    (Changed::ENTITIES, arrived.is_some()),
+                    (Changed::MESSAGE, news),
+                ] {
+                    if hit {
+                        changed.insert(flag);
+                    }
                 }
                 if !changed.is_empty() {
                     io.outcome.changed = changed;
+                    io.outcome.arrival = arrived;
                     return Ok(Stop::Changed);
                 }
             }
@@ -905,12 +888,10 @@ pub fn search(count: u32) -> Action {
     action(Kind::Search, b"s", count)
 }
 
-/// A look underfoot.
 pub fn look_here() -> Action {
     action(Kind::LookHere, b":", 1)
 }
 
-/// The caller's keys.
 pub fn keys(keys: &[u8]) -> Action {
     action(Kind::Keys, keys, 1)
 }
