@@ -87,7 +87,6 @@ type Cost = (u16, u16, u16);
 
 /// Shortest routes from one start square, reused across searches.
 pub struct Paths {
-    start: Pos,
     previous: Box<[Option<Pos>; MAP_SQUARES]>,
     cost: Box<[Cost; MAP_SQUARES]>,
     reached: SquareSet,
@@ -106,17 +105,11 @@ impl Paths {
     /// Empty search state.
     pub fn new() -> Paths {
         Paths {
-            start: Pos::default(),
             previous: Box::new([None; MAP_SQUARES]),
             cost: Box::new([(0, 0, 0); MAP_SQUARES]),
             reached: SquareSet::new(),
             queue: BinaryHeap::new(),
         }
-    }
-
-    /// The start square of the last search.
-    pub fn start(&self) -> Pos {
-        self.start
     }
 
     /// Whether the last search reached `p`.
@@ -168,7 +161,6 @@ pub struct Level {
     /// Remembered glyph by square; `'\0'` where nothing is known.
     terrain: Box<[char; MAP_SQUARES]>,
     colours: Box<[Option<Base>; MAP_SQUARES]>,
-    feature_turns: BTreeMap<Pos, u32>,
     /// Squares assumed floor because the hero stood there before any glyph showed.
     pub inferred_floor: SquareSet,
     /// Squares that ever showed a glyph.
@@ -209,7 +201,6 @@ impl Level {
             label: label.to_owned(),
             terrain: Box::new(['\0'; MAP_SQUARES]),
             colours: Box::new([None; MAP_SQUARES]),
-            feature_turns: BTreeMap::new(),
             inferred_floor: SquareSet::new(),
             seen: SquareSet::new(),
             object_squares: SquareSet::new(),
@@ -237,11 +228,6 @@ impl Level {
         p.index().and_then(|i| self.colours[i])
     }
 
-    /// The turn a feature at `p` was last observed.
-    pub fn feature_turn(&self, p: Pos) -> Option<u32> {
-        self.feature_turns.get(&p).copied()
-    }
-
     /// The remembered squares with their glyphs, row then column.
     pub fn known(&self) -> impl Iterator<Item = (Pos, char)> + '_ {
         self.terrain
@@ -252,7 +238,7 @@ impl Level {
     }
 
     /// Remembers terrain `ch` at `p`.
-    pub fn remember_terrain(&mut self, p: Pos, ch: char, turn: Option<u32>, colour: Option<Base>) {
+    pub fn remember_terrain(&mut self, p: Pos, ch: char, colour: Option<Base>) {
         let Some(i) = p.index() else {
             return;
         };
@@ -264,21 +250,12 @@ impl Level {
             self.colours[i] = None;
         }
         self.inferred_floor.remove(p);
-        match turn {
-            Some(turn) if feature_name(ch).is_some() => {
-                self.feature_turns.insert(p, turn);
-            }
-            _ => {
-                self.feature_turns.remove(&p);
-            }
-        }
     }
 
     /// Takes in every map square of a screen in normal play: terrain, objects, doors, engravings and the hero's
     /// square.
     pub fn observe(&mut self, view: &View) {
         let blind = view.cond.contains(Condition::Blind);
-        let turn = view.status.turn;
         for i in 0..MAP_SQUARES {
             let p = Pos::from_index(i);
             let cell = view.grid.cell(p);
@@ -310,12 +287,12 @@ impl Level {
             }
             self.object_squares.remove(p);
             if is_floor_engraving(ch, colour) {
-                self.remember_terrain(p, '.', turn, Some(colour.base));
+                self.remember_terrain(p, '.', Some(colour.base));
                 self.engravings.insert(p);
                 self.open_doors.remove(p);
                 continue;
             }
-            self.remember_terrain(p, ch, turn, Some(colour.base));
+            self.remember_terrain(p, ch, Some(colour.base));
             if is_corridor_engraving(ch, colour) {
                 self.engravings.insert(p);
             } else {
@@ -383,10 +360,10 @@ impl Level {
         entry.turn = turn;
         for note in notes {
             if let Some(stairs) = stairs_here(note) {
-                self.remember_terrain(p, stairs, turn, None);
+                self.remember_terrain(p, stairs, None);
             }
             if let Some(trap) = trap_kind(note) {
-                self.remember_terrain(p, '^', turn, None);
+                self.remember_terrain(p, '^', None);
                 self.trap_kinds.insert(p, trap.to_owned());
             }
         }
@@ -409,11 +386,6 @@ impl Level {
     pub fn clear_refused(&mut self) {
         self.refused.clear();
         self.refused_from.clear();
-    }
-
-    /// The refused steps, oldest first, as (square, direction key).
-    pub fn refused(&self) -> &[(Pos, u8)] {
-        &self.refused
     }
 
     /// The name of the remembered terrain at `p` that the game checks before a plain move enters it: water, lava,
@@ -491,7 +463,6 @@ impl Level {
     /// Fills `paths` with shortest routes from `start` avoiding `occupied`: fewest refused steps, then fewest
     /// remembered traps, then fewest steps, as the game's own travel prefers.
     pub fn paths(&self, start: Pos, occupied: &SquareSet, paths: &mut Paths) {
-        paths.start = start;
         paths.reached.clear();
         paths.queue.clear();
         let Some(si) = start.index() else {
@@ -1132,14 +1103,12 @@ mod tests {
     }
 
     #[test]
-    fn features_remember_their_turn_and_name() {
+    fn features_are_named() {
         let level = observed(&map(&[" -------- ", " |.@_^.>| ", " -------- "]), 2, 3);
         assert_eq!(level.kind(at(2, 4)), Some("altar"));
         assert_eq!(level.kind(at(2, 5)), Some("trap"));
         assert_eq!(level.kind(at(2, 7)), Some("down stairs"));
         assert_eq!(level.kind(at(2, 6)), None);
-        assert_eq!(level.feature_turn(at(2, 7)), Some(400));
-        assert_eq!(level.feature_turn(at(2, 6)), None);
         let known: Vec<(Pos, char)> = level.known().filter(|&(p, _)| p.y == 2).collect();
         assert_eq!(known.first(), Some(&(at(2, 1), '|')));
         assert_eq!(known.len(), 8);
@@ -1151,7 +1120,6 @@ mod tests {
         let notes = ["There is a staircase down here.", "You see here a dagger."].map(String::from);
         level.note_underfoot(at(2, 3), &notes, Some(401));
         assert_eq!(level.terrain(at(2, 3)), Some('>'));
-        assert_eq!(level.feature_turn(at(2, 3)), Some(401));
         assert!(!level.inferred_floor.contains(at(2, 3)));
         assert_eq!(level.underfoot[&at(2, 3)].notes, notes);
         let trap = ["A little dart shoots out at you!".to_owned()];
@@ -1207,14 +1175,14 @@ mod tests {
         for x in 0..70 {
             level.refuse(at(2, x), b'l');
         }
-        assert_eq!(level.refused().len(), REFUSED_STEPS);
-        assert!(!level.refused().contains(&(at(2, 0), b'l')));
-        assert!(level.refused().contains(&(at(2, 69), b'l')));
+        assert_eq!(level.refused.len(), REFUSED_STEPS);
+        assert!(!level.refused.contains(&(at(2, 0), b'l')));
+        assert!(level.refused.contains(&(at(2, 69), b'l')));
         level.refuse(at(2, 10), b'l');
-        assert_eq!(level.refused().last(), Some(&(at(2, 10), b'l')));
-        assert_eq!(level.refused().len(), REFUSED_STEPS);
+        assert_eq!(level.refused.last(), Some(&(at(2, 10), b'l')));
+        assert_eq!(level.refused.len(), REFUSED_STEPS);
         level.clear_refused();
-        assert!(level.refused().is_empty());
+        assert!(level.refused.is_empty());
 
         let rows = [" ------ ", " |@..>| ", " |....| ", " ------ "];
         let mut level = observed(&map(&rows), 2, 2);
@@ -1235,12 +1203,12 @@ mod tests {
     fn remembered_terrain_keeps_its_colour_only_while_the_glyph_stays() {
         let mut level = Level::new(1, "Dlvl:3");
         let p = at(2, 3);
-        level.remember_terrain(p, '#', Some(1), Some(Base::Green));
-        level.remember_terrain(p, '#', Some(2), None);
+        level.remember_terrain(p, '#', Some(Base::Green));
+        level.remember_terrain(p, '#', None);
         assert_eq!(level.colour(p), Some(Base::Green));
-        level.remember_terrain(p, '.', Some(3), None);
+        level.remember_terrain(p, '.', None);
         assert_eq!(level.colour(p), None);
-        level.remember_terrain(Pos::new(0, 3), '#', None, None);
+        level.remember_terrain(Pos::new(0, 3), '#', None);
         assert_eq!(level.terrain(Pos::new(0, 3)), None);
     }
 
@@ -1249,7 +1217,6 @@ mod tests {
         let level = observed(&map(&["", "   @#####"]), 2, 3);
         let mut paths = Paths::new();
         level.paths(at(2, 3), &SquareSet::new(), &mut paths);
-        assert_eq!(paths.start(), at(2, 3));
         assert_eq!(paths.distance(at(2, 8)), Some(5));
         assert_eq!(paths.distance(at(2, 3)), Some(0));
         let mut out = vec![at(9, 9)];

@@ -124,11 +124,6 @@ impl Names {
         out.sort_by_key(|entity| entity.pos.chebyshev(hero));
         out.truncate(FARLOOKS);
     }
-
-    /// Forgets every name.
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
 }
 
 /// A remembered place, or one a `go` target names: its square, glyph, label and the squares a walk to it ends on.
@@ -996,8 +991,6 @@ mod tests {
         assert_eq!(names.get(1, &newt), Some(("newt", 9)));
         names.retain_visible(1, &[newt]);
         assert_eq!(names.get(1, &newt), Some(("newt", 9)));
-        names.clear();
-        assert_eq!(names.get(1, &newt), None);
     }
 
     #[test]

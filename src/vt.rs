@@ -170,11 +170,6 @@ impl Vt {
         self.complete
     }
 
-    /// Bit `r` is set when row `r` was written or erased since `clear_touched`.
-    pub fn touched(&self) -> u32 {
-        self.touched
-    }
-
     /// Forgets which rows were touched.
     pub fn clear_touched(&mut self) {
         self.touched = 0;
@@ -714,10 +709,10 @@ mod tests {
         vt.feed(b"\x1b[2J\x1b[1;1HYou miss the jackal.\x1b[5;3H@");
         vt.clear_touched();
         vt.feed(b"\x1b[5;3H.\x1b[5;4H@");
-        assert_eq!(vt.touched(), 1 << 4);
+        assert_eq!(vt.touched, 1 << 4);
         assert!(!vt.message_written(1));
         vt.feed(b"\x1b[1;1H\x1b[K");
-        assert!(vt.touched() & 1 != 0);
+        assert!(vt.touched & 1 != 0);
         assert!(vt.message_written(1));
     }
 
@@ -730,7 +725,7 @@ mod tests {
         assert!(vt.complete());
         vt.reset();
         assert!(!vt.complete());
-        assert_eq!(vt.touched(), ALL_ROWS);
+        assert_eq!(vt.touched, ALL_ROWS);
         vt.feed(b"x\x1bc");
         assert!(vt.complete());
         assert_eq!(cell(&vt, 0, 0).ch, ' ');

@@ -280,11 +280,6 @@ impl Colour {
             .position(|&n| n == name)
             .map(|i| COLOURS[i])
     }
-
-    /// The fixture name of the colour.
-    pub fn name(self) -> &'static str {
-        COLOUR_NAMES[self as usize]
-    }
 }
 
 /// One terminal cell.

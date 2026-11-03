@@ -117,11 +117,6 @@ impl<T: Terminal> Play<T> {
         &mut self.term
     }
 
-    /// The memory.
-    pub fn memory(&self) -> &Memory {
-        &self.memory
-    }
-
     /// Reads the screen and renders it. While the map waits for a command, it first names monsters by farlook
     /// (only new or moved ones, at most `FARLOOKS`) and re-reads a known engraving or object square underfoot with
     /// `:` when the turn has advanced since its last reading; both take no game time.

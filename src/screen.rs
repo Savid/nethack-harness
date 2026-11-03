@@ -2,7 +2,7 @@
 //! lines, the hero and map cells.
 
 use crate::glyphs::{self, Conditions, Shade};
-use crate::types::{COLS, Colour, Grid, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
+use crate::types::{COLS, Grid, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
 
 /// What the game is waiting for, judged from the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,15 +439,6 @@ impl View {
         }
     }
 
-    /// The stored foreground colour at a map square, or the default off the map.
-    pub fn fg(&self, p: Pos) -> Colour {
-        if p.on_map() {
-            self.grid.cell(p).fg
-        } else {
-            Colour::Default
-        }
-    }
-
     /// The game's colour at a map square; gray off the map.
     pub fn shade(&self, p: Pos) -> Shade {
         if p.on_map() {
@@ -500,18 +491,6 @@ impl View {
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     }
 
-    /// Writes the screen as text into `out`, replacing its contents: rows with trailing spaces removed, joined by
-    /// newlines.
-    pub fn text_screen(&self, out: &mut String) {
-        out.clear();
-        for (r, row) in self.rows.iter().enumerate() {
-            if r > 0 {
-                out.push('\n');
-            }
-            out.push_str(row.trim_end());
-        }
-    }
-
     /// A cheap hash of cells and cursor, equal for identical screens.
     pub fn fingerprint(&self) -> u64 {
         // Each step is a bijection of the running hash for a fixed word, so screens differing in one cell never
@@ -558,11 +537,10 @@ impl View {
     pub fn menu_entries(&self, out: &mut Vec<MenuEntry>) {
         let (left, rows) = self.menu_window();
         for row in &self.rows[..rows] {
-            if let Some((key, selection, text)) = menu_entry(&row[byte_at(row, left)..]) {
+            if let Some((key, text)) = menu_entry(&row[byte_at(row, left)..]) {
                 out.push(MenuEntry {
                     key,
                     text: text.to_owned(),
-                    selection,
                 });
             }
         }
@@ -595,17 +573,6 @@ impl View {
     }
 }
 
-/// Whether a menu entry is selected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Selection {
-    /// Not selected (`-`).
-    None,
-    /// Partly selected (`#`).
-    Partial,
-    /// Selected (`+` or `*`).
-    All,
-}
-
 /// One selectable menu row: `a - an uncursed dagger`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuEntry {
@@ -613,8 +580,6 @@ pub struct MenuEntry {
     pub key: char,
     /// The entry text.
     pub text: String,
-    /// The selection marker.
-    pub selection: Selection,
 }
 
 /// Whether `row` continues the message on `line` above it: the game splits a long message at a space, so a
@@ -910,8 +875,9 @@ fn footer(row: &str) -> Option<(usize, (u32, u32))> {
     })
 }
 
-/// A menu row `KEY MARK TEXT`, such as `a - a dagger` or `b + 2 arrows`.
-fn menu_entry(row: &str) -> Option<(char, Selection, &str)> {
+/// A menu row `KEY MARK TEXT`, such as `a - a dagger` or `b + 2 arrows`: its key and text. The mark is `-`, `#`
+/// or `+`/`*` for an entry not, partly or wholly selected.
+fn menu_entry(row: &str) -> Option<(char, &str)> {
     let row = row.trim_start();
     let mut chars = row.chars();
     let key = chars.next().filter(|c| ('!'..='~').contains(c))?;
@@ -920,16 +886,9 @@ fn menu_entry(row: &str) -> Option<(char, Selection, &str)> {
     if after_key.len() == rest.len() {
         return None;
     }
-    let mut chars = after_key.chars();
-    let selection = match chars.next()? {
-        '-' => Selection::None,
-        '#' => Selection::Partial,
-        '+' | '*' => Selection::All,
-        _ => return None,
-    };
-    let rest = chars.as_str();
+    let rest = after_key.strip_prefix(['-', '#', '+', '*'])?;
     let text = rest.trim();
-    (!text.is_empty() && rest.starts_with(char::is_whitespace)).then_some((key, selection, text))
+    (!text.is_empty() && rest.starts_with(char::is_whitespace)).then_some((key, text))
 }
 
 #[cfg(test)]
@@ -937,6 +896,7 @@ mod tests {
     use super::*;
     use crate::glyphs::Condition;
     use crate::testkit::{STATUS1, STATUS2, grid, screen};
+    use crate::types::Colour;
 
     fn scr(top: &str, rows: &[&str]) -> Vec<String> {
         screen(top, rows, STATUS1, STATUS2)
@@ -1254,16 +1214,13 @@ mod tests {
         assert_eq!(v.menu_window(), (40, 6));
         let mut entries = Vec::new();
         v.menu_entries(&mut entries);
-        let got: Vec<(char, &str, Selection)> = entries
-            .iter()
-            .map(|e| (e.key, e.text.as_str(), e.selection))
-            .collect();
+        let got: Vec<(char, &str)> = entries.iter().map(|e| (e.key, e.text.as_str())).collect();
         assert_eq!(
             got,
             [
-                ('a', "an uncursed dagger", Selection::None),
-                ('b', "2 arrows (in quiver)", Selection::All),
-                ('c', "some food", Selection::Partial),
+                ('a', "an uncursed dagger"),
+                ('b', "2 arrows (in quiver)"),
+                ('c', "some food"),
             ]
         );
         let end = view_at(&scr("", &[" a - a dagger", " (end)"]), 2, 6);
@@ -1327,8 +1284,6 @@ mod tests {
         let v = View::parse(&g, Pos::new(2, 3));
         assert_eq!(v.ch(Pos::new(2, 3)), '@');
         assert_eq!(v.ch(Pos::new(0, 0)), ' ');
-        assert_eq!(v.fg(Pos::new(2, 3)), Colour::Blue);
-        assert_eq!(v.fg(Pos::new(22, 3)), Colour::Default);
         assert!(v.shade(Pos::new(2, 3)).bright);
         assert_eq!(v.shade(Pos::new(23, 0)), Shade::GRAY);
         assert!(v.pet(Pos::new(2, 2)));
@@ -1336,12 +1291,8 @@ mod tests {
     }
 
     #[test]
-    fn text_screen_and_fingerprint() {
+    fn fingerprints_tell_screens_apart() {
         let a = view(&room());
-        let mut text = String::from("stale");
-        a.text_screen(&mut text);
-        assert!(text.starts_with("\n ----\n |.@.|\n ----\n"));
-        assert_eq!(text.lines().count(), ROWS);
         let b = view(&room());
         assert_eq!(a.fingerprint(), b.fingerprint());
         let moved = view_at(&room(), 2, 4);

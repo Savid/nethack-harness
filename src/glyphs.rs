@@ -89,21 +89,6 @@ pub fn shade(fg: Colour, bold: bool) -> Shade {
     Shade { base, bright }
 }
 
-/// The direction name for a direction key, such as `west` for `h`.
-pub fn direction_name(key: u8) -> Option<&'static str> {
-    Some(match key {
-        b'h' => "west",
-        b'j' => "south",
-        b'k' => "north",
-        b'l' => "east",
-        b'y' => "northwest",
-        b'u' => "northeast",
-        b'b' => "southwest",
-        b'n' => "southeast",
-        _ => return None,
-    })
-}
-
 /// Whether the symbol is an object class symbol: `) [ % ? / = ! ( * " $`.
 pub fn is_item(ch: char) -> bool {
     matches!(
@@ -562,8 +547,6 @@ mod tests {
         assert_eq!(feature_name('#'), None);
         assert_eq!(liquid_name(Base::Red), Some("lava"));
         assert_eq!(liquid_name(Base::Green), None);
-        assert_eq!(direction_name(b'y'), Some("northwest"));
-        assert_eq!(direction_name(b'x'), None);
     }
 
     #[test]

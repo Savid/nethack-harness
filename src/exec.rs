@@ -322,13 +322,6 @@ impl Executor {
         outcome
     }
 
-    /// Dismisses `--More--` pages, at most `PAGES`.
-    pub fn pages(&mut self, term: &mut dyn Terminal, memory: &mut Memory, outcome: &mut Outcome) {
-        if let Err(stop) = self.page(term, memory, outcome) {
-            outcome.stop = stop;
-        }
-    }
-
     fn execute(
         &mut self,
         term: &mut dyn Terminal,
