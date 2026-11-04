@@ -52,8 +52,8 @@ nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND
 | --- | --- |
 | `look` | Print the view. Names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
 | `send KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. |
-| `go [--wet] TARGET` | Walk the shortest known route to `TARGET`, at most `--max-steps` steps, then print the view. `--wet` lets the route step into remembered water. |
-| `rest N` | Search in place up to N times (1 to 200), then print the view. |
+| `go [--wet] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most `--max-steps` steps, then print the view. `--wet` lets the route step into remembered water. |
+| `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
 | `stop` | Stop the session's daemon. With none running it prints `no daemon is running` and exits 0. |
 | `serve` | Run the daemon in the foreground (the client starts it on demand). |
 
@@ -69,10 +69,9 @@ reported.
 walks to a square beside it. `frontier` walks to the nearest group of frontier squares, and at the end of a known
 corridor follows the corridor on. Routes never cross remembered lava, or water except with `--wet` (below), cross
 a remembered trap or a step the game refused only where no other route exists, and pass through the highlighted
-pet. When no route exists
-`go` sends nothing and says why. A walk or rest stops short when a monster arrives (a monster with no monster of
-the same glyph and colour within one square of it at the previous step; `I` and warning digits never count), a
-message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
+pet. When no route exists `go` sends nothing and says why. A walk or rest stops short when a monster arrives (a
+monster with no monster of the same glyph and colour within one square of it at the previous step; `I` and warning
+digits never count), a message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
 refused or a prompt opens. A rest also stops when three searches in a row leave the screen unchanged (`nothing
 changed`), and checks its last search too; searches that pass no game time and change nothing but the message
 were refused by the game (`no time passed`, exit code 1). A `frontier` walk that follows a corridor stops where
@@ -86,6 +85,13 @@ whether the hero can cross; what the game does is reported. A step into water th
 such as `You avoid stepping into the water.`, stops the walk short (exit code 2) with the game's message under
 `msg:` and `wet step X,Y->X,Y refused`; it is not tried again or routed around. The report counts the steps sent
 into water. Without `--wet`, nothing changes.
+
+`--near N` on `go` or `rest` (1 to 80; options may come before or after the operand) narrows the monster stop to a
+radius the caller picks: a monster stops the walk or rest only when it is within N squares of the hero (the larger
+of the column and row distances), measured from where the hero is at each step. A monster counts when it comes
+into view inside the radius, or moves into it from outside; one already inside that moves a square does not. The
+stop reads `a monster came within N squares of the hero (d 41,8, 2 away)`. Every other stop is unchanged, and
+without `--near` a monster coming into view anywhere stops the action, as above.
 
 After `send`, `go` and `rest`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
 eight per command) and reads underfoot with `:` where the hero stands on a square never seen, an object square, or
@@ -128,12 +134,14 @@ time, in order.
 {"cmd": "go", "target": "frontier"}
 {"cmd": "go", "target": ">", "wet": true}
 {"cmd": "rest", "count": 20}
+{"cmd": "rest", "count": 20, "near": 3}
 {"cmd": "stop"}
 ```
 
 `keys` uses the escape syntax above. Each command takes exactly its own field: `send` requires `keys`, `go`
 requires `target` (at most 64 bytes) and takes an optional `wet` (`true` is `go --wet`), `rest` requires `count`
-(1 to 200), and any other field is refused with code 64. The reply is
+(1 to 200), `go` and `rest` take an optional `near` (1 to 80, as `--near`), and any other field is refused with
+code 64. The reply is
 
 ```json
 {"code": 0, "text": "…the text view…", "facts": {…}}
@@ -176,8 +184,9 @@ end: killed by a jackal
 
 The parts, in order:
 
-- **Report line**, after `send`, `go` and `rest`: the command, steps or searches, for `go --wet` the steps into
-  water (`N wet`), turns passed, where the hero is, and `done` or `stopped:` with each reason.
+- **Report line**, after `send`, `go` and `rest`: the command with its options (`go --wet --near 3 >`), steps or
+  searches, for `go --wet` the steps into water (`N wet`), turns passed, where the hero is, and `done` or
+  `stopped:` with each reason.
 - **Status**: the game's two status lines, spaces squashed.
 - **`msg:`**: each complete message written during the command, joined across wrapped rows. Text already on a
   screen printed in full is not repeated. A command reports its last 32 lines, after `(N earlier lines left out)`.

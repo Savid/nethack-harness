@@ -35,7 +35,8 @@ pub enum Kind {
 }
 
 /// A bounded action: the keys of one step (or a farlook's cursor keys), the most steps to take, the square it is
-/// going to or looking at, the known route there, first step first, and whether that route may step into water.
+/// going to or looking at, the known route there, first step first, whether that route may step into water, and
+/// for a walk or rest the radius around the hero within which an arriving monster stops it (`None`: anywhere).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     pub kind: Kind,
@@ -44,6 +45,7 @@ pub struct Action {
     pub target: Option<Pos>,
     pub route: Vec<Pos>,
     pub wet: bool,
+    pub near: Option<u8>,
 }
 
 /// Which observations changed and ended an action, as bit flags: the status line other than turn, HP and Pw (or
@@ -101,11 +103,12 @@ pub enum Stop {
     Failed(String),
 }
 
-/// A monster that ended a rest or walk by arriving.
+/// A monster that ended a rest or walk by arriving, and its distance from the hero then.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arrival {
     pub glyph: char,
     pub pos: Pos,
+    pub dist: u8,
 }
 
 /// What an action did.
@@ -525,7 +528,11 @@ impl Executor {
             let last = step + 1 == action.steps;
             if exploring || repeat || !last {
                 monsters(io.memory, view, &mut self.now);
-                let arrived = arrival(&self.previous, &self.now, view.hero);
+                let arrived = arrival(
+                    (&self.previous, origin),
+                    (&self.now, view.hero),
+                    action.near,
+                );
                 std::mem::swap(&mut self.previous, &mut self.now);
                 let status = dropped(prior_hp, view.status.hp)
                     || dropped(prior_pw, view.status.pw)
@@ -736,18 +743,32 @@ fn monsters(memory: &Memory, view: &View, out: &mut Vec<Entity>) {
 }
 
 /// The monster in `now`, nearest the hero, with no monster of its glyph and colour at or beside its square in
-/// `previous`.
-fn arrival(previous: &[Entity], now: &[Entity], hero: Option<Pos>) -> Option<Arrival> {
+/// `previous`: one that came into view rather than moved a square. `previous` and `now` each come with the hero's
+/// square at that step. With `near`, only a monster within `near` squares of the hero counts, and it counts as well
+/// when it moved there from beyond `near` squares of the hero's square at the step before, so a monster that comes
+/// closer, or that the hero comes closer to, stops the action once inside the radius.
+fn arrival(
+    (previous, origin): (&[Entity], Option<Pos>),
+    (now, hero): (&[Entity], Option<Pos>),
+    near: Option<u8>,
+) -> Option<Arrival> {
+    let within =
+        |p: Pos, hero: Option<Pos>| near.is_none_or(|n| hero.is_some_and(|h| h.chebyshev(p) <= n));
     now.iter()
         .filter(|e| {
-            !previous
-                .iter()
-                .any(|p| p.glyph == e.glyph && p.shade == e.shade && p.pos.chebyshev(e.pos) <= 1)
+            within(e.pos, hero)
+                && !previous.iter().any(|p| {
+                    p.glyph == e.glyph
+                        && p.shade == e.shade
+                        && p.pos.chebyshev(e.pos) <= 1
+                        && within(p.pos, origin)
+                })
         })
         .min_by_key(|e| (hero.map_or(0, |h| h.chebyshev(e.pos)), e.pos))
         .map(|e| Arrival {
             glyph: e.glyph,
             pos: e.pos,
+            dist: hero.map_or(0, |h| h.chebyshev(e.pos)),
         })
 }
 
@@ -798,6 +819,7 @@ fn action(kind: Kind, keys: &[u8], steps: u32, target: Option<Pos>) -> Action {
         target,
         route: Vec::new(),
         wet: false,
+        near: None,
     }
 }
 
@@ -957,6 +979,7 @@ mod tests {
             target: Some(Pos::new(target.0, target.1)),
             route: route.iter().map(|&(y, x)| Pos::new(y, x)).collect(),
             wet: false,
+            near: None,
         }
     }
 
@@ -1216,8 +1239,58 @@ mod tests {
         let arrival = Arrival {
             glyph: 'd',
             pos: Pos::new(2, 7),
+            dist: 3,
         };
         assert_eq!(outcome.arrival, Some(arrival));
+    }
+
+    fn dog(y: u8, x: u8) -> Entity {
+        Entity {
+            pos: Pos::new(y, x),
+            glyph: 'd',
+            shade: crate::glyphs::Shade::GRAY,
+            kind: EntityKind::Monster,
+            pet: false,
+            statue: false,
+        }
+    }
+
+    #[test]
+    fn a_near_radius_lets_only_monsters_within_it_stop_an_action() {
+        let hero = Some(Pos::new(10, 40));
+        let none: [Entity; 0] = [];
+        let far = [dog(10, 50)];
+        // Without a radius a monster coming into view anywhere stops the action; within 3, only one that close.
+        let anywhere = arrival((&none, hero), (&far, hero), None);
+        assert_eq!(anywhere.map(|a| a.dist), Some(10));
+        assert_eq!(arrival((&none, hero), (&far, hero), Some(3)), None);
+        let close = [dog(12, 43)];
+        let expected = Arrival {
+            glyph: 'd',
+            pos: Pos::new(12, 43),
+            dist: 3,
+        };
+        assert_eq!(
+            arrival((&none, hero), (&close, hero), Some(3)),
+            Some(expected)
+        );
+        // A monster inside the radius that moves a square stays quiet; one that moves into it stops the action,
+        // though without a radius the same move is no arrival.
+        assert_eq!(
+            arrival((&close, hero), (&[dog(11, 42)], hero), Some(3)),
+            None
+        );
+        let entering = arrival((&[dog(10, 44)], hero), (&[dog(10, 43)], hero), Some(3));
+        assert_eq!(entering.map(|a| a.pos), Some(Pos::new(10, 43)));
+        assert_eq!(
+            arrival((&[dog(10, 44)], hero), (&[dog(10, 43)], hero), None),
+            None
+        );
+        // The radius is measured from the hero at each step: a monster standing still that the hero walks up to.
+        let still = [dog(10, 45)];
+        let walked = arrival((&still, hero), (&still, Some(Pos::new(10, 42))), Some(3));
+        assert_eq!(walked.map(|a| a.dist), Some(3));
+        assert_eq!(arrival((&still, hero), (&still, hero), Some(3)), None);
     }
 
     #[test]

@@ -506,7 +506,10 @@ fn the_socket_api_answers_one_line_per_connection() {
     assert!(reply.contains("\"code\":64"), "{reply}");
     let bad = ask("{\"cmd\":\"look\",\"keys\":\"x\"}\n");
     assert_eq!(bad["code"], 64);
-    assert_eq!(bad["text"], "look takes no keys, target, wet or count");
+    assert_eq!(
+        bad["text"],
+        "look takes no keys, target, wet, count or near"
+    );
     assert_eq!(ask("not json\n")["code"], 64);
     let look = ask("{\"cmd\":\"look\"}\n");
     assert_eq!(look["code"], 0);
@@ -545,6 +548,7 @@ struct MiniGame {
     turn: u32,
     searches: u32,
     arrives_after: Option<u32>,
+    arrives_at: (u8, u8),
     jackal: Option<(u8, u8)>,
     stage: Stage,
     pick: (u8, u8),
@@ -567,6 +571,7 @@ impl MiniGame {
             turn: 10,
             searches: 0,
             arrives_after,
+            arrives_at: (27, 4),
             jackal: None,
             stage: Stage::Map,
             pick: (22, 4),
@@ -675,7 +680,7 @@ impl MiniGame {
                 self.turn += 1;
                 self.searches += 1;
                 if Some(self.searches) == self.arrives_after {
-                    self.jackal = Some((27, 4));
+                    self.jackal = Some(self.arrives_at);
                 }
             }
             b':' => self.message = "You see no objects here.".to_owned(),
@@ -942,6 +947,43 @@ fn rest_searches_and_stops_short_when_a_monster_arrives() {
     assert!(stopped.contains("27,4"), "{stopped}");
     assert_eq!(facts["monsters"][0]["glyph"], "d");
     assert_eq!(facts["monsters"][0]["name"], "jackal");
+    let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
+    assert_eq!(searches, 3);
+}
+
+#[test]
+fn a_rest_with_a_near_radius_stops_only_for_a_monster_within_it() {
+    // The jackal turns up 5 squares from the hero after the third search: outside a radius of 3.
+    let dir = scratch("e2e-rest-near-far");
+    let server = serve_game(&dir, MiniGame::new(Some(3)));
+    let session = Session::new(&dir, server.path());
+    let rested = session.run(&["--json", "rest", "20", "--near", "3"]);
+    assert_eq!(code(&rested), 0, "{}{}", stdout(&rested), stderr(&rested));
+    let facts = facts(&rested);
+    assert_eq!(facts["report"]["verb"], "rest --near 3 20");
+    assert_eq!(facts["report"]["done"], true);
+    assert_eq!(facts["report"]["steps"], 20);
+    assert_eq!(facts["monsters"][0]["dist"], 5);
+    let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
+    assert_eq!(searches, 20);
+    drop(session);
+    drop(server);
+
+    // The jackal turns up 2 squares away: inside the radius, so the rest stops there.
+    let dir = scratch("e2e-rest-near-close");
+    let mut game = MiniGame::new(Some(3));
+    game.arrives_at = (24, 4);
+    let server = serve_game(&dir, game);
+    let session = Session::new(&dir, server.path());
+    let rested = session.run(&["rest", "--near", "3", "20"]);
+    assert_eq!(code(&rested), 2, "{}{}", stdout(&rested), stderr(&rested));
+    assert_eq!(
+        stdout(&rested).lines().next(),
+        Some(
+            "rest --near 3 20: 3 searches, 3 turns; stopped: a monster came within 3 squares of the hero \
+             (d 24,4, 2 away)"
+        )
+    );
     let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
     assert_eq!(searches, 3);
 }

@@ -2,8 +2,9 @@
 //! line per connection, in order, so play is serialised. It holds all game memory in RAM, has no timers, and writes
 //! only its log, on errors.
 //!
-//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"stop", "keys"?: str, "target"?: str, "wet"?: bool, "count"?: u32}`;
-//! `keys` uses the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
+//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"stop", "keys"?: str, "target"?: str, "wet"?: bool, "count"?: u32,
+//! "near"?: int}`; `keys` uses the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str,
+//! "facts": {…}}`.
 
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{ErrorKind, Read, Write};
@@ -22,6 +23,8 @@ use crate::types::{ExitCode, Reply, unescape};
 const REQUEST_MAX: usize = 4096;
 /// Longest `go` target, in bytes.
 const TARGET_MAX: usize = 64;
+/// Largest `near` radius, in squares: the map's width.
+pub const NEAR_MAX: u8 = 80;
 /// Longest the daemon waits on one client to send its whole request, and again to take its whole reply.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Longest one command keeps sending to the game; past it the command stops short.
@@ -38,7 +41,8 @@ pub enum Cmd {
     Stop,
 }
 
-/// One request line: `keys` for `send`, `target` and optionally `wet` for `go`, `count` for `rest`.
+/// One request line: `keys` for `send`, `target` and optionally `wet` for `go`, `count` for `rest`, and optionally
+/// `near` for `go` and `rest`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -51,6 +55,8 @@ pub struct Request {
     pub wet: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near: Option<u8>,
 }
 
 /// A request whose arguments have been checked.
@@ -58,26 +64,38 @@ pub struct Request {
 pub enum Checked<'a> {
     Look,
     Send(Vec<u8>),
-    Go { target: &'a str, wet: bool },
-    Rest(u32),
+    Go {
+        target: &'a str,
+        wet: bool,
+        near: Option<u8>,
+    },
+    Rest {
+        count: u32,
+        near: Option<u8>,
+    },
     Stop,
 }
 
 /// Checks that a request carries exactly the arguments its command takes, within their limits; the error is the
 /// message it is refused with under code 64.
 pub fn check(request: &Request) -> Result<Checked<'_>, String> {
-    let (keys, target, count) = (
+    let (keys, target, count, near) = (
         request.keys.is_some(),
         request.target.is_some() || request.wet.is_some(),
         request.count.is_some(),
+        request.near,
     );
+    let any = keys || target || count || near.is_some();
     let refuse = |why: &str| Err(why.to_owned());
     match request.cmd {
-        Cmd::Look if keys || target || count => refuse("look takes no keys, target, wet or count"),
-        Cmd::Stop if keys || target || count => refuse("stop takes no keys, target, wet or count"),
-        Cmd::Send if target || count => refuse("send takes only keys"),
-        Cmd::Go if keys || count => refuse("go takes only a target and wet"),
-        Cmd::Rest if keys || target => refuse("rest takes only a count"),
+        Cmd::Look if any => refuse("look takes no keys, target, wet, count or near"),
+        Cmd::Stop if any => refuse("stop takes no keys, target, wet, count or near"),
+        Cmd::Send if target || count || near.is_some() => refuse("send takes only keys"),
+        Cmd::Go if keys || count => refuse("go takes only a target, wet and near"),
+        Cmd::Rest if keys || target => refuse("rest takes only a count and near"),
+        Cmd::Go | Cmd::Rest if near.is_some_and(|n| !(1..=NEAR_MAX).contains(&n)) => {
+            Err(format!("near takes 1 to {NEAR_MAX} squares"))
+        }
         Cmd::Look => Ok(Checked::Look),
         Cmd::Stop => Ok(Checked::Stop),
         Cmd::Send => match unescape(request.keys.as_deref().unwrap_or(""))? {
@@ -88,13 +106,14 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
             Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go {
                 target,
                 wet: request.wet == Some(true),
+                near,
             }),
             _ => Err(format!(
                 "go takes a target of 1 to {TARGET_MAX} bytes: x,y, a map glyph, a feature or frontier"
             )),
         },
         Cmd::Rest => match request.count {
-            Some(count) if (1..=REST_MAX).contains(&count) => Ok(Checked::Rest(count)),
+            Some(count) if (1..=REST_MAX).contains(&count) => Ok(Checked::Rest { count, near }),
             _ => Err(format!("rest takes 1 to {REST_MAX} searches")),
         },
     }
@@ -267,8 +286,8 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
         (Ok(()), Checked::Look) => play.look(),
         (Ok(()), Checked::Send(keys)) => play.send(&keys),
-        (Ok(()), Checked::Go { target, wet }) => play.go(target, wet),
-        (Ok(()), Checked::Rest(count)) => play.rest(count),
+        (Ok(()), Checked::Go { target, wet, near }) => play.go(target, wet, near),
+        (Ok(()), Checked::Rest { count, near }) => play.rest(count, near),
         (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
     };
     let exit = reply.code == ExitCode::Closed;
@@ -300,6 +319,7 @@ mod tests {
             target: None,
             wet: None,
             count: None,
+            near: None,
         }
     }
 
@@ -373,7 +393,8 @@ mod tests {
             check(&go),
             Ok(Checked::Go {
                 target: "23,3",
-                wet: false
+                wet: false,
+                near: None,
             })
         ));
         go.wet = Some(true);
@@ -385,7 +406,10 @@ mod tests {
         go.target = Some("x".repeat(TARGET_MAX + 1));
         assert!(check(&go).is_err());
         go.count = Some(1);
-        assert_eq!(check(&go).unwrap_err(), "go takes only a target and wet");
+        assert_eq!(
+            check(&go).unwrap_err(),
+            "go takes only a target, wet and near"
+        );
         let mut rest = request(Cmd::Rest);
         for (count, ok) in [
             (None, false),
@@ -401,8 +425,11 @@ mod tests {
         look.keys = Some("x".to_owned());
         assert_eq!(
             check(&look).unwrap_err(),
-            "look takes no keys, target, wet or count"
+            "look takes no keys, target, wet, count or near"
         );
+        let mut look = request(Cmd::Look);
+        look.near = Some(3);
+        assert!(check(&look).is_err());
         let mut send = request(Cmd::Send);
         send.keys = Some("s".to_owned());
         send.wet = Some(true);
@@ -410,6 +437,30 @@ mod tests {
         let mut rest = request(Cmd::Rest);
         rest.count = Some(1);
         rest.wet = Some(false);
-        assert_eq!(check(&rest).unwrap_err(), "rest takes only a count");
+        assert_eq!(
+            check(&rest).unwrap_err(),
+            "rest takes only a count and near"
+        );
+        rest.wet = None;
+        for (near, ok) in [
+            (Some(0), false),
+            (Some(1), true),
+            (Some(80), true),
+            (Some(81), false),
+        ] {
+            rest.near = near;
+            assert_eq!(check(&rest).is_ok(), ok, "{near:?}");
+        }
+        rest.near = Some(3);
+        assert!(matches!(
+            check(&rest),
+            Ok(Checked::Rest {
+                count: 1,
+                near: Some(3)
+            })
+        ));
+        send.near = Some(3);
+        send.wet = None;
+        assert_eq!(check(&send).unwrap_err(), "send takes only keys");
     }
 }
