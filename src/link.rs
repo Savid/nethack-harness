@@ -1,12 +1,8 @@
 //! The terminal link: one persistent HTTP/1.1 keep-alive connection over a Unix socket to `POST /terminal`, and
-//! the screen kept in step with it.
-//!
-//! Request: `{"input": base64, "after": cursor, "wait": ms}`. Reply 200: `{"output": base64, "cursor": n,
-//! "truncated": bool, "waiting": bool}`; `waiting` is true when the game is blocked reading a key, has consumed
-//! all input sent so far, and all its output is in `output`. With `wait` > 0 the server holds the reply, whether or
-//! not input was written, until `waiting` is true or the deadline passes; a frozen, stopping or ended game answers
-//! at once with `waiting` false. 503 is busy; 410 `waiting to start` means input is held; any other 410 means the
-//! terminal is closed.
+//! the screen kept in step with it. A request is `{"input": base64, "after": cursor, "wait": ms}`; a 200 reply is
+//! `{"output": base64, "cursor": n, "truncated": bool, "waiting": bool}`, where `waiting` means the game is blocked
+//! reading a key, has consumed all input sent so far, and all its output is in `output`. A frozen, stopping or
+//! ended game answers at once with `waiting` false.
 
 use std::borrow::Cow;
 use std::io::{ErrorKind, Read, Write};
@@ -23,33 +19,28 @@ use crate::vt::Vt;
 
 /// Longest the server is asked to wait for the game to settle, in milliseconds.
 pub const WAIT_MS: u32 = 3000;
-/// Most input bytes one request carries.
 pub const INPUT_MAX: usize = 4096;
 /// Re-reads with `wait` while the game stays busy, before reporting it still busy.
 pub const BUSY_READS: u32 = 4;
-/// Longest a run of 503 answers is retried before giving up.
+/// A run of 503 answers is retried for at most `BUSY_BUDGET`, after pauses that start at `BUSY_PAUSE` and double
+/// up to `BUSY_PAUSE_MAX`.
 const BUSY_BUDGET: Duration = Duration::from_secs(5);
-/// The first pause after a 503; each later one doubles, up to `BUSY_PAUSE_MAX`.
 const BUSY_PAUSE: Duration = Duration::from_millis(10);
-/// The longest pause after a 503.
 const BUSY_PAUSE_MAX: Duration = Duration::from_secs(1);
 
 /// Largest response body accepted: the server keeps at most 64 KiB of output, which base64 and JSON enlarge.
 const BODY_MAX: usize = 512 * 1024;
-/// Largest response header block accepted.
 const HEADER_MAX: usize = 8192;
+const CHUNK_LINE_MAX: usize = 1024;
 /// Capacity the response and output buffers return to after a reply larger than this, such as a full replay.
 const KEEP: usize = 32 * 1024;
 /// A connection idle this long is replaced before use, because the server closes idle connections after 30 s.
 const IDLE: Duration = Duration::from_secs(20);
 /// How much longer than the requested wait a reply may take before the server counts as unresponsive.
 const READ_MARGIN_MS: u64 = 5000;
-/// Longest a request write may block.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Most bytes of an error body quoted in a message.
+/// Most characters of an error body quoted in a message.
 const QUOTE_MAX: usize = 200;
-/// Base64 alphabet.
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Why an exchange with the terminal failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,10 +61,10 @@ pub enum LinkError {
 impl LinkError {
     pub fn code(&self) -> ExitCode {
         match self {
-            LinkError::Held(_) => ExitCode::Held,
-            LinkError::Closed(_) | LinkError::Unavailable(_) => ExitCode::Closed,
-            LinkError::Protocol(_) => ExitCode::Failed,
-            LinkError::Busy(_) => ExitCode::Short,
+            Self::Held(_) => ExitCode::Held,
+            Self::Closed(_) | Self::Unavailable(_) => ExitCode::Closed,
+            Self::Protocol(_) => ExitCode::Failed,
+            Self::Busy(_) => ExitCode::Short,
         }
     }
 }
@@ -81,11 +72,9 @@ impl LinkError {
 impl std::fmt::Display for LinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkError::Held(why) => write!(f, "the game has not started yet: {why}"),
-            LinkError::Closed(why) => write!(f, "the terminal is closed: {why}"),
-            LinkError::Unavailable(why) | LinkError::Protocol(why) | LinkError::Busy(why) => {
-                f.write_str(why)
-            }
+            Self::Held(why) => write!(f, "the game has not started yet: {why}"),
+            Self::Closed(why) => write!(f, "the terminal is closed: {why}"),
+            Self::Unavailable(why) | Self::Protocol(why) | Self::Busy(why) => f.write_str(why),
         }
     }
 }
@@ -106,8 +95,6 @@ pub struct Link {
     path: PathBuf,
     stream: Option<UnixStream>,
     cursor: u64,
-    /// The server has answered once, so a vanished socket means a closed terminal.
-    answered: bool,
     request: Vec<u8>,
     /// The request body while it is built.
     json: Vec<u8>,
@@ -115,6 +102,7 @@ pub struct Link {
     response: Vec<u8>,
     body: Range<usize>,
     output: Vec<u8>,
+    /// When the server last answered; once it has, a vanished socket means a closed terminal.
     used: Option<Instant>,
 }
 
@@ -136,17 +124,15 @@ enum Fail {
     Stale { written: bool },
     /// The socket failed partway through the response, or the response took past its deadline.
     Io(std::io::Error),
-    /// The response is not HTTP this client understands.
-    Bad(String),
+    /// The response is not HTTP this client understands; says what the server answered.
+    Bad(&'static str),
 }
 
-impl From<std::io::Error> for Fail {
-    fn from(e: std::io::Error) -> Fail {
-        Fail::Io(e)
-    }
+/// The error for a reply this client cannot use, saying what the server answered.
+fn answered(what: impl std::fmt::Display) -> LinkError {
+    LinkError::Protocol(format!("the terminal socket answered {what}"))
 }
 
-/// The parts of a response head the client acts on.
 struct Head {
     status: u16,
     length: Option<usize>,
@@ -161,7 +147,6 @@ impl Link {
             path: path.to_path_buf(),
             stream: None,
             cursor: 0,
-            answered: false,
             request: Vec::with_capacity(1024),
             json: Vec::with_capacity(1024),
             response: Vec::with_capacity(16 * 1024),
@@ -174,40 +159,23 @@ impl Link {
     /// Sends `input` (possibly empty, a pure read) and returns what the server answered. With `wait_ms` > 0 the
     /// server holds the reply until the game waits for a key or the deadline passes. 503 answers are retried with
     /// growing pauses for at most `BUSY_BUDGET`.
-    pub fn exchange(&mut self, input: &[u8], wait_ms: u32) -> Result<Exchange, LinkError> {
+    pub fn exchange(&mut self, mut input: &[u8], wait_ms: u32) -> Result<Exchange, LinkError> {
         if input.len() > INPUT_MAX {
             return Err(LinkError::Protocol(format!(
                 "at most {INPUT_MAX} input bytes go in one request"
             )));
         }
-        let mut input = input;
         let mut wait = wait_ms.min(WAIT_MS);
         let mut reset = false;
         let busy_until = Instant::now() + BUSY_BUDGET;
         let mut pause = BUSY_PAUSE;
         loop {
-            let status = self.post(input, wait)?;
-            match status {
-                200 => {
-                    let (cursor, truncated, waiting) = self.decode()?;
-                    if cursor < self.cursor {
-                        // The server started over and clamped `after` to its new cursor, so this reply holds
-                        // none of its output: read everything it has from the start.
-                        self.cursor = 0;
-                        reset = true;
-                        input = &[];
-                        wait = 0;
-                        continue;
-                    }
-                    self.cursor = cursor;
-                    return Ok(Exchange {
-                        reset: reset || truncated,
-                        waiting,
-                    });
-                }
+            match self.post(input, wait)? {
+                200 => {}
                 503 if Instant::now() + pause < busy_until => {
                     std::thread::sleep(pause);
                     pause = (pause * 2).min(BUSY_PAUSE_MAX);
+                    continue;
                 }
                 503 => {
                     return Err(LinkError::Protocol(format!(
@@ -215,21 +183,35 @@ impl Link {
                         BUSY_BUDGET.as_secs()
                     )));
                 }
-                410 => {
-                    let text = self.quote();
-                    return Err(if text.contains("waiting") {
-                        LinkError::Held(text)
-                    } else {
-                        LinkError::Closed(text)
-                    });
+                410 if self.quote().contains("waiting") => {
+                    return Err(LinkError::Held(self.quote()));
                 }
-                _ => {
-                    return Err(LinkError::Protocol(format!(
-                        "the terminal socket answered HTTP {status}: {}",
-                        self.quote()
-                    )));
-                }
+                410 => return Err(LinkError::Closed(self.quote())),
+                status => return Err(answered(format!("HTTP {status}: {}", self.quote()))),
             }
+            let answer: Answer = serde_json::from_slice(&self.response[self.body.clone()])
+                .map_err(|e| answered(format!("malformed JSON: {e}")))?;
+            self.output.clear();
+            self.output.shrink_to(KEEP);
+            let text = answer.output.as_deref().unwrap_or_default();
+            if !base64_decode(text.as_bytes(), &mut self.output) {
+                self.output.clear();
+                return Err(answered("malformed base64 output"));
+            }
+            if answer.cursor < self.cursor {
+                // The server started over and clamped `after` to its new cursor, so this reply holds none of its
+                // output: read everything it has from the start.
+                self.cursor = 0;
+                reset = true;
+                input = &[];
+                wait = 0;
+                continue;
+            }
+            self.cursor = answer.cursor;
+            return Ok(Exchange {
+                reset: reset || answer.truncated,
+                waiting: answer.waiting,
+            });
         }
     }
 
@@ -249,30 +231,9 @@ impl Link {
         text.trim().chars().take(QUOTE_MAX).collect()
     }
 
-    /// Decodes a 200 body into `output`; returns the cursor, `truncated` and `waiting`.
-    fn decode(&mut self) -> Result<(u64, bool, bool), LinkError> {
-        let answer: Answer =
-            serde_json::from_slice(&self.response[self.body.clone()]).map_err(|e| {
-                LinkError::Protocol(format!("the terminal socket answered malformed JSON: {e}"))
-            })?;
-        self.output.clear();
-        if self.output.capacity() > KEEP {
-            self.output.shrink_to(KEEP);
-        }
-        if let Some(text) = &answer.output
-            && !base64_decode(text.as_bytes(), &mut self.output)
-        {
-            self.output.clear();
-            return Err(LinkError::Protocol(
-                "the terminal socket answered malformed base64 output".to_owned(),
-            ));
-        }
-        Ok((answer.cursor, answer.truncated, answer.waiting))
-    }
-
-    /// Posts one request and returns the response status, with its body in `response[body]`. A connection the
-    /// server closed is replaced once, unless it may have taken the request's input: input is never sent twice.
-    /// One idle long enough for the server to close it is replaced before use.
+    /// Posts one request and returns the response status, with its body in `response[body]`. Input is never sent
+    /// twice: a kept connection is checked before input goes out on it, and one the server closed is replaced once,
+    /// unless it may have taken the input. One idle long enough for the server to close it is replaced before use.
     fn post(&mut self, input: &[u8], wait: u32) -> Result<u16, LinkError> {
         self.json.clear();
         self.json.extend_from_slice(b"{\"input\":\"");
@@ -287,144 +248,109 @@ impl Link {
             self.json.len()
         );
         self.request.extend_from_slice(&self.json);
-        if self.response.capacity() > KEEP {
-            self.response.clear();
-            self.response.shrink_to(KEEP);
-        }
-        if self.used.is_some_and(|at| at.elapsed() >= IDLE) {
+        let has_input = !input.is_empty();
+        if self.used.is_some_and(|at| at.elapsed() >= IDLE)
+            || (has_input && self.stream.as_ref().is_some_and(|stream| !open(stream)))
+        {
             self.stream = None;
         }
         let limit = u64::from(wait) + READ_MARGIN_MS;
-        let mut retried = false;
+        // A failed connection is not put back, so a retry connects afresh and is never retried itself.
         loop {
-            // Input is sent at most once, so a kept connection the server has since closed is found before it.
-            if !input.is_empty() && self.stream.as_ref().is_some_and(|stream| !open(stream)) {
-                self.stream = None;
-            }
             let reused = self.stream.is_some();
             let mut stream = match self.stream.take() {
                 Some(stream) => stream,
                 None => self.connect()?,
             };
             let deadline = Instant::now() + Duration::from_millis(limit);
-            match self.round_trip(&mut stream, deadline) {
+            let error = match self.round_trip(&mut stream, deadline) {
                 Ok(head) => {
-                    self.answered = true;
                     self.used = Some(Instant::now());
                     if !head.close {
                         self.stream = Some(stream);
                     }
                     return Ok(head.status);
                 }
-                Err(Fail::Stale { written })
-                    if reused && !retried && (!written || input.is_empty()) =>
-                {
-                    retried = true;
-                }
-                Err(Fail::Stale { written: true }) if !input.is_empty() => {
-                    return Err(LinkError::Protocol(
-                        "the terminal connection closed before answering; whether the keys reached the game \
-                         is unknown"
-                            .to_owned(),
-                    ));
-                }
-                Err(Fail::Stale { .. }) => {
-                    return Err(self.gone(&"the connection closed without an answer"));
-                }
-                Err(Fail::Io(e))
-                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                {
-                    return Err(LinkError::Protocol(format!(
-                        "the terminal socket did not answer within {limit} ms"
-                    )));
-                }
-                Err(Fail::Io(e)) => {
-                    return Err(LinkError::Protocol(format!(
-                        "the terminal connection failed partway through an exchange ({e})"
-                    )));
-                }
-                Err(Fail::Bad(why)) => return Err(LinkError::Protocol(why)),
-            }
+                Err(Fail::Stale { written }) if reused && !(written && has_input) => continue,
+                Err(Fail::Stale { written: true }) if has_input => LinkError::Protocol(
+                    "the terminal connection closed before answering; whether the keys reached the game is \
+                     unknown"
+                        .to_owned(),
+                ),
+                Err(Fail::Stale { .. }) => self.gone(&"the connection closed without an answer"),
+                Err(Fail::Io(e)) => LinkError::Protocol(match e.kind() {
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+                        format!("the terminal socket did not answer within {limit} ms")
+                    }
+                    _ => format!("the terminal connection failed partway through an exchange ({e})"),
+                }),
+                Err(Fail::Bad(what)) => answered(what),
+            };
+            return Err(error);
         }
     }
 
-    fn connect(&mut self) -> Result<UnixStream, LinkError> {
-        let stream = UnixStream::connect(&self.path).map_err(|e| self.gone(&e))?;
-        stream
-            .set_write_timeout(Some(WRITE_TIMEOUT))
-            .and_then(|()| {
-                stream.set_read_timeout(Some(Duration::from_millis(
-                    u64::from(WAIT_MS) + READ_MARGIN_MS,
-                )))
+    fn connect(&self) -> Result<UnixStream, LinkError> {
+        let read_timeout = Duration::from_millis(u64::from(WAIT_MS) + READ_MARGIN_MS);
+        UnixStream::connect(&self.path)
+            .and_then(|stream| {
+                stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+                stream.set_read_timeout(Some(read_timeout))?;
+                Ok(stream)
             })
-            .map_err(|e| self.gone(&e))?;
-        Ok(stream)
+            .map_err(|e| self.gone(&e))
     }
 
     /// The error for a socket that failed: closed if it answered before, otherwise unreachable.
     fn gone(&self, why: &dyn std::fmt::Display) -> LinkError {
-        if self.answered {
+        let path = self.path.display();
+        if self.used.is_some() {
             LinkError::Closed(format!("the terminal socket went away ({why})"))
         } else {
-            LinkError::Unavailable(format!(
-                "cannot reach the terminal socket {}: {why}",
-                self.path.display()
-            ))
+            LinkError::Unavailable(format!("cannot reach the terminal socket {path}: {why}"))
         }
     }
 
     /// Writes the request and reads one response into `response` by `deadline`, its body dechunked in place.
     fn round_trip(&mut self, stream: &mut UnixStream, deadline: Instant) -> Result<Head, Fail> {
-        if let Err(e) = stream.write_all(&self.request) {
-            return Err(if dropped(&e) {
-                Fail::Stale { written: false }
-            } else {
-                Fail::Io(e)
-            });
+        match stream.write_all(&self.request) {
+            Ok(()) => {}
+            Err(e) if dropped(&e) => return Err(Fail::Stale { written: false }),
+            Err(e) => return Err(Fail::Io(e)),
         }
         self.response.clear();
-        self.body = 0..0;
-        let mut from = 0;
-        let end = loop {
-            if let Some(at) = find(&self.response[from..], b"\r\n\r\n") {
-                break from + at + 4;
-            }
-            if self.response.len() > HEADER_MAX {
-                return Err(Fail::Bad(
-                    "the terminal socket answered oversized headers".to_owned(),
-                ));
-            }
-            from = self.response.len().saturating_sub(3);
-            match more(stream, &mut self.response, deadline) {
-                Err(Fail::Io(e)) if self.response.is_empty() && dropped(&e) => {
-                    return Err(Fail::Stale { written: true });
-                }
-                other => other?,
-            }
+        self.response.shrink_to(KEEP);
+        let mut reply = Reply {
+            stream,
+            buf: &mut self.response,
+            deadline,
         };
-        let mut head = parse_head(&self.response[..end])?;
+        let end = match reply.find(0, b"\r\n\r\n", HEADER_MAX, "oversized headers") {
+            Err(Fail::Io(e)) if reply.buf.is_empty() && dropped(&e) => {
+                return Err(Fail::Stale { written: true });
+            }
+            found => found? + 4,
+        };
+        let mut head = parse_head(&reply.buf[..end])?;
         let length = if head.chunked {
-            dechunk(stream, &mut self.response, end, deadline)?
+            reply.dechunk(end)?
         } else if let Some(length) = head.length {
             if length > BODY_MAX {
-                return Err(Fail::Bad(
-                    "the terminal socket answered an oversized body".to_owned(),
-                ));
+                return Err(Fail::Bad("an oversized body"));
             }
-            while self.response.len() < end + length {
-                more(stream, &mut self.response, deadline)?;
+            while reply.buf.len() < end + length {
+                reply.more()?;
             }
             length
         } else {
             head.close = true;
             loop {
-                match more(stream, &mut self.response, deadline) {
-                    Ok(()) => {}
+                match reply.more() {
                     Err(Fail::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
-                    Err(other) => return Err(other),
+                    read => read?,
                 }
             }
-            self.response.len() - end
+            reply.buf.len() - end
         };
         self.body = end..end + length;
         Ok(head)
@@ -433,11 +359,10 @@ impl Link {
 
 /// Whether a kept connection is still open: no end of file or error is waiting to be read on it.
 fn open(stream: &UnixStream) -> bool {
-    let mut byte = [0u8; 1];
     if stream.set_nonblocking(true).is_err() {
         return false;
     }
-    let pending = (&*stream).read(&mut byte);
+    let pending = (&*stream).read(&mut [0u8; 1]);
     stream.set_nonblocking(false).is_ok()
         && matches!(pending, Err(e) if e.kind() == ErrorKind::WouldBlock)
 }
@@ -454,45 +379,102 @@ fn dropped(e: &std::io::Error) -> bool {
     )
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
+/// A response being read from `stream` into `buf`, all of it by `deadline`, so a server sending its reply a byte at
+/// a time cannot hold the link.
+struct Reply<'a> {
+    stream: &'a mut UnixStream,
+    buf: &'a mut Vec<u8>,
+    deadline: Instant,
 }
 
-/// Reads at least one more byte into `buf`; EOF is `UnexpectedEof`, and a read once `deadline` has passed is
-/// `TimedOut`, so a server sending its reply a byte at a time cannot hold the link.
-fn more(stream: &mut UnixStream, buf: &mut Vec<u8>, deadline: Instant) -> Result<(), Fail> {
-    if buf.len() > HEADER_MAX + BODY_MAX {
-        return Err(Fail::Bad(
-            "the terminal socket answered an oversized response".to_owned(),
-        ));
+impl Reply<'_> {
+    /// Reads at least one more byte; end of file is `UnexpectedEof`, and a read once the deadline has passed is
+    /// `TimedOut`.
+    fn more(&mut self) -> Result<(), Fail> {
+        if self.buf.len() > HEADER_MAX + BODY_MAX {
+            return Err(Fail::Bad("an oversized response"));
+        }
+        if Instant::now() >= self.deadline {
+            return Err(Fail::Io(ErrorKind::TimedOut.into()));
+        }
+        let len = self.buf.len();
+        self.buf.resize(len + 16 * 1024, 0);
+        let read = loop {
+            match self.stream.read(&mut self.buf[len..]) {
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                read => break read,
+            }
+        };
+        self.buf.truncate(len + read.as_ref().copied().unwrap_or(0));
+        match read {
+            Ok(0) => Err(Fail::Io(ErrorKind::UnexpectedEof.into())),
+            Ok(_) => Ok(()),
+            Err(e) => Err(Fail::Io(e)),
+        }
     }
-    if Instant::now() >= deadline {
-        return Err(Fail::Io(ErrorKind::TimedOut.into()));
+
+    /// The offset of the first `pat` at or after `buf[at..]`, reading more as needed; more than `max` bytes from
+    /// `at` without one is `Bad(why)`.
+    fn find(
+        &mut self,
+        at: usize,
+        pat: &[u8],
+        max: usize,
+        why: &'static str,
+    ) -> Result<usize, Fail> {
+        let mut from = at;
+        loop {
+            if let Some(i) = self.buf[from..].windows(pat.len()).position(|w| w == pat) {
+                return Ok(from + i);
+            }
+            if self.buf.len() - at > max {
+                return Err(Fail::Bad(why));
+            }
+            from = self.buf.len().saturating_sub(pat.len() - 1).max(at);
+            self.more()?;
+        }
     }
-    let len = buf.len();
-    buf.resize(len + 16 * 1024, 0);
-    loop {
-        match stream.read(&mut buf[len..]) {
-            Ok(0) => {
-                buf.truncate(len);
-                return Err(Fail::Io(ErrorKind::UnexpectedEof.into()));
+
+    /// Decodes in place a chunked body that starts at `buf[start..]`, reading more as needed; returns the body's
+    /// length, which then lies at `buf[start..]`.
+    fn dechunk(&mut self, start: usize) -> Result<usize, Fail> {
+        let bad = || Fail::Bad("a malformed chunked body");
+        let mut at = start;
+        let mut end = start;
+        loop {
+            let line = self.find(at, b"\r\n", CHUNK_LINE_MAX, "an overlong chunk line")?;
+            let size_text = std::str::from_utf8(&self.buf[at..line]).map_err(|_| bad())?;
+            let size_text = size_text.split(';').next().unwrap_or("").trim();
+            let size = usize::from_str_radix(size_text, 16).map_err(|_| bad())?;
+            at = line + 2;
+            if size == 0 {
+                // Trailers, if any, end with an empty line.
+                loop {
+                    let line = self.find(at, b"\r\n", CHUNK_LINE_MAX, "an overlong chunk line")?;
+                    if line == at {
+                        return Ok(end - start);
+                    }
+                    at = line + 2;
+                }
             }
-            Ok(n) => {
-                buf.truncate(len + n);
-                return Ok(());
+            if end - start + size > BODY_MAX {
+                return Err(Fail::Bad("an oversized body"));
             }
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) => {
-                buf.truncate(len);
-                return Err(Fail::Io(e));
+            while self.buf.len() < at + size + 2 {
+                self.more()?;
             }
+            if &self.buf[at + size..at + size + 2] != b"\r\n" {
+                return Err(bad());
+            }
+            self.buf.copy_within(at..at + size, end);
+            end += size;
+            at += size + 2;
         }
     }
 }
 
-/// Parses the status line and the headers that frame the body.
 fn parse_head(head: &[u8]) -> Result<Head, Fail> {
-    let bad = || Fail::Bad("the terminal socket answered malformed HTTP".to_owned());
+    let bad = || Fail::Bad("malformed HTTP");
     let text = std::str::from_utf8(head).map_err(|_| bad())?;
     let mut lines = text.split("\r\n");
     let mut status_line = lines.next().ok_or_else(bad)?.split(' ');
@@ -500,31 +482,22 @@ fn parse_head(head: &[u8]) -> Result<Head, Fail> {
     if !version.starts_with("HTTP/1.") {
         return Err(bad());
     }
-    let status = status_line
-        .next()
-        .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(bad)?;
+    let status = status_line.next().unwrap_or_default();
     let mut parsed = Head {
-        status,
+        status: status.parse().map_err(|_| bad())?,
         length: None,
         chunked: false,
         close: version == "HTTP/1.0",
     };
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
+    for (name, value) in lines.filter_map(|line| line.split_once(':')) {
         let name = name.trim();
-        let value = value.trim();
+        let mut tokens = value.split(',').map(str::trim);
         if name.eq_ignore_ascii_case("content-length") {
-            parsed.length = Some(value.parse().map_err(|_| bad())?);
+            parsed.length = Some(value.trim().parse().map_err(|_| bad())?);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            parsed.chunked = value
-                .split(',')
-                .any(|v| v.trim().eq_ignore_ascii_case("chunked"));
+            parsed.chunked = tokens.any(|token| token.eq_ignore_ascii_case("chunked"));
         } else if name.eq_ignore_ascii_case("connection") {
-            for token in value.split(',') {
-                let token = token.trim();
+            for token in tokens {
                 if token.eq_ignore_ascii_case("close") {
                     parsed.close = true;
                 } else if token.eq_ignore_ascii_case("keep-alive") {
@@ -536,93 +509,19 @@ fn parse_head(head: &[u8]) -> Result<Head, Fail> {
     Ok(parsed)
 }
 
-/// Decodes in place a chunked body that starts at `buf[start..]`, reading more as needed; returns the body's
-/// length, which then lies at `buf[start..]`.
-fn dechunk(
-    stream: &mut UnixStream,
-    buf: &mut Vec<u8>,
-    start: usize,
-    deadline: Instant,
-) -> Result<usize, Fail> {
-    let bad = || Fail::Bad("the terminal socket answered a malformed chunked body".to_owned());
-    let mut at = start;
-    let mut end = start;
-    loop {
-        let line = line_end(stream, buf, at, deadline)?;
-        let size_text = std::str::from_utf8(&buf[at..line]).map_err(|_| bad())?;
-        let size_text = size_text.split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size_text, 16).map_err(|_| bad())?;
-        at = line + 2;
-        if size == 0 {
-            // Trailers, if any, end with an empty line.
-            loop {
-                let line = line_end(stream, buf, at, deadline)?;
-                let empty = line == at;
-                at = line + 2;
-                if empty {
-                    return Ok(end - start);
-                }
-            }
-        }
-        if end - start + size > BODY_MAX {
-            return Err(Fail::Bad(
-                "the terminal socket answered an oversized body".to_owned(),
-            ));
-        }
-        while buf.len() < at + size + 2 {
-            more(stream, buf, deadline)?;
-        }
-        if &buf[at + size..at + size + 2] != b"\r\n" {
-            return Err(bad());
-        }
-        buf.copy_within(at..at + size, end);
-        end += size;
-        at += size + 2;
-    }
-}
-
-/// The offset of the CRLF ending the line that starts at `buf[at..]`, reading more as needed.
-fn line_end(
-    stream: &mut UnixStream,
-    buf: &mut Vec<u8>,
-    at: usize,
-    deadline: Instant,
-) -> Result<usize, Fail> {
-    let mut from = at;
-    loop {
-        if let Some(end) = find(&buf[from..], b"\r\n") {
-            return Ok(from + end);
-        }
-        if buf.len() - at > 1024 {
-            return Err(Fail::Bad(
-                "the terminal socket answered an overlong chunk line".to_owned(),
-            ));
-        }
-        from = buf.len().saturating_sub(1).max(at);
-        more(stream, buf, deadline)?;
-    }
-}
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 encoding of `bytes`, appended to `out`.
 pub fn base64_encode(bytes: &[u8], out: &mut Vec<u8>) {
     out.reserve(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = chunk.get(1).copied().map_or(0, u32::from);
-        let b2 = chunk.get(2).copied().map_or(0, u32::from);
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[(n >> 18) as usize & 63]);
-        out.push(ALPHABET[(n >> 12) as usize & 63]);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63]
-        } else {
-            b'='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63]
-        } else {
-            b'='
-        });
+        let n = chunk.iter().fold(0, |n, &byte| n << 8 | u32::from(byte));
+        // A chunk of k bytes, at the top of 24 bits, fills k + 1 characters; `=` pads the rest.
+        let n = n << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63]);
+        }
+        out.resize(out.len() + 3 - chunk.len(), b'=');
     }
 }
 
@@ -641,36 +540,19 @@ fn sextet(c: u8) -> Option<u32> {
 
 /// Standard base64 decoding of `text`, appended to `out`; false on malformed input. Padding may be left off.
 pub fn base64_decode(text: &[u8], out: &mut Vec<u8>) -> bool {
-    let pad = text
-        .iter()
-        .rev()
-        .take(2)
-        .take_while(|&&c| c == b'=')
-        .count();
-    if pad > 0 && !text.len().is_multiple_of(4) {
-        return false;
-    }
+    let pad = text.iter().rev().take_while(|&&c| c == b'=').count().min(2);
     let data = &text[..text.len() - pad];
-    if data.len() % 4 == 1 {
+    if (pad > 0 && !text.len().is_multiple_of(4)) || data.len() % 4 == 1 {
         return false;
     }
     out.reserve(data.len() / 4 * 3 + 2);
     for group in data.chunks(4) {
-        let mut n = 0u32;
-        for &c in group {
-            let Some(v) = sextet(c) else {
-                return false;
-            };
-            n = (n << 6) | v;
-        }
-        n <<= 6 * (4 - group.len() as u32);
-        out.push((n >> 16) as u8);
-        if group.len() > 2 {
-            out.push((n >> 8) as u8);
-        }
-        if group.len() > 3 {
-            out.push(n as u8);
-        }
+        let Some(n) = group.iter().try_fold(0, |n, &c| Some(n << 6 | sextet(c)?)) else {
+            return false;
+        };
+        // A group of k characters holds k - 1 bytes, at the top of its 24 bits.
+        let n: u32 = n << (6 * (4 - group.len()));
+        out.extend_from_slice(&n.to_be_bytes()[1..group.len()]);
     }
     true
 }
@@ -720,8 +602,7 @@ impl Term {
     /// Reads the screen once the game waits for a key, so a game still starting up has drawn its first screen, and,
     /// if the emulator has never seen a full clear, asks the game to redraw (`^R`).
     pub fn sync(&mut self) -> Result<(), LinkError> {
-        let exchange = self.link.exchange(&[], WAIT_MS)?;
-        self.apply(exchange, None);
+        self.step(None, WAIT_MS)?;
         if !self.vt.complete() {
             self.send(b"\x12")?;
         }
@@ -738,9 +619,11 @@ impl Term {
         self.vt.complete()
     }
 
-    /// Applies an exchange: resets the screen if the output does not continue, notes `keys` against the screen
-    /// they were typed at, feeds the output and re-parses the view.
-    fn apply(&mut self, exchange: Exchange, keys: Option<&[u8]>) {
+    /// Sends `keys`, or none for a pure read, and applies the reply: resets the screen if the output does not
+    /// continue, notes `keys` against the screen they were typed at, feeds the output and re-parses the view.
+    /// Returns whether the game waits for a key.
+    fn step(&mut self, keys: Option<&[u8]>, wait: u32) -> Result<bool, LinkError> {
+        let exchange = self.link.exchange(keys.unwrap_or_default(), wait)?;
         if exchange.reset {
             self.vt.reset();
             self.prompts.reset();
@@ -748,35 +631,30 @@ impl Term {
         if let Some(keys) = keys {
             self.prompts.before_input(&self.view, keys);
         }
-        if self.link.output().is_empty() && !exchange.reset && keys.is_none() {
-            return;
+        if exchange.reset || keys.is_some() || !self.link.output().is_empty() {
+            self.vt.feed(self.link.output());
+            self.view.reparse(self.vt.grid(), self.vt.cursor());
+            self.prompts.observe(&mut self.view);
         }
-        self.vt.feed(self.link.output());
-        self.view.reparse(self.vt.grid(), self.vt.cursor());
-        self.prompts.observe(&mut self.view);
+        Ok(exchange.waiting)
     }
 }
 
 impl Terminal for Term {
     fn poll(&mut self) -> Result<(), LinkError> {
-        let exchange = self.link.exchange(&[], 0)?;
-        self.apply(exchange, None);
+        self.step(None, 0)?;
         Ok(())
     }
 
     fn send(&mut self, keys: &[u8]) -> Result<(), LinkError> {
-        let late = || {
-            LinkError::Busy("the command ran out of time; the game may still be busy".to_owned())
-        };
         self.vt.clear_touched();
         for read in 0..=BUSY_READS {
             if self.deadline.is_some_and(|at| Instant::now() >= at) {
-                return Err(late());
+                return Err(LinkError::Busy(
+                    "the command ran out of time; the game may still be busy".to_owned(),
+                ));
             }
-            let typed = (read == 0).then_some(keys);
-            let exchange = self.link.exchange(typed.unwrap_or_default(), WAIT_MS)?;
-            self.apply(exchange, typed);
-            if exchange.waiting {
+            if self.step((read == 0).then_some(keys), WAIT_MS)? {
                 return Ok(());
             }
         }
