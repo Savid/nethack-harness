@@ -1,0 +1,8 @@
+Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:400
+Hero the Stripling St:16 Dx:12 Co:14 In:9 Wi:10 Ch:8 Lawful
+   2       10
+   2345678901
+ 2 ####@0####
+you: 6,2  here: unknown
+items: 0 7,2 (adjacent l)
+frontier: 2,2 (4)

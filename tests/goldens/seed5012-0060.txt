@@ -1,0 +1,21 @@
+Dlvl:2 $:0 HP:11(11) Pw:7(7) AC:9 Xp:1 T:141
+Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
+msg: You stop.  Your kitten is in the way!
+   9          20        30        40
+   90123456789012345678901234567890123456
+ 9 +   +
+10 ### #
+11   ####
+12     ####     #
+13       ####f@e######## #
+14           # ##     ####
+15           # #      #-.----------+---
+16           + #       |....._....r...|
+17             #       |..........<...|
+18            +#       +...............##
+19                     |..............|
+20                     ----------------
+you: 20,13  here: unknown
+monsters: f pet 19,13 adjacent h; e 21,13 adjacent l; r 40,16 20 away
+seen: + door or object 19,16 (3); + door or object 20,18 (6); + door or object 13,9 (8); + door or object 9,9 (12); + door 29,18 (13); _ altar 35,16 (15); +2 more
+frontier: 9,9 (12); 31,14 (11); 46,18 (26)

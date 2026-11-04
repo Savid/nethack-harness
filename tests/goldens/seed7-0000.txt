@@ -1,0 +1,16 @@
+Dlvl:1 $:0 HP:18(18) Pw:1(1) AC:6 Xp:1 T:1
+Player the Stripling St:18/03 Dx:12 Co:17 In:8 Wi:9 Ch:8 Lawful
+   67 70
+   78901
+ 5 -----
+ 6 ..$.|
+ 7 |..f|
+ 8 |.@.|
+ 9 |...|
+10 |...|
+11 |...|
+12 -----
+you: 69,8  here: unknown
+monsters: f pet 70,7 adjacent u
+items: $ 69,6 (2)
+frontier: 67,6 (2)

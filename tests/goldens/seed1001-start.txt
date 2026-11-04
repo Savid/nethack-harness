@@ -1,0 +1,15 @@
+Dlvl:1 $:0 HP:14(14) Pw:5(5) AC:4 Xp:1 T:1
+Hero the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
+msg: This is a seeded game (seed "1001", generator version 1).
+   30        40
+   01234567890
+ 3 -----------
+ 4 |../.......
+ 5 +.d.......|
+ 6 |.@...d...|
+ 7 --+--------
+you: 32,6  here: unknown
+monsters: d pet 32,5 adjacent k; d 36,6 4 away
+seen: + door 32,7 (adjacent j); + door 30,5 (1)
+items: / 33,4 (2)
+frontier: 40,4 (8)

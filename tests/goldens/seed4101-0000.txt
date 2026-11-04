@@ -1,0 +1,13 @@
+Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:1
+Player the Stripling St:18/01 Dx:10 Co:18 In:10 Wi:9 Ch:9 Neutral
+   16  20
+   6789012345678
+ 3 ----------.--
+ 4 |...........|
+ 5 |...........|
+ 6 ..........@f.
+ 7 ------+------
+you: 26,6  here: unknown
+monsters: f pet 27,6 adjacent l
+seen: + door 22,7 (4)
+frontier: 28,6 (2); 26,3 (3); 16,6 (10)

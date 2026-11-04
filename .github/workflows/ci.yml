@@ -1,0 +1,58 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: never
+  TARGET: x86_64-unknown-linux-musl
+  SIZE_LIMIT: 1572864          # 1.5 MiB
+jobs:
+  fmt:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nuc, nethack-harness]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo fmt --all --check
+  clippy:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nuc, nethack-harness]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo clippy --all-targets --locked -- -D warnings
+  test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nuc, nethack-harness]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo test --locked
+  bench:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nuc, nethack-harness]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo test --release --locked --test bench -- --ignored --nocapture --test-threads 1
+  build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nuc, nethack-harness]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup target add "$TARGET"
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Size check
+        run: |
+          bin="target/$TARGET/release/nethack-harness"
+          size=$(stat -c %s "$bin")
+          echo "$bin: $size bytes (limit $SIZE_LIMIT)"
+          [ "$size" -le "$SIZE_LIMIT" ]

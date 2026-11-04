@@ -1,0 +1,12 @@
+Dlvl:1 $:0 HP:14(14) Pw:3(3) AC:7 Xp:1 T:1
+Player the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
+   69
+   901234567
+15 ---------
+16 .....@d.|
+17 |.......|
+18 |.......|
+19 ---------
+you: 74,16  here: unknown
+monsters: d pet 75,16 adjacent l
+frontier: 69,16 (5)
