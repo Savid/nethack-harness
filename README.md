@@ -52,7 +52,7 @@ nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND
 | --- | --- |
 | `look` | Print the view. Names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
 | `send KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. |
-| `go TARGET` | Walk the shortest known route to `TARGET`, at most `--max-steps` steps, then print the view. |
+| `go [--wet] TARGET` | Walk the shortest known route to `TARGET`, at most `--max-steps` steps, then print the view. `--wet` lets the route step into remembered water. |
 | `rest N` | Search in place up to N times (1 to 200), then print the view. |
 | `stop` | Stop the session's daemon. With none running it prints `no daemon is running` and exits 0. |
 | `serve` | Run the daemon in the foreground (the client starts it on demand). |
@@ -67,8 +67,9 @@ reported.
 `go` takes `x,y`, `<`, `>`, a map glyph, a kind listed under `seen:` (`door`, `open door`, `altar`,
 `fountain`, `dart trap`, …) or `frontier`, and walks to the nearest match by known route. For a closed door it
 walks to a square beside it. `frontier` walks to the nearest group of frontier squares, and at the end of a known
-corridor follows the corridor on. Routes never cross remembered water or lava, cross a remembered trap or a step
-the game refused only where no other route exists, and pass through the highlighted pet. When no route exists
+corridor follows the corridor on. Routes never cross remembered lava, or water except with `--wet` (below), cross
+a remembered trap or a step the game refused only where no other route exists, and pass through the highlighted
+pet. When no route exists
 `go` sends nothing and says why. A walk or rest stops short when a monster arrives (a monster with no monster of
 the same glyph and colour within one square of it at the previous step; `I` and warning digits never count), a
 message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
@@ -76,6 +77,15 @@ refused or a prompt opens. A rest also stops when three searches in a row leave 
 changed`), and checks its last search too; searches that pass no game time and change nothing but the message
 were refused by the game (`no time passed`, exit code 1). A `frontier` walk that follows a corridor stops where
 the corridor branches or ends.
+
+`go --wet TARGET` is for a caller whose hero can cross water (flying, levitating, swimming): its route may also
+step into remembered water (a blue `}`), never lava or a `}` of another colour, and of routes equally short it takes
+the one with fewest steps into water. Each step into water is sent after the `m` prefix, which the game takes as a
+deliberate move into known water without its swim check (`paranoid_confirmation:swim`). The harness does not judge
+whether the hero can cross; what the game does is reported. A step into water that leaves the hero where it was,
+such as `You avoid stepping into the water.`, stops the walk short (exit code 2) with the game's message under
+`msg:` and `wet step X,Y->X,Y refused`; it is not tried again or routed around. The report counts the steps sent
+into water. Without `--wet`, nothing changes.
 
 After `send`, `go` and `rest`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
 eight per command) and reads underfoot with `:` where the hero stands on a square never seen, an object square, or
@@ -116,13 +126,14 @@ time, in order.
 {"cmd": "look"}
 {"cmd": "send", "keys": "Fh"}
 {"cmd": "go", "target": "frontier"}
+{"cmd": "go", "target": ">", "wet": true}
 {"cmd": "rest", "count": 20}
 {"cmd": "stop"}
 ```
 
 `keys` uses the escape syntax above. Each command takes exactly its own field: `send` requires `keys`, `go`
-requires `target` (at most 64 bytes), `rest` requires `count` (1 to 200), and any other field is refused with code
-64. The reply is
+requires `target` (at most 64 bytes) and takes an optional `wet` (`true` is `go --wet`), `rest` requires `count`
+(1 to 200), and any other field is refused with code 64. The reply is
 
 ```json
 {"code": 0, "text": "…the text view…", "facts": {…}}
@@ -148,7 +159,7 @@ Hero the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
  7 --+--------
 you: 32,6  here: < up stairs; There is a staircase up out of the dungeon here.
 monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away
-seen: + door 32,7 (adjacent j); + door 30,5 (1)
+seen: + door 32,7 (adjacent j), 30,5 (1)
 items: / 33,4 (2)
 frontier: 40,4 (8)
 ```
@@ -157,6 +168,7 @@ Other commands add a report line at the top and, when they apply, lines such as:
 
 ```
 rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the hero (d 41,8)
+go --wet <: 4 steps, 1 wet, 4 turns, now at 16,3; done
 inventory: (T:4) a - a +0 scalpel (weapon in hand); b - an uncursed stethoscope
 answered: "Do you want your possessions identified? [ynq] (n)" ← n
 end: killed by a jackal
@@ -164,8 +176,8 @@ end: killed by a jackal
 
 The parts, in order:
 
-- **Report line**, after `send`, `go` and `rest`: the command, steps or searches, turns passed, where the hero
-  is, and `done` or `stopped:` with each reason.
+- **Report line**, after `send`, `go` and `rest`: the command, steps or searches, for `go --wet` the steps into
+  water (`N wet`), turns passed, where the hero is, and `done` or `stopped:` with each reason.
 - **Status**: the game's two status lines, spaces squashed.
 - **`msg:`**: each complete message written during the command, joined across wrapped rows. Text already on a
   screen printed in full is not repeated. A command reports its last 32 lines, after `(N earlier lines left out)`.
@@ -179,9 +191,14 @@ The parts, in order:
 - **`monsters:`**: glyph, farlook name, `pet` when highlighted, square, and distance or `adjacent K` (the move key
   toward it). A name lasts while the monster stays on its square looking the same; `(looked T:n)` marks a name
   from an earlier turn.
-- **`seen:`**: remembered stairs, traps, altars, fountains, doors, and squares that may be a door or an object.
-  **`items:`**: remembered objects. **`frontier:`**: known ground beside unexplored squares. Each lists the
-  nearest six by route with the route length, `(no route)` or `(blocked)`, then `+N more`.
+- **`seen:`**: remembered stairs, traps, altars, fountains, water, lava, doors, and squares that may be a door or
+  an object, grouped by kind (glyph and name). Kinds with fewest squares come first, so a kind seen on one square
+  is never hidden by one seen on hundreds; kinds with as many squares go by their nearest square. Each kind lists
+  its nearest three squares by route with the route length, `(no route)` or `(blocked)`, then `+N more` of that
+  kind: `seen: > down stairs 60,12 (no route); + door 32,7 (adjacent j), 30,5 (1); } water 33,6 (adjacent l),
+  34,6 (no route), 35,6 (no route), +712 more`. **`items:`**: remembered objects. **`frontier:`**: known ground
+  beside unexplored squares. These two list the nearest six by route with the route length, `(no route)` or
+  `(blocked)`, then `+N more`.
 - **`inventory:`**: the last inventory menu the game showed, whoever opened it, with the turn it was shown.
 - **`answered:`**: each prompt the sent keys passed and the key that answered it, marked
   `(typed into a text prompt)` when the keys went into a free-text prompt; the last 32, after
@@ -205,11 +222,11 @@ messages name at the hero's square are remembered there like a `^`.
 | `prompt` | string? | The open prompt's text. |
 | `msgs` | string[] | Messages written since the last reply. |
 | `monsters` | object[] | `{name?, glyph, x, y, dist, looked_turn?, pet?}`, nearest first. |
-| `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?}`, nearest by route first. |
+| `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?}`, every one, nearest by route first. |
 | `frontier` | object[] | `{x, y, steps}`. |
 | `stairs_up`, `stairs_down` | `[x, y]`? | Remembered stairs on this level. |
 | `inventory` | object? | `{turn?, lines[]}`, lines such as `a - a +0 scalpel (weapon in hand)`. |
-| `report` | object? | `{verb, done, stopped[], steps, turns?, error?}` for `send`, `go` and `rest`. |
+| `report` | object? | `{verb, done, stopped[], steps, wet?, turns?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water. |
 | `answered` | object[] | `{prompt, key, text_entry?}`; `key` in escape syntax. |
 | `end` | object? | `{death?, lines[]}` once the game is over; `death` is the tombstone text or final line, verbatim. |
 

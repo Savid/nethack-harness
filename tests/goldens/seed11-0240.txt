@@ -21,6 +21,6 @@ Player the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
 19 |.....$.|
 20 ---------
 you: 35,18  here: unknown
-seen: + door 40,15 (5); { fountain 53,15 (18); < up stairs 57,16 (22); - open door 61,6 (29); - open door 67,7 (35)
+seen: + door 40,15 (5); { fountain 53,15 (18); < up stairs 57,16 (22); - open door 61,6 (29), 67,7 (35)
 items: ) 40,17 (5); $ 40,19 (5); [ 41,17 (6); $ 54,6 (26); [ 53,5 (27); ! 69,6 (37); +22 more
 frontier: 35,14 (4); 50,15 (15); 56,9 (23); 64,8 (33); 66,7 (34)

@@ -23,5 +23,5 @@ Player the Stripling St:18/01 Dx:10 Co:18 In:10 Wi:9 Ch:9 Neutral
 20                   -------       -----
 you: 28,14  here: unknown
 monsters: f pet 27,14 adjacent h; b 29,14 adjacent l
-seen: < up stairs 34,5 (no route); | open door 66,11 (no route); + door or object 21,12 (no route); > down stairs 68,12 (no route); + door or object 17,15 (no route); | open door 33,16 (no route); +1 more
+seen: < up stairs 34,5 (no route); > down stairs 68,12 (no route); - open door 50,18 (no route); | open door 66,11 (no route), 33,16 (no route); + door or object 21,12 (no route), 17,15 (no route)
 items: $ 62,3 (no route); ( 34,6 (no route); + 34,7 (no route); ? 63,9 (no route); ? 15,11 (no route); ? 16,11 (no route); +51 more

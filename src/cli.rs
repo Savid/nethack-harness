@@ -1,5 +1,5 @@
 //! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND`, where COMMAND is
-//! `look`, `send KEYS`, `go TARGET`, `rest N`, `stop` or `serve`.
+//! `look`, `send KEYS`, `go [--wet] TARGET`, `rest N`, `stop` or `serve`.
 //!
 //! A client command connects to `<dir>/sock`, sends one request line, prints the reply's text (or, with `--json`,
 //! the reply object) and exits with its code. When nothing answers it takes `flock(<dir>/lock)`, checks again, and
@@ -32,7 +32,7 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] \
-                         look | send KEYS | go TARGET | rest N | stop | serve";
+                         look | send KEYS | go [--wet] TARGET | rest N | stop | serve";
 
 /// A parsed command line: the options, then the request for the daemon or `serve` (`None`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,8 +103,16 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             keys: operand,
             ..request(Cmd::Send)
         },
+        ("go", 1) if operand.as_deref() == Some("--wet") => {
+            return Err("go --wet takes a target".to_owned());
+        }
         ("go", 1) => Request {
             target: operand,
+            ..request(Cmd::Go)
+        },
+        ("go", 2) if operand.as_deref() == Some("--wet") => Request {
+            target: operands.get(1).cloned(),
+            wet: Some(true),
             ..request(Cmd::Go)
         },
         ("rest", 1) => Request {
@@ -112,7 +120,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             ..request(Cmd::Rest)
         },
         ("look" | "stop" | "serve", _) => return Err(format!("{name} takes no arguments")),
-        ("send" | "go" | "rest", _) => return Err(format!("{name} takes one argument")),
+        ("go", _) => return Err("go takes [--wet] TARGET".to_owned()),
+        ("send" | "rest", _) => return Err(format!("{name} takes one argument")),
         _ => return Err(format!("unknown command {name}")),
     };
     check(&request)?;
@@ -370,6 +379,15 @@ mod tests {
     #[test]
     fn operands_are_checked() {
         assert_eq!(request(&["go", "23,3"]).target.as_deref(), Some("23,3"));
+        assert_eq!(request(&["go", "23,3"]).wet, None);
+        let wet = request(&["go", "--wet", ">"]);
+        assert_eq!((wet.target.as_deref(), wet.wet), (Some(">"), Some(true)));
+        assert!(
+            args(&["go", "--wet"])
+                .unwrap_err()
+                .contains("takes a target")
+        );
+        assert!(args(&["go", ">", "--wet"]).unwrap_err().contains("[--wet]"));
         assert_eq!(request(&["rest", "20"]).count, Some(20));
         for bad in [
             &[][..],
@@ -380,6 +398,9 @@ mod tests {
             &["send", ""],
             &["send", "a", "b"],
             &["go", ""],
+            &["go", "--wet", ""],
+            &["go", "--wet", ">", "x"],
+            &["--wet", "go", ">"],
             &["rest"],
             &["rest", "0"],
             &["rest", "201"],

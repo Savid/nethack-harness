@@ -14,8 +14,17 @@ use crate::types::{MAP_SQUARES, Pos, SquareSet};
 pub const REFUSED_STEPS: usize = 64;
 
 /// Remembered ground a route may enter. Water and lava (`}`) are not ground: routes, like the game's own travel,
-/// never cross them.
+/// never cross them, unless a wet route is asked for, which may enter water.
 const PASSABLE: &[char] = &['.', '#', '<', '>', '^', '{', '_', '\\'];
+
+/// What a route may enter besides ground: nothing more (`Dry`), or also remembered water (`Wet`). Lava is never
+/// entered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ground {
+    #[default]
+    Dry,
+    Wet,
+}
 
 /// What a `+` is: a closed door and a spellbook are both drawn `+`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,8 +90,9 @@ impl Near {
     }
 }
 
-/// A route search's cost to a square: refused steps, remembered traps crossed, steps; compared in that order.
-type Cost = (u16, u16, u16);
+/// A route search's cost to a square: refused steps, remembered traps crossed, steps, steps into water; compared
+/// in that order.
+type Cost = (u16, u16, u16, u16);
 
 /// Shortest routes from one start square, reused across searches.
 pub struct Paths {
@@ -98,7 +108,7 @@ impl Default for Paths {
     fn default() -> Paths {
         Paths {
             previous: Box::new([None; MAP_SQUARES]),
-            cost: Box::new([(0, 0, 0); MAP_SQUARES]),
+            cost: Box::new([(0, 0, 0, 0); MAP_SQUARES]),
             reached: SquareSet::new(),
             queue: BinaryHeap::new(),
         }
@@ -349,6 +359,11 @@ impl Level {
         }
     }
 
+    /// Whether `p` is remembered water: a `}` in the colour the game draws water in.
+    pub fn water(&self, p: Pos) -> bool {
+        self.terrain(p) == Some('}') && self.colour(p).and_then(liquid_name) == Some("water")
+    }
+
     /// Whether a route may enter `p`: remembered ground, an open door, or a square seen only under an object.
     pub fn passable(&self, p: Pos) -> bool {
         self.terrain(p).is_some_and(|ch| PASSABLE.contains(&ch))
@@ -381,18 +396,20 @@ impl Level {
     }
 
     /// Fills `paths` with shortest routes from `start` avoiding `occupied`: fewest refused steps, then fewest
-    /// remembered traps, then fewest steps, as the game's own travel prefers.
-    pub fn paths(&self, start: Pos, occupied: &SquareSet, paths: &mut Paths) {
+    /// remembered traps, then fewest steps, as the game's own travel prefers. A `Wet` search may also enter
+    /// remembered water, and of routes otherwise equal takes the one with fewest steps into water.
+    pub fn paths(&self, start: Pos, occupied: &SquareSet, ground: Ground, paths: &mut Paths) {
         paths.reached.clear();
         paths.queue.clear();
         let Some(si) = start.index() else {
             return;
         };
         paths.previous[si] = None;
-        paths.cost[si] = (0, 0, 0);
+        paths.cost[si] = (0, 0, 0, 0);
         paths.reached.insert(start);
         let mut order: u32 = 0;
-        paths.queue.push(Reverse(((0, 0, 0), order, si as u16)));
+        paths.queue.push(Reverse(((0, 0, 0, 0), order, si as u16)));
+        let wet = |q| ground == Ground::Wet && self.water(q);
         let door = |p| self.open_doors.contains(p) || self.maybe_doors.contains(p);
         while let Some(Reverse((cost, _, index))) = paths.queue.pop() {
             let index = index as usize;
@@ -400,15 +417,16 @@ impl Level {
                 continue;
             }
             let p = Pos::from_index(index);
-            let (refused, traps, length) = cost;
+            let (refused, traps, length, wading) = cost;
             let refusing = self.refused_from.contains(p);
             for (key, q) in p.neighbours() {
                 let ch = self.terrain(q);
                 let Some(qi) = q.index() else {
                     continue;
                 };
+                let water = wet(q);
                 if (q != start && occupied.contains(q))
-                    || !self.passable(q)
+                    || !(self.passable(q) || water)
                     || (ch == Some('#') && !self.corridor(q))
                     || (!cardinal(key) && (door(p) || door(q)))
                 {
@@ -418,6 +436,7 @@ impl Level {
                     refused + u16::from(refusing && self.refused.contains(&(p, key))),
                     traps + u16::from(ch == Some('^')),
                     length + 1,
+                    wading + u16::from(water),
                 );
                 if paths.reached.contains(q) && paths.cost[qi] <= step {
                     continue;
@@ -612,8 +631,19 @@ mod tests {
             blocked.insert(q);
         }
         let mut paths = Paths::default();
-        level.paths(start, &blocked, &mut paths);
+        level.paths(start, &blocked, Ground::Dry, &mut paths);
         paths
+    }
+
+    fn wet_route(level: &Level, start: Pos, target: Pos, occupied: &[Pos]) -> Option<Vec<Pos>> {
+        let mut blocked = SquareSet::new();
+        for &q in occupied {
+            blocked.insert(q);
+        }
+        let mut paths = Paths::default();
+        level.paths(start, &blocked, Ground::Wet, &mut paths);
+        let mut out = Vec::new();
+        paths.route(target, &mut out).then_some(out)
     }
 
     fn route(level: &Level, start: Pos, target: Pos, occupied: &[Pos]) -> Option<Vec<Pos>> {
@@ -749,6 +779,53 @@ mod tests {
         assert_eq!(observed(&g, 2, 3).kind(at(2, 4)), Some("lava"));
         paint(&mut g, 2, 4, Colour::Green, false);
         assert_eq!(observed(&g, 2, 3).kind(at(2, 4)), Some("water or lava"));
+    }
+
+    #[test]
+    fn wet_routes_cross_remembered_water_but_never_lava() {
+        let mut g = map(&["", "   @}}>"]);
+        for x in [4, 5] {
+            paint(&mut g, 2, x, Colour::Blue, false);
+        }
+        let level = observed(&g, 2, 3);
+        assert!(level.water(at(2, 4)) && level.water(at(2, 5)));
+        assert!(route(&level, at(2, 3), at(2, 6), &[]).is_none());
+        assert_eq!(
+            wet_route(&level, at(2, 3), at(2, 6), &[]),
+            Some(vec![at(2, 4), at(2, 5), at(2, 6)])
+        );
+        // A monster in the water still blocks the route.
+        assert!(wet_route(&level, at(2, 3), at(2, 6), &[at(2, 5)]).is_none());
+        // Bright blue is water too.
+        paint(&mut g, 2, 5, Colour::BrightBlue, false);
+        assert!(observed(&g, 2, 3).water(at(2, 5)));
+        for colour in [Colour::Red, Colour::Green] {
+            paint(&mut g, 2, 5, colour, false);
+            let level = observed(&g, 2, 3);
+            assert!(!level.water(at(2, 5)));
+            assert!(wet_route(&level, at(2, 3), at(2, 6), &[]).is_none());
+        }
+    }
+
+    #[test]
+    fn wet_routes_take_water_only_where_it_shortens_the_route() {
+        let rows = [" ------- ", " |@.}.>| ", " |.....| ", " ------- "];
+        let mut g = map(&rows);
+        paint(&mut g, 2, 4, Colour::Blue, false);
+        let level = observed(&g, 2, 2);
+        // A dry route as short as the one through the water is taken instead.
+        let path = wet_route(&level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
+        assert_eq!(path.len(), 4);
+        assert!(!path.iter().any(|&p| level.water(p)), "{path:?}");
+        // Water across the room: the route crosses it once, where it is shortest.
+        let rows = [" ------- ", " |@.}.>| ", " |..}..| ", " ------- "];
+        let mut g = map(&rows);
+        paint(&mut g, 2, 4, Colour::Blue, false);
+        paint(&mut g, 3, 4, Colour::Blue, false);
+        let level = observed(&g, 2, 2);
+        assert!(route(&level, at(2, 2), at(2, 6), &[]).is_none());
+        let path = wet_route(&level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
+        assert_eq!(path, [at(2, 3), at(2, 4), at(2, 5), at(2, 6)]);
     }
 
     #[test]
@@ -1075,13 +1152,13 @@ mod tests {
     fn paths_are_reused_and_report_distances() {
         let level = observed(&map(&["", "   @#####"]), 2, 3);
         let mut paths = Paths::default();
-        level.paths(at(2, 3), &SquareSet::new(), &mut paths);
+        level.paths(at(2, 3), &SquareSet::new(), Ground::Dry, &mut paths);
         assert_eq!(paths.distance(at(2, 8)), Some(5));
         assert_eq!(paths.distance(at(2, 3)), Some(0));
         let mut out = vec![at(9, 9)];
         assert!(paths.route(at(2, 3), &mut out));
         assert!(out.is_empty());
-        level.paths(at(2, 8), &SquareSet::new(), &mut paths);
+        level.paths(at(2, 8), &SquareSet::new(), Ground::Dry, &mut paths);
         assert_eq!(paths.distance(at(2, 3)), Some(5));
         assert!(!paths.reaches(at(3, 3)));
         assert!(!paths.route(at(3, 3), &mut out));

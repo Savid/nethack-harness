@@ -403,6 +403,9 @@ pub struct Report {
     pub stopped: Vec<String>,
     /// Steps, searches or keys executed.
     pub steps: u32,
+    /// For `go --wet`, the steps sent into water.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wet: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<i64>,
     /// A failure that ended the command, such as a closed terminal.

@@ -23,6 +23,6 @@ msg: o        an orc (goblin) [seen: infravision]
 20 ---------
 you: 40,17  here: unknown
 monsters: o 45,17 5 away
-seen: + door 40,15 (1); - open door 61,6 (no route); - open door 67,7 (no route); { fountain 53,15 (no route); < up stairs 57,16 (no route)
+seen: + door 40,15 (1); { fountain 53,15 (no route); < up stairs 57,16 (no route); - open door 61,6 (no route), 67,7 (no route)
 items: $ 40,19 (2); ! 69,4 (no route); ! 70,4 (no route); ! 71,4 (no route); ! 72,4 (no route); ! 73,4 (no route); +20 more
 frontier: 44,17 (4); 35,14 (6)

@@ -35,7 +35,7 @@ pub enum Kind {
 }
 
 /// A bounded action: the keys of one step (or a farlook's cursor keys), the most steps to take, the square it is
-/// going to or looking at, and the known route there, first step first.
+/// going to or looking at, the known route there, first step first, and whether that route may step into water.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     pub kind: Kind,
@@ -43,6 +43,7 @@ pub struct Action {
     pub steps: u32,
     pub target: Option<Pos>,
     pub route: Vec<Pos>,
+    pub wet: bool,
 }
 
 /// Which observations changed and ended an action, as bit flags: the status line other than turn, HP and Pw (or
@@ -70,7 +71,8 @@ impl Changed {
     }
 }
 
-/// Why an action ended. A refused step left the hero in place with no turn passing, and is kept out of routes;
+/// Why an action ended. A refused step left the hero in place with no turn passing, and is kept out of routes; a
+/// refused wet step is a step into water that left the hero in place, turn or not, and is only reported.
 /// `Changed` names what changed in `Outcome::changed`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Stop {
@@ -86,6 +88,10 @@ pub enum Stop {
     CorridorEnds,
     Changed,
     Refused {
+        from: Pos,
+        to: Pos,
+    },
+    WetRefused {
         from: Pos,
         to: Pos,
     },
@@ -112,6 +118,8 @@ pub struct Outcome {
     pub arrival: Option<Arrival>,
     /// Steps taken: route steps, searches, or caller keys sent.
     pub steps: u32,
+    /// Route steps sent into remembered water.
+    pub wet: u32,
     /// Game turns that passed, when the status line showed them before and after.
     pub turns: Option<i64>,
     /// Message lines the game wrote meanwhile, text-window lines after the first indented by two spaces. Screens
@@ -444,22 +452,27 @@ impl Executor {
                 let key = from.direction_to(to).ok_or(Stop::RouteChanged)?;
                 // The direction key goes after an `m` prefix, except where the level's memory says the game checks
                 // the square first (water, lava, traps, gas) or where the pet stands, so the game's own check or
-                // swap applies.
-                let plain = level.guarded(to) || view.pet(to) && is_monster(view.ch(to));
+                // swap applies. A wet route's step into water keeps the prefix: it is how the game takes a
+                // deliberate move into known water without its swim check.
+                let wet = action.wet && level.water(to);
+                let plain = !wet && (level.guarded(to) || view.pet(to) && is_monster(view.ch(to)));
                 buf = [b'm', key];
-                (&buf[usize::from(plain)..], Some((from, to, key)))
+                (&buf[usize::from(plain)..], Some((from, to, key, wet)))
             } else {
                 (&action.keys, None)
             };
             let after_run = self.after_run;
             let mut news = self.send(io, keys)?;
             io.outcome.steps += 1;
+            let wet = target.is_some_and(|(.., wet)| wet);
+            io.outcome.wet += u32::from(wet);
             if needs_redraw(keys, after_run, io.term.view()) {
                 news |= self.send(io, &[REDRAW])?;
             }
             news |= self.page(io)?;
             let view = io.term.view();
             if moving
+                && !wet
                 && view.hero == origin
                 && view.phase() == Phase::Play
                 && io.memory.about_pet(&view.msg)
@@ -474,9 +487,12 @@ impl Executor {
                 Stop::Completed => {}
                 stop => return Ok(stop),
             }
-            if let Some((from, to, key)) = target
+            if let Some((from, to, key, wet)) = target
                 && view.hero != Some(to)
             {
+                if wet && view.hero == Some(from) {
+                    return Ok(Stop::WetRefused { from, to });
+                }
                 let refused = view.hero == Some(from)
                     && view.status.turn.is_some()
                     && view.status.turn == prior_turn
@@ -781,13 +797,15 @@ fn action(kind: Kind, keys: &[u8], steps: u32, target: Option<Pos>) -> Action {
         steps,
         target,
         route: Vec::new(),
+        wet: false,
     }
 }
 
 /// A travel or exploration along the known route to `target`, at most `max_steps` steps. Travel ends there;
-/// exploring goes on along the corridor beyond it.
-pub fn walk(kind: Kind, paths: &Paths, target: Pos, max_steps: u32) -> Action {
+/// exploring goes on along the corridor beyond it. A `wet` walk's route may step into remembered water.
+pub fn walk(kind: Kind, paths: &Paths, target: Pos, max_steps: u32, wet: bool) -> Action {
     let mut walk = action(kind, &[], max_steps, Some(target));
+    walk.wet = wet;
     paths.route(target, &mut walk.route);
     if kind == Kind::Travel {
         walk.steps = max_steps.min(walk.route.len() as u32);
@@ -840,7 +858,7 @@ pub fn needs_redraw(keys: &[u8], after_run: bool, view: &View) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level::Paths;
+    use crate::level::{Ground, Paths};
     use crate::testkit::{STATUS1, ScriptedTerm, grid, screen, view};
     use crate::types::{Cell, Colour, Grid};
 
@@ -938,6 +956,7 @@ mod tests {
             steps,
             target: Some(Pos::new(target.0, target.1)),
             route: route.iter().map(|&(y, x)| Pos::new(y, x)).collect(),
+            wet: false,
         }
     }
 
@@ -1002,6 +1021,88 @@ mod tests {
         assert_eq!((outcome.stop, outcome.steps), (Stop::Prompt, 2));
     }
 
+    /// A corridor `@#}}#` from column 3 with blue water at columns 5 and 6, the hero at `col` and `message` on top.
+    fn moat(col: u8, turn: u32, message: &str) -> View {
+        let tiles = [((2, 4), '#'), ((2, 5), '}'), ((2, 6), '}'), ((2, 7), '#')];
+        let mut rows = corridor_lines((2, 3), &tiles, turn, 12);
+        put(&mut rows, (2, 3), '#');
+        put(&mut rows, (2, col), '@');
+        rows[0] = message.to_owned();
+        let mut grid = grid(&rows);
+        for x in [5, 6] {
+            if x != col {
+                grid.cells[2][x as usize].fg = Colour::Blue;
+            }
+        }
+        parse(&grid, (2, col))
+    }
+
+    fn across_the_moat(wet: bool) -> Action {
+        let route = [(2, 4), (2, 5), (2, 6), (2, 7)];
+        Action {
+            wet,
+            ..walk(Kind::Travel, 4, (2, 7), &route)
+        }
+    }
+
+    #[test]
+    fn a_wet_walk_steps_into_water_with_the_prefix_and_counts_it() {
+        let screens = || {
+            vec![
+                moat(3, 400, ""),
+                moat(4, 401, ""),
+                moat(5, 402, ""),
+                moat(6, 403, ""),
+                moat(7, 404, ""),
+            ]
+        };
+        let (mut term, mut memory) = start(screens());
+        assert!(memory.current().is_some_and(|l| l.water(Pos::new(2, 5))));
+        let outcome = Executor::default().run(&mut term, &mut memory, &across_the_moat(true));
+        assert_eq!(sent(&term), ["ml", "ml", "ml", "ml"]);
+        assert_eq!(outcome.stop, Stop::Completed);
+        assert_eq!((outcome.steps, outcome.wet), (4, 2));
+        // A dry walk sends a step into water bare, so the game's own check applies, and counts none wet.
+        let (mut term, mut memory) = start(screens());
+        let outcome = Executor::default().run(&mut term, &mut memory, &across_the_moat(false));
+        assert_eq!(sent(&term), ["ml", "l", "l", "ml"]);
+        assert_eq!(outcome.wet, 0);
+    }
+
+    #[test]
+    fn a_refused_wet_step_stops_at_once_and_names_the_square() {
+        let refusals = [
+            moat(4, 401, "You avoid stepping into the water."),
+            // The game took a turn and the hero stayed: still refused, and never tried again.
+            moat(4, 402, "Pardon me, kitten."),
+        ];
+        for refused in refusals {
+            let (mut term, mut memory) = start(vec![
+                moat(3, 400, ""),
+                moat(4, 401, ""),
+                refused,
+                moat(5, 403, ""),
+            ]);
+            let outcome = Executor::default().run(&mut term, &mut memory, &across_the_moat(true));
+            assert_eq!(sent(&term), ["ml", "ml"]);
+            let expected = Stop::WetRefused {
+                from: Pos::new(2, 4),
+                to: Pos::new(2, 5),
+            };
+            assert_eq!(outcome.stop, expected);
+            assert_eq!((outcome.steps, outcome.wet), (2, 1));
+            assert!(!outcome.messages.is_empty());
+            // The refusal is reported, not remembered: the next wet route takes the same step.
+            let level = memory.current().expect("a level");
+            let mut paths = Paths::default();
+            level.paths(Pos::new(2, 4), &SquareSet::new(), Ground::Wet, &mut paths);
+            let mut route = Vec::new();
+            assert!(paths.route(Pos::new(2, 7), &mut route));
+            assert_eq!(route.first(), Some(&Pos::new(2, 5)));
+            assert_eq!(paths.distance(Pos::new(2, 7)), Some(3));
+        }
+    }
+
     #[test]
     fn a_failed_step_is_refused_unchanged_or_interrupted() {
         for kind in [Kind::Travel, Kind::Explore] {
@@ -1052,14 +1153,14 @@ mod tests {
             assert_eq!(outcome.stop == expected, refused, "{:?}", outcome.stop);
             let level = memory.current().expect("a level");
             let mut paths = Paths::default();
-            level.paths(Pos::new(2, 2), &SquareSet::new(), &mut paths);
+            level.paths(Pos::new(2, 2), &SquareSet::new(), Ground::Dry, &mut paths);
             let length = if refused { 2 } else { 1 };
             assert_eq!(paths.distance(Pos::new(3, 3)), Some(length));
             // Where no route avoids it, a route still takes the refused step.
             let mut occupied = SquareSet::new();
             occupied.insert(Pos::new(2, 3));
             occupied.insert(Pos::new(3, 2));
-            level.paths(Pos::new(2, 2), &occupied, &mut paths);
+            level.paths(Pos::new(2, 2), &occupied, Ground::Dry, &mut paths);
             assert_eq!(paths.distance(Pos::new(3, 3)), Some(1));
         }
     }

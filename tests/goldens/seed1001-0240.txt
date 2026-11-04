@@ -21,6 +21,6 @@ Player the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
 20                                 ---------------
 you: 6,14  here: unknown
 monsters: d 28,16 22 away
-seen: - open door 17,17 (11); - open door 23,16 (17); > down stairs 24,18 (20); - open door 37,18 (35); < up stairs 38,17 (37); + door 28,10 (42); +8 more
+seen: < up stairs 38,17 (37); + door 28,10 (42); > down stairs 24,18 (20), 27,7 (43); - open door 17,17 (11), 23,16 (17), 37,18 (35); | open door 44,16 (43), 42,9 (51), 45,5 (56), +4 more
 items: % 7,15 (adjacent n); $ 14,16 (8); ? 36,14 (31); % 46,7 (56); % 46,8 (56); $ 60,15 (76); +1 more
 frontier: 22,17 (16); 37,7 (36); 42,10 (50); 39,7 (55); 45,4 (57); 47,4 (59); +5 more

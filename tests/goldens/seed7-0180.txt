@@ -23,6 +23,6 @@ msg: The door opens.
 19                   |...>.|       |.`.....|
 20                   -------       ---------
 you: 53,7  here: unknown
-seen: | open door 53,8 (adjacent j); + door 46,14 (24); > down stairs 33,19 (26); - open door 51,18 (29); > down stairs 58,15 (37); + door 61,15 (39); +5 more
+seen: _ altar 15,6 (49); < up stairs 70,17 (73); | open door 53,8 (adjacent j), 18,8 (47); + door 46,14 (24), 61,15 (39); > down stairs 33,19 (26), 58,15 (37); - open door 51,18 (29), 19,7 (45), 66,3 (58)
 items: " 52,6 (adjacent y); " 51,6 (2); " 50,5 (3); " 50,6 (3); " 49,6 (4); " 48,7 (5); +6 more
 frontier: 53,8 (1); 55,7 (2); 36,18 (24); 28,11 (35); 56,15 (36); 59,12 (39); +4 more

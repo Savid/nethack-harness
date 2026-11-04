@@ -24,6 +24,6 @@ msg: :        a lizard (gecko)
 19   -----------                                 ----------
 you: 42,13  here: unknown
 monsters: : 41,12 adjacent y; f pet 42,14 adjacent j
-seen: + door 55,13 (13); - open door 61,6 (21); < up stairs 46,15 (22); > down stairs 63,7 (23); - open door 65,7 (25); { fountain 72,14 (30); +2 more
+seen: + door 55,13 (13); < up stairs 46,15 (22); > down stairs 63,7 (23); { fountain 72,14 (30); | open door 28,2 (no route); - open door 61,6 (21), 65,7 (25), 23,4 (no route)
 items: $ 56,16 (14); $ 55,17 (15); $ 46,14 (22); $ 63,6 (23); % 64,7 (24); ? 73,15 (31); +3 more
 frontier: 53,12 (11); 48,14 (20); 66,15 (24); 60,6 (20); 72,4 (33)

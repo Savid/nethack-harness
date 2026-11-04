@@ -2,6 +2,7 @@
 
 use crate::exec::{self, Changed, Executor, Kind, Outcome, Stop};
 use crate::glyphs::is_engraving_text;
+use crate::level::Ground;
 use crate::link::{LinkError, Term, Terminal};
 use crate::observe::{Entity, Memory};
 use crate::screen::{Phase, strip_more};
@@ -115,9 +116,14 @@ impl<T: Terminal> Play<T> {
         self.execute("send", exec::keys(keys))
     }
 
-    /// Walks toward `target` (`x,y`, a map glyph, a feature kind, or `frontier`) along the known route.
-    pub fn go(&mut self, target: &str) -> Reply {
-        let verb = format!("go {target}");
+    /// Walks toward `target` (`x,y`, a map glyph, a feature kind, or `frontier`) along the known route; a `wet`
+    /// route may step into remembered water.
+    pub fn go(&mut self, target: &str, wet: bool) -> Reply {
+        let verb = if wet {
+            format!("go --wet {target}")
+        } else {
+            format!("go {target}")
+        };
         if let Some(reply) = self.prepare(&verb) {
             return reply;
         }
@@ -128,9 +134,10 @@ impl<T: Terminal> Play<T> {
         if view.engulfed {
             return Reply::message(ExitCode::Failed, "go is unavailable while engulfed");
         }
+        let ground = if wet { Ground::Wet } else { Ground::Dry };
         let mut places = std::mem::take(&mut self.landmarks);
         let chosen = self
-            .places(target, &mut places)
+            .places(target, ground, &mut places)
             .and_then(|()| self.choose(target, &places));
         self.landmarks = places;
         let goal = match chosen {
@@ -143,7 +150,7 @@ impl<T: Terminal> Play<T> {
                 .current()
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
         let kind = if explore { Kind::Explore } else { Kind::Travel };
-        let action = exec::walk(kind, &self.renderer.routes.paths, goal, self.max_steps);
+        let action = exec::walk(kind, &self.renderer.routes.paths, goal, self.max_steps, wet);
         self.execute(&verb, action)
     }
 
@@ -160,11 +167,16 @@ impl<T: Terminal> Play<T> {
     }
 
     /// The places a `go` target names on the current level, written into `out`; an error says why none match. It
-    /// leaves the routes from the hero around monsters in the play's path buffer.
-    pub fn places(&mut self, target: &str, out: &mut Vec<Landmark>) -> Result<(), String> {
+    /// leaves the routes from the hero around monsters over `ground` in the play's path buffer.
+    pub fn places(
+        &mut self,
+        target: &str,
+        ground: Ground,
+        out: &mut Vec<Landmark>,
+    ) -> Result<(), String> {
         out.clear();
         let routes = &mut self.renderer.routes;
-        routes.from_hero(&self.memory, self.term.view());
+        routes.from_hero(&self.memory, self.term.view(), ground);
         let Some(level) = self.memory.current() else {
             return Err(PROMPT_OPEN.to_owned());
         };
@@ -202,11 +214,10 @@ impl<T: Terminal> Play<T> {
         Ok(())
     }
 
-    /// Why no known route reaches `target`: the monsters standing on every route over terrain, the target never
-    /// seen, or no route at all.
+    /// Why no known route over the ground of the last search reaches `target`: the monsters standing on every route
+    /// over terrain, the target never seen, or no route at all.
     pub fn unreachable(&mut self, target: &str, places: &[Landmark]) -> String {
         let routes = &mut self.renderer.routes;
-        routes.from_hero(&self.memory, self.term.view());
         let frontier = target.trim().eq_ignore_ascii_case("frontier");
         let none = if frontier {
             "no reachable known square borders unexplored ones".to_owned()
@@ -258,6 +269,9 @@ impl<T: Terminal> Play<T> {
         let (kind, target, route) = self.last.as_ref().map_or((Kind::Keys, None, 0), |last| {
             (last.kind, last.target, last.route.len())
         });
+        if self.last.as_ref().is_some_and(|last| last.wet) {
+            report.wet = Some(outcome.wet);
+        }
         let walked = matches!(kind, Kind::Travel | Kind::Explore);
         let stopped = &mut report.stopped;
         match &outcome.stop {
@@ -273,6 +287,9 @@ impl<T: Terminal> Play<T> {
             Stop::Completed => report.done = true,
             Stop::Refused { from, to } => {
                 stopped.push(format!("step {from}->{to} refused; routing around it"));
+            }
+            Stop::WetRefused { from, to } => {
+                stopped.push(format!("wet step {from}->{to} refused"));
             }
             Stop::Changed if !outcome.changed.is_empty() => {
                 for (flag, phrase) in CHANGES {
@@ -757,7 +774,7 @@ mod tests {
         );
         assert!(has_line(
             &reply.text,
-            "seen: + door 32,7 (adjacent j); + door 30,5 (1)"
+            "seen: + door 32,7 (adjacent j), 30,5 (1)"
         ));
         assert_eq!(lines[0], "Dlvl:1 $:0 HP:14(14) Pw:5(5) AC:4 Xp:1 T:1");
         let printed: Vec<char> = [(32, 6), (32, 5), (36, 6), (30, 5), (33, 4)]
@@ -890,7 +907,7 @@ mod tests {
             at(4, 402, "You hear a door open."),
         ]);
         play.show();
-        let reply = play.go(">");
+        let reply = play.go(">", false);
         assert_eq!(sent(&play), ["ml", "ml"]);
         assert_eq!(reply.code, ExitCode::Short);
         assert_eq!(
@@ -910,7 +927,7 @@ mod tests {
             ("4,2", "already at"),
             ("9,9", "has not been seen"),
         ] {
-            let reply = play.go(target);
+            let reply = play.go(target, false);
             assert_eq!(reply.code, ExitCode::Failed, "{target}");
             assert!(reply.text.contains(error), "{target}: {}", reply.text);
         }
@@ -948,7 +965,7 @@ mod tests {
             at((3, 4), 402, ""),
         ]);
         play.show();
-        let reply = play.go(">");
+        let reply = play.go(">", false);
         assert_eq!(
             reply.text.lines().next(),
             Some(
@@ -956,7 +973,7 @@ mod tests {
             )
         );
         assert_eq!(reply.code, ExitCode::Short);
-        let reply = play.go(">");
+        let reply = play.go(">", false);
         assert_eq!(sent(&play), ["mn", ":", "mj", "ml"]);
         assert_eq!(
             reply.text.lines().next(),
@@ -968,7 +985,7 @@ mod tests {
     #[test]
     fn go_door_walks_beside_another_door_when_already_beside_one() {
         let mut play = play(vec![start().view()]);
-        play.go("door");
+        play.go("door", false);
         assert_eq!(
             play.last.as_ref().and_then(|last| last.target),
             Some(Pos::new(5, 31))
@@ -978,12 +995,12 @@ mod tests {
     #[test]
     fn go_to_a_closed_door_square_walks_beside_it() {
         let mut play = play(vec![start().view()]);
-        play.go("30,5");
+        play.go("30,5", false);
         assert_eq!(
             play.last.as_ref().and_then(|last| last.target),
             Some(Pos::new(5, 31))
         );
-        let reply = play.go("32,7");
+        let reply = play.go("32,7", false);
         assert_eq!(reply.code, ExitCode::Failed);
         assert!(reply.text.contains("already at 32,6"), "{}", reply.text);
     }
@@ -992,7 +1009,7 @@ mod tests {
     fn go_names_the_monster_blocking_the_only_route() {
         let mut play = play(vec![map("", &["", " >##F#@"], 2, 6)]);
         play.memory.ingest(&map("", &["", " >####@"], 2, 6));
-        let reply = play.go(">");
+        let reply = play.go(">", false);
         assert!(
             reply.text.contains("blocked by a monster at 4,2"),
             "{}",
@@ -1006,7 +1023,7 @@ mod tests {
         for (target, kind) in [("5,2", Kind::Travel), ("frontier", Kind::Explore)] {
             let mut play = Play::new(ScriptedTerm::new(vec![map("", &["", "   @##"], 2, 3)]), 4);
             play.show();
-            play.go(target);
+            play.go(target, false);
             assert_eq!(
                 play.last.as_ref().map(|last| last.kind),
                 Some(kind),
@@ -1078,7 +1095,7 @@ mod tests {
             rest.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
             "{frontier}"
         );
-        play.go("frontier");
+        play.go("frontier", false);
         let goal = &reply.facts.frontier[0];
         let goal = Pos::new(goal.y, goal.x);
         assert_eq!(play.last.as_ref().and_then(|last| last.target), Some(goal));
@@ -1107,7 +1124,7 @@ mod tests {
         }
         assert!(!play.show().text.contains("frontier:"));
         play.rest(2);
-        let reply = play.go("frontier");
+        let reply = play.go("frontier", false);
         assert_eq!(reply.code, ExitCode::Failed);
         assert_eq!(
             reply.text,
@@ -1120,7 +1137,7 @@ mod tests {
         let rows = [" -----", " |...|", " |.@.+", " |...|", " -----"];
         let mut play = play(vec![map("", &rows, 3, 3)]);
         play.show();
-        let reply = play.go("frontier");
+        let reply = play.go("frontier", false);
         assert_eq!(reply.code, ExitCode::Failed);
         assert_eq!(
             reply.text,
@@ -1132,7 +1149,7 @@ mod tests {
         let mut blocked = Play::new(ScriptedTerm::new(vec![map("", &rows, 3, 3)]), 8);
         blocked.memory.ingest(&map("", &empty, 3, 3));
         blocked.show();
-        let reply = blocked.go("frontier");
+        let reply = blocked.go("frontier", false);
         assert_eq!(
             reply.text,
             "the known route to frontier is blocked by a monster at 5,3"
@@ -1303,7 +1320,7 @@ mod tests {
             &reply.text,
             "answered: \"Do you want your possessions identified? [ynq] (n)\" \u{2190} n"
         ));
-        let reply = play.go(">");
+        let reply = play.go(">", false);
         assert_eq!(reply.code, ExitCode::Over);
         assert!(
             reply

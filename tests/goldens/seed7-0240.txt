@@ -23,6 +23,6 @@ Player the Stripling St:18/03 Dx:12 Co:17 In:8 Wi:9 Ch:8 Lawful
 20                   -------       ---------
 you: 30,17  here: unknown
 monsters: e 31,18 adjacent n
-seen: > down stairs 33,19 (4); - open door 19,7 (16); | open door 18,8 (18); _ altar 15,6 (20); | open door 46,14 (21); - open door 51,18 (25); +5 more
+seen: _ altar 15,6 (20); + door 61,15 (35); < up stairs 70,17 (69); > down stairs 33,19 (4), 58,15 (33); - open door 19,7 (16), 51,18 (25), 66,3 (54); | open door 18,8 (18), 46,14 (21), 53,8 (31)
 items: % 44,5 (21); " 46,5 (23); " 47,6 (24); " 48,7 (25); " 49,6 (26); " 50,5 (27); +8 more
 frontier: 28,11 (6); 42,6 (19); 37,6 (24); 18,9 (19); 53,11 (32); 56,15 (32); +3 more

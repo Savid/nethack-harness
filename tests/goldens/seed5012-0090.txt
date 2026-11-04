@@ -23,6 +23,6 @@ Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
 20                     ----------------
 you: 22,5  here: unknown
 monsters: f pet 22,7 2 away; r 40,16 18 away
-seen: + door 23,5 (adjacent l); - open door 30,6 (no route); + door 40,8 (no route); + door or object 9,9 (no route); + door or object 13,9 (no route); + door 41,15 (no route); +5 more
+seen: - open door 30,6 (no route); _ altar 35,16 (no route); < up stairs 40,17 (no route); + door 23,5 (adjacent l), 40,8 (no route), 41,15 (no route), +1 more; + door or object 9,9 (no route), 13,9 (no route), 19,16 (no route), +1 more
 items: ( 25,5 (no route); ` 42,5 (no route); % 47,5 (no route); $ 58,5 (no route); % 42,8 (no route); % 43,9 (no route)
 frontier: 21,6 (1)

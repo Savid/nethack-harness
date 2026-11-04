@@ -22,6 +22,6 @@ Player the Tenderfoot St:15 Dx:10 Co:13 In:14 Wi:14 Ch:9 Neutral
 20 ---------
 you: 40,16  here: unknown
 monsters: F 42,17 2 away
-seen: + door 40,15 (adjacent k); - open door 61,6 (no route); - open door 67,7 (no route); { fountain 53,15 (no route); < up stairs 57,16 (no route)
+seen: + door 40,15 (adjacent k); { fountain 53,15 (no route); < up stairs 57,16 (no route); - open door 61,6 (no route), 67,7 (no route)
 items: $ 40,19 (3); ! 69,4 (no route); ! 70,4 (no route); ! 71,4 (no route); ! 72,4 (no route); ! 73,4 (no route); +20 more
 frontier: 35,14 (6)

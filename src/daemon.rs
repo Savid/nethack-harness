@@ -2,8 +2,8 @@
 //! line per connection, in order, so play is serialised. It holds all game memory in RAM, has no timers, and writes
 //! only its log, on errors.
 //!
-//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"stop", "keys"?: str, "target"?: str, "count"?: u32}`; `keys` uses
-//! the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
+//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"stop", "keys"?: str, "target"?: str, "wet"?: bool, "count"?: u32}`;
+//! `keys` uses the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
 
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{ErrorKind, Read, Write};
@@ -38,7 +38,7 @@ pub enum Cmd {
     Stop,
 }
 
-/// One request line: `keys` for `send`, `target` for `go`, `count` for `rest`.
+/// One request line: `keys` for `send`, `target` and optionally `wet` for `go`, `count` for `rest`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -48,6 +48,8 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wet: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
 }
 
@@ -56,7 +58,7 @@ pub struct Request {
 pub enum Checked<'a> {
     Look,
     Send(Vec<u8>),
-    Go(&'a str),
+    Go { target: &'a str, wet: bool },
     Rest(u32),
     Stop,
 }
@@ -66,15 +68,15 @@ pub enum Checked<'a> {
 pub fn check(request: &Request) -> Result<Checked<'_>, String> {
     let (keys, target, count) = (
         request.keys.is_some(),
-        request.target.is_some(),
+        request.target.is_some() || request.wet.is_some(),
         request.count.is_some(),
     );
     let refuse = |why: &str| Err(why.to_owned());
     match request.cmd {
-        Cmd::Look if keys || target || count => refuse("look takes no keys, target or count"),
-        Cmd::Stop if keys || target || count => refuse("stop takes no keys, target or count"),
+        Cmd::Look if keys || target || count => refuse("look takes no keys, target, wet or count"),
+        Cmd::Stop if keys || target || count => refuse("stop takes no keys, target, wet or count"),
         Cmd::Send if target || count => refuse("send takes only keys"),
-        Cmd::Go if keys || count => refuse("go takes only a target"),
+        Cmd::Go if keys || count => refuse("go takes only a target and wet"),
         Cmd::Rest if keys || target => refuse("rest takes only a count"),
         Cmd::Look => Ok(Checked::Look),
         Cmd::Stop => Ok(Checked::Stop),
@@ -83,7 +85,10 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
             _ => Err(format!("send takes 1 to {KEYS_MAX} keys")),
         },
         Cmd::Go => match request.target.as_deref().map(str::trim) {
-            Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go(target)),
+            Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go {
+                target,
+                wet: request.wet == Some(true),
+            }),
             _ => Err(format!(
                 "go takes a target of 1 to {TARGET_MAX} bytes: x,y, a map glyph, a feature or frontier"
             )),
@@ -262,7 +267,7 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
         (Ok(()), Checked::Look) => play.look(),
         (Ok(()), Checked::Send(keys)) => play.send(&keys),
-        (Ok(()), Checked::Go(target)) => play.go(target),
+        (Ok(()), Checked::Go { target, wet }) => play.go(target, wet),
         (Ok(()), Checked::Rest(count)) => play.rest(count),
         (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
     };
@@ -293,6 +298,7 @@ mod tests {
             cmd,
             keys: None,
             target: None,
+            wet: None,
             count: None,
         }
     }
@@ -306,6 +312,9 @@ mod tests {
             read("{\"cmd\":\"rest\",\"count\":5}").unwrap().count,
             Some(5)
         );
+        let wet = read("{\"cmd\":\"go\",\"target\":\">\",\"wet\":true}").unwrap();
+        assert_eq!((wet.target.as_deref(), wet.wet), (Some(">"), Some(true)));
+        assert!(read("{\"cmd\":\"go\",\"target\":\">\",\"wet\":1}").is_err());
     }
 
     #[test]
@@ -360,11 +369,23 @@ mod tests {
         go.target = Some("  ".to_owned());
         assert!(check(&go).is_err());
         go.target = Some("23,3".to_owned());
-        assert!(check(&go).is_ok());
+        assert!(matches!(
+            check(&go),
+            Ok(Checked::Go {
+                target: "23,3",
+                wet: false
+            })
+        ));
+        go.wet = Some(true);
+        assert!(matches!(check(&go), Ok(Checked::Go { wet: true, .. })));
+        go.wet = Some(false);
+        assert!(matches!(check(&go), Ok(Checked::Go { wet: false, .. })));
+        go.target = None;
+        assert!(check(&go).is_err());
         go.target = Some("x".repeat(TARGET_MAX + 1));
         assert!(check(&go).is_err());
         go.count = Some(1);
-        assert_eq!(check(&go).unwrap_err(), "go takes only a target");
+        assert_eq!(check(&go).unwrap_err(), "go takes only a target and wet");
         let mut rest = request(Cmd::Rest);
         for (count, ok) in [
             (None, false),
@@ -380,7 +401,15 @@ mod tests {
         look.keys = Some("x".to_owned());
         assert_eq!(
             check(&look).unwrap_err(),
-            "look takes no keys, target or count"
+            "look takes no keys, target, wet or count"
         );
+        let mut send = request(Cmd::Send);
+        send.keys = Some("s".to_owned());
+        send.wet = Some(true);
+        assert_eq!(check(&send).unwrap_err(), "send takes only keys");
+        let mut rest = request(Cmd::Rest);
+        rest.count = Some(1);
+        rest.wet = Some(false);
+        assert_eq!(check(&rest).unwrap_err(), "rest takes only a count");
     }
 }

@@ -23,6 +23,6 @@ Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
 20 ------      --------        ----------------
 you: 13,8  here: unknown
 monsters: f pet 15,8 2 away; k 17,17 9 away; r 40,16 27 away
-seen: + door 13,9 (adjacent j); + door 9,9 (4); - open door 7,8 (6); > down stairs 5,17 (18); - open door 13,17 (22); + door 19,16 (28); +8 more
+seen: > down stairs 5,17 (18); _ altar 35,16 (47); < up stairs 40,17 (52); - open door 7,8 (6), 13,17 (22), 20,18 (29), +1 more; + door 13,9 (adjacent j), 9,9 (4), 19,16 (28), +4 more
 items: $ 3,19 (20); ( 25,5 (55); % 42,8 (56); % 43,9 (56); % 47,5 (60); $ 58,5 (71); +2 more
 frontier: 17,6 (4); 19,8 (6); 12,18 (21); 41,5 (58); 46,18 (58); 48,5 (61); +1 more

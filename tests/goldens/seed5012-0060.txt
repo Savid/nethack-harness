@@ -17,5 +17,5 @@ msg: You stop.  Your kitten is in the way!
 20                     ----------------
 you: 20,13  here: unknown
 monsters: f pet 19,13 adjacent h; e 21,13 adjacent l; r 40,16 20 away
-seen: + door or object 19,16 (3); + door or object 20,18 (6); + door or object 13,9 (8); + door or object 9,9 (12); + door 29,18 (13); _ altar 35,16 (15); +2 more
+seen: _ altar 35,16 (15); < up stairs 40,17 (20); + door 29,18 (13), 41,15 (21); + door or object 19,16 (3), 20,18 (6), 13,9 (8), +1 more
 frontier: 9,9 (12); 31,14 (11); 46,18 (26)
