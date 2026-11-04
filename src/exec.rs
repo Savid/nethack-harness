@@ -8,7 +8,9 @@ use crate::level::Paths;
 use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, LookSource, Memory};
 use crate::screen::{MenuEntry, Phase, Status, View, strip_more};
-use crate::types::{Answered, MAP_BOTTOM, MAP_SQUARES, MAP_TOP, Pos, SquareSet, escape_key};
+use crate::types::{
+    Answered, MAP_BOTTOM, MAP_SQUARES, MAP_TOP, NoTime, NoTimeWhy, Pos, SquareSet, escape_key,
+};
 
 /// Most `--More--` pages or text windows dismissed in one go.
 pub const PAGES: u32 = 32;
@@ -17,6 +19,8 @@ pub const PAGES: u32 = 32;
 pub const REPORTED: usize = 32;
 /// Repeated searches that leave the screen unchanged before a search stops.
 pub const IDLE_SEARCHES: u32 = 3;
+/// Most distinct answers kept for the searches that took no time; searches with further answers are only counted.
+pub const NO_TIME_ANSWERS: usize = 8;
 
 const ESCAPE: u8 = 0x1b;
 const REDRAW: u8 = 0x12;
@@ -125,6 +129,10 @@ pub struct Outcome {
     pub wet: u32,
     /// Game turns that passed, when the status line showed them before and after.
     pub turns: Option<i64>,
+    /// For a search, the searches after which the turn counter read as before, and what the screen showed with
+    /// them, by distinct answer, at most `NO_TIME_ANSWERS`.
+    pub no_time: u32,
+    pub no_time_why: Vec<NoTime>,
     /// Message lines the game wrote meanwhile, text-window lines after the first indented by two spaces. Screens
     /// that ask a question are left out: the question is in `answered` or still open.
     pub messages: Vec<String>,
@@ -142,6 +150,26 @@ impl Outcome {
 
     fn answer(&mut self, answered: Answered) {
         capped(&mut self.answered, &mut self.answered_left_out, answered);
+    }
+
+    /// Message lines written so far, counting those left out.
+    fn written(&self) -> usize {
+        self.messages.len() + self.messages_left_out as usize
+    }
+
+    /// Records a search that took no time with what the screen showed.
+    fn no_time(&mut self, why: NoTimeWhy, text: Option<String>) {
+        self.no_time += 1;
+        let answers = &mut self.no_time_why;
+        if let Some(answer) = answers.iter_mut().find(|a| a.why == why && a.text == text) {
+            answer.searches += 1;
+        } else if answers.len() < NO_TIME_ANSWERS {
+            answers.push(NoTime {
+                searches: 1,
+                why,
+                text,
+            });
+        }
     }
 }
 
@@ -436,6 +464,7 @@ impl Executor {
             let origin = view.hero;
             let (prior, prior_turn) = (view.fingerprint(), view.status.turn);
             let (prior_hp, prior_pw) = (view.status.hp, view.status.pw);
+            let written = io.outcome.written();
             let buf;
             // The step's keys and, when moving, where it goes: from, to and the direction key.
             let (keys, target): (&[u8], _) = if moving {
@@ -481,6 +510,9 @@ impl Executor {
                 news |= self.send(io, keys)?;
                 io.outcome.steps += 1;
                 news |= self.page(io)?;
+            }
+            if repeat {
+                untimed(io, prior, prior_turn, written);
             }
             let view = io.term.view();
             match settled(view) {
@@ -714,6 +746,42 @@ fn record(view: &View, phase: Phase, open: Option<Phase>, keys: &[u8], outcome: 
             escape_key(key, &mut last.key);
         }
     }
+}
+
+/// Records a search after which the turn counter reads as it did before (`prior_turn`) as taking no time, with what
+/// the screen shows: the prompt that opened, the messages written since `written` lines had been, nothing changed
+/// from the `prior` fingerprint, or other changes only. A counter not shown before or after records nothing.
+fn untimed(io: &mut Io, prior: u64, prior_turn: Option<u32>, written: usize) {
+    let view = io.term.view();
+    if view.ended || prior_turn.is_none() || view.status.turn != prior_turn {
+        return;
+    }
+    let outcome = &mut io.outcome;
+    let lines = outcome.written().saturating_sub(written);
+    let said = &outcome.messages[outcome.messages.len().saturating_sub(lines)..];
+    let (why, text) = if view.phase() != Phase::Play {
+        let text = strip_more(&view.msg).trim();
+        let text = if text.is_empty() {
+            view.phase().name()
+        } else {
+            text
+        };
+        (NoTimeWhy::Prompt, Some(text.to_owned()))
+    } else if !said.is_empty() {
+        let mut text = String::new();
+        for line in said {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(line.trim());
+        }
+        (NoTimeWhy::Message, Some(text))
+    } else if view.fingerprint() == prior {
+        (NoTimeWhy::Screen, None)
+    } else {
+        (NoTimeWhy::Turn, None)
+    };
+    outcome.no_time(why, text);
 }
 
 /// How an action ends on `view` once its keys are done: the game ended, a prompt is open, or it completed.
@@ -1395,6 +1463,80 @@ mod tests {
             assert_eq!(sent(&term), ["s"]);
             assert_eq!((outcome.stop, outcome.changed), (Stop::Changed, field));
         }
+    }
+
+    #[test]
+    fn searches_that_leave_the_turn_counter_are_kept_with_what_the_screen_showed() {
+        let said = "You already found a monster.  Use 'm' prefix to force another search.";
+        let views = vec![
+            room(3, 12, 400, "", Some(9)),
+            room(3, 12, 401, "", Some(8)),
+            // The jackal moved; the turn counter did not.
+            room(3, 12, 401, "", Some(9)),
+            room(3, 12, 402, "", Some(9)),
+            // Nothing changed.
+            room(3, 12, 402, "", Some(9)),
+            room(3, 12, 402, said, Some(9)),
+        ];
+        let mut memory = Memory::default();
+        // The floor the jackal paces over was seen before it stood there.
+        memory.ingest(&at(3, 399));
+        memory.ingest(&views[0]);
+        let mut term = ScriptedTerm::new(views);
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(8));
+        assert_eq!(
+            (outcome.stop, outcome.steps, outcome.turns),
+            (Stop::Changed, 5, Some(2))
+        );
+        assert_eq!(outcome.no_time, 3);
+        let answers: Vec<_> = outcome
+            .no_time_why
+            .iter()
+            .map(|a| (a.searches, a.why, a.text.as_deref()))
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                (1, NoTimeWhy::Turn, None),
+                (1, NoTimeWhy::Screen, None),
+                (1, NoTimeWhy::Message, Some(said))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_prompt_a_search_opens_without_a_turn_is_its_answer() {
+        let prompt = "Really attack the gnome? [yn] (n)";
+        let (mut term, mut memory) = start(vec![at(3, 400), asking(prompt)]);
+        let outcome = Executor::default().run(&mut term, &mut memory, &search(8));
+        assert_eq!(outcome.stop, Stop::Prompt);
+        assert_eq!(
+            outcome.no_time_why,
+            [NoTime {
+                searches: 1,
+                why: NoTimeWhy::Prompt,
+                text: Some(prompt.to_owned())
+            }]
+        );
+    }
+
+    #[test]
+    fn searches_with_answers_beyond_the_bound_are_only_counted() {
+        let mut outcome = Outcome::default();
+        for n in 0..NO_TIME_ANSWERS + 2 {
+            outcome.no_time(NoTimeWhy::Message, Some(format!("message {n}")));
+        }
+        outcome.no_time(NoTimeWhy::Message, Some("message 0".to_owned()));
+        assert_eq!(outcome.no_time, NO_TIME_ANSWERS as u32 + 3);
+        assert_eq!(outcome.no_time_why.len(), NO_TIME_ANSWERS);
+        assert_eq!(outcome.no_time_why[0].searches, 2);
+    }
+
+    #[test]
+    fn a_walk_keeps_no_searches() {
+        let (mut term, mut memory) = start(vec![at(3, 400), at(3, 400)]);
+        let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
+        assert_eq!((outcome.no_time, outcome.no_time_why.len()), (0, 0));
     }
 
     #[test]

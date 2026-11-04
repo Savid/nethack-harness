@@ -408,9 +408,41 @@ pub struct Report {
     pub wet: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<i64>,
+    /// For `rest`, when the turn counter was shown before and after it: the searches after which it read as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_time: Option<u32>,
+    /// What the screen showed with those searches, one entry per distinct answer in the order first seen.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub no_time_why: Vec<NoTime>,
     /// A failure that ended the command, such as a closed terminal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// What the screen showed with a search after which the turn counter read as before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum NoTimeWhy {
+    /// The game wrote a message.
+    #[serde(rename = "message")]
+    Message,
+    /// A prompt opened.
+    #[serde(rename = "prompt")]
+    Prompt,
+    /// Nothing on the screen changed.
+    #[serde(rename = "screen unchanged")]
+    Screen,
+    /// The screen changed, with no message or prompt, but the turn counter did not.
+    #[serde(rename = "turn counter unchanged")]
+    Turn,
+}
+
+/// Searches of a rest that took no game time with one answer on screen, and the message or prompt text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NoTime {
+    pub searches: u32,
+    pub why: NoTimeWhy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A prompt that sent keys passed, and the key that answered it in escape syntax.
