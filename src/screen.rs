@@ -2,7 +2,7 @@
 //! lines, the hero and map cells.
 
 use crate::glyphs::{self, Conditions, Shade, contains_ignore_case, find_word, is_word};
-use crate::types::{COLS, Grid, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
+use crate::types::{Grid, MAP_SQUARES, Pos, ROWS};
 
 /// What the game is waiting for, judged from the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,7 +172,6 @@ enum Tail {
 const ALIGNMENTS: [&str; 4] = ["Lawful", "Neutral", "Chaotic", "Unaligned"];
 
 impl View {
-    /// Parses a screen.
     pub fn parse(grid: &Grid, cursor: Pos) -> View {
         let mut view = View::default();
         view.reparse(grid, cursor);
@@ -204,7 +203,10 @@ impl View {
             || self.direction
             || self.getpos;
         self.hero = self.find_hero();
-        self.engulfed = self.hero.is_some_and(|h| self.surrounded(h));
+        self.engulfed = self.hero.is_some_and(|hero| {
+            let at = |dy, dx| hero.step(dy, dx).map_or(' ', |p| self.ch(p));
+            at(-1, -1) == '/' && at(-1, 1) == '\\' && at(1, -1) == '\\' && at(1, 1) == '/'
+        });
         self.normal = self.hero.is_some() && !self.prompt && !self.ended;
     }
 
@@ -225,45 +227,47 @@ impl View {
     fn parse_prompts(&mut self) {
         let msg = self.msg.as_str();
         let asking = self.asking;
-        let yn = choice_answers(msg).filter(|_| !self.more && asking);
-        let letters = bracket_letters(msg);
-        let obj = letters.filter(|_| asking && msg.contains("What do you want"));
-        let spell = letters.filter(|_| asking && msg.contains("Cast which spell?"));
-        self.text = obj.is_none() && asking && TEXT_PROMPTS.iter().any(|p| msg.contains(p));
+        let letters = bracket_letters(msg).filter(|_| asking);
+        let obj = letters.filter(|_| msg.contains("What do you want"));
+        let spell = letters.filter(|_| msg.contains("Cast which spell?"));
+        let yn = choice_answers(msg).filter(|_| asking && obj.is_none());
+        self.text = asking && obj.is_none() && TEXT_PROMPTS.iter().any(|p| msg.contains(p));
         self.direction = asking
             && DIRECTION_PROMPTS
                 .iter()
                 .any(|p| contains_ignore_case(msg, p, false));
         self.getpos = POSITION_PROMPTS.iter().any(|p| msg.contains(p));
-        set_str(&mut self.yn, if obj.is_some() { None } else { yn });
+        set_str(&mut self.yn, yn);
         set_str(&mut self.obj, obj);
         set_str(&mut self.spell, spell);
     }
 
     fn parse_end(&mut self) {
-        let ascended = self
-            .msg
-            .starts_with("You ascend to the status of Demigod...")
-            || self
-                .msg
-                .starts_with("You ascend to the status of Demigoddess...")
-            || self.rows.iter().any(|r| {
-                farewell(r).is_some_and(|rest| {
-                    let after = after_first(rest);
-                    after.contains(" the Demigod...") || after.contains(" the Demigoddess...")
-                })
-            });
+        let msg = self.msg.as_str();
+        let rows = || self.rows.iter().map(|r| r.trim_start());
+        let farewells = || rows().filter_map(farewell);
+        let ascended = msg.starts_with("You ascend to the status of Demigod...")
+            || msg.starts_with("You ascend to the status of Demigoddess...")
+            || farewells()
+                .any(|f| f.contains(" the Demigod...") || f.contains(" the Demigoddess..."));
+        // The tombstone carves `REST`, `IN` and `PEACE` first on three consecutive rows.
+        let carved = |row: &str, word| {
+            row.split(|c: char| c.is_whitespace() || c == '/' || c == '\\' || c == '|')
+                .find(|w| !w.is_empty())
+                == Some(word)
+        };
+        let tombstone = self
+            .rows
+            .windows(3)
+            .any(|w| carved(&w[0], "REST") && carved(&w[1], "IN") && carved(&w[2], "PEACE"));
         self.end = if ascended {
             Some(EndKind::Ascended)
-        } else if self.tombstone() {
+        } else if tombstone {
             Some(EndKind::Tombstone)
-        } else if self.rows.iter().any(|r| {
-            farewell(r).is_some_and(farewell_names_role)
-                || r.trim_start().starts_with("Be seeing you...")
-        }) {
+        } else if farewells().any(names_role) || rows().any(|r| r.starts_with("Be seeing you...")) {
             Some(EndKind::Farewell)
-        } else if DISCLOSURE_QUESTIONS.iter().any(|q| self.msg.contains(q))
-            || (self.msg.contains("Do you want a list of") && self.msg.contains("species"))
+        } else if DISCLOSURE_QUESTIONS.iter().any(|q| msg.contains(q))
+            || (msg.contains("Do you want a list of") && msg.contains("species"))
         {
             Some(EndKind::Disclosure)
         } else {
@@ -272,43 +276,27 @@ impl View {
         self.ended = self.end.is_some();
     }
 
-    /// Whether the tombstone is shown: `REST`, `IN` and `PEACE` carved first on three consecutive rows.
-    fn tombstone(&self) -> bool {
-        let carved = |row: &str, word: &str| {
-            row.split(|c: char| c.is_whitespace() || c == '/' || c == '\\' || c == '|')
-                .find(|w| !w.is_empty())
-                == Some(word)
-        };
-        self.rows
-            .windows(3)
-            .any(|w| carved(&w[0], "REST") && carved(&w[1], "IN") && carved(&w[2], "PEACE"))
-    }
-
     fn parse_status(&mut self) {
         let (first, second) = (self.rows[ROWS - 2].as_str(), self.rows[ROWS - 1].as_str());
+        // A field is read from the first status line, else the second.
+        let lines = [first, second];
+        let number = |prefix, signed| lines.iter().find_map(|l| number_after(l, prefix, signed));
+        let pair = |prefix, signed| lines.iter().find_map(|l| pair_after(l, prefix, signed));
         let status = &mut self.status;
         set_str(&mut status.location, location(second));
-        let both = |prefix: &str, signed: bool| {
-            number_after(first, prefix, signed).or_else(|| number_after(second, prefix, signed))
-        };
-        status.dlvl = both("Dlvl:", false).map(|(n, _)| n);
-        status.gold = both("$:", false).map(|(n, _)| n);
-        (status.hp, status.hpmax) =
-            split(pair_after(first, "HP:", true).or_else(|| pair_after(second, "HP:", true)));
-        (status.pw, status.pwmax) =
-            split(pair_after(first, "Pw:", false).or_else(|| pair_after(second, "Pw:", false)));
-        status.ac = both("AC:", true).map(|(n, _)| n);
-        status.xl = experience(first).or_else(|| experience(second));
-        status.turn = both("T:", false).map(|(n, _)| n.max(0) as u32);
-        status.dex = both("Dx:", false).map(|(n, _)| n);
-        status.con = both("Co:", false).map(|(n, _)| n);
-        status.int = both("In:", false).map(|(n, _)| n);
-        status.wis = both("Wi:", false).map(|(n, _)| n);
-        status.cha = both("Ch:", false).map(|(n, _)| n);
-        set_str(
-            &mut status.strength,
-            strength(first).or_else(|| strength(second)),
-        );
+        status.dlvl = number("Dlvl:", false);
+        status.gold = number("$:", false);
+        (status.hp, status.hpmax) = pair("HP:", true).unzip();
+        (status.pw, status.pwmax) = pair("Pw:", false).unzip();
+        status.ac = number("AC:", true);
+        status.xl = lines.into_iter().find_map(experience);
+        status.turn = number("T:", false).map(|n| n as u32);
+        status.dex = number("Dx:", false);
+        status.con = number("Co:", false);
+        status.int = number("In:", false);
+        status.wis = number("Wi:", false);
+        status.cha = number("Ch:", false);
+        set_str(&mut status.strength, lines.into_iter().find_map(strength));
         status.alignment = ALIGNMENTS
             .iter()
             .filter_map(|a| find_word(first, a).map(|i| (i, *a)))
@@ -324,8 +312,7 @@ impl View {
             return None;
         }
         // The tty leaves the cursor on the hero, whatever its symbol.
-        if (MAP_TOP..=MAP_BOTTOM).contains(&cursor.y) && !self.grid.cell(cursor).ch.is_whitespace()
-        {
+        if !self.ch(cursor).is_whitespace() {
             return Some(cursor);
         }
         // A cursor on the message line means a question is open.
@@ -333,23 +320,10 @@ impl View {
             return None;
         }
         let distance = |p: Pos| p.y.abs_diff(cursor.y) as u32 + p.x.abs_diff(cursor.x) as u32;
-        let mut best: Option<Pos> = None;
-        for y in MAP_TOP..=MAP_BOTTOM {
-            for x in 0..COLS as u8 {
-                let p = Pos::new(y, x);
-                if self.grid.cells[y as usize][x as usize].ch == '@'
-                    && best.is_none_or(|b| distance(p) < distance(b))
-                {
-                    best = Some(p);
-                }
-            }
-        }
-        best
-    }
-
-    fn surrounded(&self, hero: Pos) -> bool {
-        let at = |dy, dx| hero.step(dy, dx).map_or(' ', |p| self.ch(p));
-        at(-1, -1) == '/' && at(-1, 1) == '\\' && at(1, -1) == '\\' && at(1, 1) == '/'
+        (0..MAP_SQUARES)
+            .map(Pos::from_index)
+            .filter(|&p| self.ch(p) == '@')
+            .min_by_key(|&p| distance(p))
     }
 
     /// The character at a map square, or a space off the map.
@@ -376,41 +350,31 @@ impl View {
         p.on_map() && self.grid.cell(p).rev
     }
 
-    /// What the game is waiting for.
+    /// What the game is waiting for: the first of these that holds.
     pub fn phase(&self) -> Phase {
-        if self.ended {
-            Phase::Ended
-        } else if self.more {
-            Phase::More
-        } else if self.direction {
-            Phase::Direction
-        } else if self.obj.is_some() {
-            Phase::Item
-        } else if self.spell.is_some() {
-            Phase::Spell
-        } else if self.yn.is_some() {
-            Phase::Choice
-        } else if self.asking && !self.msg.is_empty() && !self.counting() {
-            Phase::Text
-        } else if self.menu {
-            Phase::Menu
-        } else if self.getpos {
-            Phase::Position
-        } else if self.normal {
-            Phase::Play
-        } else {
-            Phase::Unknown
-        }
+        let text = self.asking && !self.msg.is_empty() && !self.counting();
+        [
+            (self.ended, Phase::Ended),
+            (self.more, Phase::More),
+            (self.direction, Phase::Direction),
+            (self.obj.is_some(), Phase::Item),
+            (self.spell.is_some(), Phase::Spell),
+            (self.yn.is_some(), Phase::Choice),
+            (text, Phase::Text),
+            (self.menu, Phase::Menu),
+            (self.getpos, Phase::Position),
+            (self.normal, Phase::Play),
+        ]
+        .into_iter()
+        .find_map(|(holds, phase)| holds.then_some(phase))
+        .unwrap_or(Phase::Unknown)
     }
 
     /// Whether the message line echoes a count being typed (`Count: 20`): the game waits for the command it
     /// repeats, not for an answer.
     pub fn counting(&self) -> bool {
-        self.asking
-            && self
-                .msg
-                .strip_prefix("Count: ")
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        let count = self.msg.strip_prefix("Count: ").unwrap_or("");
+        self.asking && !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit())
     }
 
     /// A cheap hash of cells and cursor, equal for identical screens.
@@ -434,79 +398,55 @@ impl View {
 
     /// The menu page shown, as (page, pages): `(n of m)`, or (1, 1) for `(end)`.
     pub fn menu_page(&self) -> Option<(u32, u32)> {
-        self.rows
-            .iter()
-            .find_map(|r| footer(r))
-            .map(|(_, page)| page)
+        self.rows.iter().find_map(|r| Some(footer(r)?.1))
     }
 
     /// The menu window's bounds as (left column, rows): rows `0..rows` cut at the left column hold the window,
     /// ending at its footer; (0, 24) when no footer is shown.
     pub fn menu_window(&self) -> (usize, usize) {
-        self.rows
-            .iter()
-            .enumerate()
-            .find_map(|(r, row)| {
-                footer(row).map(|(col, _)| {
-                    // Corner windows leave the map to their left; the footer has the entries' one-column inset.
-                    (col.saturating_sub(1), r + 1)
-                })
-            })
-            .unwrap_or((0, ROWS))
+        let found = (0..ROWS).find_map(|r| Some((r, footer(&self.rows[r])?.0)));
+        // Corner windows leave the map to their left; the footer has the entries' one-column inset.
+        found.map_or((0, ROWS), |(r, col)| (col.saturating_sub(1), r + 1))
     }
 
     /// The selectable entries of a menu on screen, appended to `out`.
     pub fn menu_entries(&self, out: &mut Vec<MenuEntry>) {
         let (left, rows) = self.menu_window();
         for row in &self.rows[..rows] {
-            if let Some((key, text)) = menu_entry(&row[byte_at(row, left)..]) {
-                out.push(MenuEntry {
-                    key,
-                    text: text.to_owned(),
-                });
-            }
+            out.extend(menu_entry(&row[byte_at(row, left)..]));
         }
     }
 
     /// The lines of a text window that ends in `--More--`, appended to `out`; false when `--More--` follows a
     /// message instead.
     pub fn more_window(&self, out: &mut Vec<String>) -> bool {
-        for index in self.message_rows as usize..ROWS {
-            let row = &self.rows[index];
-            let Some(at) = row.find("--More--") else {
-                continue;
-            };
+        let footer = (self.message_rows as usize..ROWS).find_map(|r| {
+            let row = &self.rows[r];
+            let head = &row[..row.find("--More--")?];
             // A window's footer stands apart; one that follows text on its row ends a message.
-            if at != 0 && !row[..at].ends_with(' ') {
-                continue;
-            }
-            let col = row[..at].chars().count();
-            let mut started = false;
-            for line in &self.rows[..index] {
-                let text = line[byte_at(line, col)..].trim_end();
-                started |= !text.is_empty();
-                if started {
-                    out.push(text.to_owned());
-                }
-            }
-            return true;
-        }
-        false
+            (head.is_empty() || head.ends_with(' ')).then(|| (r, head.chars().count()))
+        });
+        let Some((rows, col)) = footer else {
+            return false;
+        };
+        let lines = self.rows[..rows]
+            .iter()
+            .map(|line| line[byte_at(line, col)..].trim_end());
+        out.extend(lines.skip_while(|text| text.is_empty()).map(str::to_owned));
+        true
     }
 }
 
 /// One selectable menu row: `a - an uncursed dagger`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuEntry {
-    /// The selection key.
     pub key: char,
-    /// The entry text.
     pub text: String,
 }
 
 /// Whether `row` continues the message on `line` above it: the game splits a long message at a space, so a
 /// continuation starts in column 0 with a word that would not have fitted, and not with map structure.
-pub fn continues(line: &str, row: &str) -> bool {
+fn continues(line: &str, row: &str) -> bool {
     let first = row.split(' ').next().unwrap_or("");
     !line.is_empty()
         && !first.is_empty()
@@ -519,7 +459,9 @@ pub fn continues(line: &str, row: &str) -> bool {
 pub struct PromptContext {
     /// A positioning prompt is open.
     pub position: bool,
-    status: (Option<String>, Option<u32>),
+    /// The location and turn last shown while it is open.
+    location: Option<String>,
+    turn: Option<u32>,
 }
 
 impl PromptContext {
@@ -532,11 +474,9 @@ impl PromptContext {
     pub fn observe(&mut self, view: &mut View) {
         let location = view.status.location.as_deref();
         let turn = view.status.turn;
-        let moved = |before: Option<&str>, after: Option<&str>| matches!((before, after), (Some(b), Some(a)) if a != b);
-        let changed = self.position
-            && (moved(self.status.0.as_deref(), location)
-                || matches!((self.status.1, turn), (Some(b), Some(a)) if a != b));
-        if view.ended || changed {
+        let moved = matches!((self.location.as_deref(), location), (Some(b), Some(a)) if a != b);
+        let waited = matches!((self.turn, turn), (Some(b), Some(a)) if a != b);
+        if view.ended || (self.position && (moved || waited)) {
             self.reset();
         }
         if view.getpos && !view.more && !view.menu {
@@ -545,11 +485,9 @@ impl PromptContext {
         if self.position && !view.ended {
             // Full-screen help and target menus can cover the status lines, so a missing field keeps its value.
             if location.is_some() {
-                set_str(&mut self.status.0, location);
+                set_str(&mut self.location, location);
             }
-            if turn.is_some() {
-                self.status.1 = turn;
-            }
+            self.turn = turn.or(self.turn);
             view.getpos = true;
             view.prompt = true;
             view.hero = None;
@@ -575,13 +513,9 @@ pub fn strip_more(text: &str) -> &str {
 
 /// Replaces an optional string, reusing its buffer.
 fn set_str(slot: &mut Option<String>, value: Option<&str>) {
-    match (slot.as_mut(), value) {
-        (Some(s), Some(v)) => {
-            s.clear();
-            s.push_str(v);
-        }
-        (None, Some(v)) => *slot = Some(v.to_owned()),
-        (_, None) => *slot = None,
+    match value {
+        Some(v) => v.clone_into(slot.get_or_insert_default()),
+        None => *slot = None,
     }
 }
 
@@ -596,200 +530,143 @@ fn digits(s: &str) -> Option<(&str, &str)> {
     (end > 0).then(|| s.split_at(end))
 }
 
-/// A digit string's value, saturating at the `i32` range.
-fn value(digits: &str) -> i32 {
-    digits.bytes().fold(0i32, |n, d| {
-        n.saturating_mul(10).saturating_add((d - b'0') as i32)
-    })
-}
-
-/// An optionally negative number at the start of `s`, and the rest.
-fn signed_number(s: &str, signed: bool) -> Option<(i32, &str)> {
+/// The number at the start of `s`, negative after a `-` if `signed`, its size saturating at `i32::MAX`; and the
+/// rest.
+fn number(s: &str, signed: bool) -> Option<(i32, &str)> {
     let (negative, s) = match s.strip_prefix('-') {
         Some(rest) if signed => (true, rest),
         _ => (false, s),
     };
     let (d, rest) = digits(s)?;
-    let n = value(d);
+    let n = d.parse().unwrap_or(i32::MAX);
     Some((if negative { -n } else { n }, rest))
 }
 
-/// The first number that directly follows `prefix` in `text`, and the text after it.
-fn number_after<'a>(text: &'a str, prefix: &str, signed: bool) -> Option<(i32, &'a str)> {
+/// The first number that directly follows `prefix` in `text`.
+fn number_after(text: &str, prefix: &str, signed: bool) -> Option<i32> {
     text.match_indices(prefix)
-        .find_map(|(i, _)| signed_number(&text[i + prefix.len()..], signed))
+        .find_map(|(i, _)| Some(number(&text[i + prefix.len()..], signed)?.0))
 }
 
 /// The first `prefix N(M)` in `text`, as (N, M).
 fn pair_after(text: &str, prefix: &str, signed: bool) -> Option<(i32, i32)> {
     text.match_indices(prefix).find_map(|(i, _)| {
-        let (n, rest) = signed_number(&text[i + prefix.len()..], signed)?;
-        let (d, rest) = digits(rest.strip_prefix('(')?)?;
-        rest.starts_with(')').then(|| (n, value(d)))
+        let (n, rest) = number(&text[i + prefix.len()..], signed)?;
+        let (m, rest) = number(rest.strip_prefix('(')?, false)?;
+        rest.starts_with(')').then_some((n, m))
     })
-}
-
-fn split(pair: Option<(i32, i32)>) -> (Option<i32>, Option<i32>) {
-    pair.map_or((None, None), |(a, b)| (Some(a), Some(b)))
 }
 
 /// The experience level shown as `Xp:N`, `XL:N` or `Exp:N`, whichever comes first.
 fn experience(text: &str) -> Option<i32> {
-    ["Xp:", "XL:", "Exp:"]
-        .iter()
-        .filter_map(|prefix| {
-            text.match_indices(prefix)
-                .find_map(|(i, _)| digits(&text[i + prefix.len()..]).map(|(d, _)| (i, value(d))))
-        })
-        .min_by_key(|&(i, _)| i)
-        .map(|(_, n)| n)
+    text.char_indices().find_map(|(i, _)| {
+        let rest = &text[i..];
+        let level = ["Xp:", "XL:", "Exp:"]
+            .iter()
+            .find_map(|p| rest.strip_prefix(p))?;
+        Some(number(level, false)?.0)
+    })
 }
 
 /// Strength as shown after `St:`: digits, optionally `/` and digits or `/**`.
 fn strength(text: &str) -> Option<&str> {
     text.match_indices("St:").find_map(|(i, _)| {
-        let start = i + 3;
-        let (d, rest) = digits(&text[start..])?;
-        let mut end = start + d.len();
-        if let Some(after) = rest.strip_prefix('/') {
-            if let Some((d, _)) = digits(after) {
-                end += 1 + d.len();
-            } else if after.starts_with("**") {
-                end += 3;
-            }
-        }
-        Some(&text[start..end])
+        let shown = &text[i + 3..];
+        let (whole, rest) = digits(shown)?;
+        let fraction = match rest.strip_prefix('/') {
+            Some(after) if after.starts_with("**") => 3,
+            Some(after) => digits(after).map_or(0, |(d, _)| 1 + d.len()),
+            None => 0,
+        };
+        Some(&shown[..whole.len() + fraction])
     })
-}
-
-/// `s` without its first character.
-fn after_first(s: &str) -> &str {
-    let mut chars = s.chars();
-    chars.next();
-    chars.as_str()
 }
 
 /// The first location word in the second status line.
 fn location(text: &str) -> Option<&str> {
-    let mut previous: Option<char> = None;
-    for (i, c) in text.char_indices() {
-        let at_start = is_word(c) && !previous.is_some_and(is_word);
-        previous = Some(c);
-        if !at_start {
-            continue;
-        }
+    let mut word_starts = text
+        .char_indices()
+        .filter(|&(i, c)| is_word(c) && !text[..i].chars().next_back().is_some_and(is_word));
+    word_starts.find_map(|(i, _)| {
         let rest = &text[i..];
-        for &(fixed, tail) in &LOCATIONS {
-            let Some(after) = rest.strip_prefix(fixed) else {
-                continue;
+        LOCATIONS.iter().find_map(|&(fixed, tail)| {
+            let after = rest.strip_prefix(fixed)?;
+            let tail = match tail {
+                Tail::Nothing => "",
+                Tail::Digits => digits(after)?.0,
+                Tail::Word => after
+                    .split(|c: char| !is_word(c))
+                    .next()
+                    .filter(|w| !w.is_empty())?,
             };
-            let tail_len = match tail {
-                Tail::Nothing => 0,
-                Tail::Digits => match digits(after) {
-                    Some((d, _)) => d.len(),
-                    None => continue,
-                },
-                Tail::Word => match after.find(|c: char| !is_word(c)).unwrap_or(after.len()) {
-                    0 => continue,
-                    n => n,
-                },
-            };
-            let end = fixed.len() + tail_len;
-            if !rest[end..].chars().next().is_some_and(is_word) {
-                return Some(&rest[..end]);
-            }
-        }
-    }
-    None
+            let end = fixed.len() + tail.len();
+            (!rest[end..].starts_with(is_word)).then(|| &rest[..end])
+        })
+    })
 }
 
 /// The answers of a choice prompt: a message ending in `[letters]`, optionally followed by a default ` (x)`.
 fn choice_answers(msg: &str) -> Option<&str> {
-    let bracketed = |s: &str| -> Option<usize> {
-        let inner = s.strip_suffix(']')?;
-        let letters = inner
-            .bytes()
-            .rev()
-            .take_while(|&b| b.is_ascii_alphabetic() || b == b'#' || b == b'-')
-            .count();
-        let start = inner.len() - letters;
-        (start < inner.len() && inner[..start].ends_with('[')).then_some(start)
-    };
-    let mut ends = [None, Some(msg)];
-    let mut chars = msg.chars().rev();
-    if chars.next() == Some(')')
-        && chars.next().is_some()
-        && chars.next() == Some('(')
-        && chars.next() == Some(' ')
-    {
-        let cut = msg.char_indices().rev().nth(3).map_or(0, |(i, _)| i);
-        ends[0] = Some(&msg[..cut]);
-    }
-    ends.into_iter().flatten().find_map(|s| {
-        let start = bracketed(s)?;
-        Some(&s[start..s.len() - 1])
-    })
+    let without_default = msg.strip_suffix(')').and_then(|s| {
+        let mut chars = s.chars();
+        chars.next_back()?;
+        chars.as_str().strip_suffix(" (")
+    });
+    let inner = without_default.unwrap_or(msg).strip_suffix(']')?;
+    let head = inner.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '#' || c == '-');
+    let answers = &inner[head.len()..];
+    (!answers.is_empty() && head.ends_with('[')).then_some(answers)
 }
 
 /// The letters of an object or spell prompt: a message ending in `[…]`, without a trailing ` or ?*`.
 fn bracket_letters(msg: &str) -> Option<&str> {
     let inner = msg.strip_suffix(']')?;
-    let start = match inner.rfind(']') {
-        Some(close) => close + 1 + inner[close + 1..].find('[')?,
-        None => inner.find('[')?,
-    };
-    let letters = &inner[start + 1..];
+    let after_close = inner.rsplit_once(']').map_or(inner, |(_, after)| after);
+    let (_, letters) = after_close.split_once('[')?;
     Some(letters.strip_suffix(" or ?*").unwrap_or(letters))
 }
 
-/// The text after a role's farewell word at the start of a row.
+/// The text of a row that starts with a role's farewell word, from the second character of the name on, so that a
+/// ` the ` in it follows a name.
 fn farewell(row: &str) -> Option<&str> {
-    let row = row.trim_start();
-    FAREWELLS
+    let name = FAREWELLS
         .iter()
-        .find_map(|w| row.strip_prefix(w)?.strip_prefix(' '))
+        .find_map(|w| row.strip_prefix(w)?.strip_prefix(' '))?;
+    let mut chars = name.chars();
+    chars.next();
+    Some(chars.as_str())
 }
 
-/// Whether a farewell's text names the hero and role: `NAME the ROLE...`.
-fn farewell_names_role(rest: &str) -> bool {
-    let after = after_first(rest);
-    let Some(the) = after.find(" the ").map(|i| i + rest.len() - after.len()) else {
-        return false;
-    };
-    rest.rfind("...").is_some_and(|dots| dots > the + 5)
+/// Whether a farewell names the hero and role: `NAME the ROLE...`.
+fn names_role(farewell: &str) -> bool {
+    matches!(
+        (farewell.find(" the "), farewell.rfind("...")),
+        (Some(the), Some(dots)) if dots > the + 5
+    )
 }
 
 /// A menu footer at the end of a row: its column and the page it shows, (1, 1) for `(end)`.
 fn footer(row: &str) -> Option<(usize, (u32, u32))> {
-    let t = row.trim_end();
-    if let Some(head) = t.strip_suffix("(end)") {
+    let row = row.trim_end();
+    if let Some(head) = row.strip_suffix("(end)") {
         return Some((head.chars().count(), (1, 1)));
     }
-    let inner = t.strip_suffix(')')?;
-    let open = inner.rfind('(')?;
-    let (page, rest) = digits(&inner[open + 1..])?;
-    let (pages, rest) = digits(rest.strip_prefix(" of ")?)?;
-    rest.is_empty().then(|| {
-        let page = value(page).max(0) as u32;
-        let pages = value(pages).max(0) as u32;
-        (inner[..open].chars().count(), (page, pages))
-    })
+    let (head, shown) = row.strip_suffix(')')?.rsplit_once('(')?;
+    let (page, rest) = number(shown, false)?;
+    let (pages, rest) = number(rest.strip_prefix(" of ")?, false)?;
+    rest.is_empty()
+        .then(|| (head.chars().count(), (page as u32, pages as u32)))
 }
 
-/// A menu row `KEY MARK TEXT`, such as `a - a dagger` or `b + 2 arrows`: its key and text. The mark is `-`, `#`
-/// or `+`/`*` for an entry not, partly or wholly selected.
-fn menu_entry(row: &str) -> Option<(char, &str)> {
-    let row = row.trim_start();
-    let mut chars = row.chars();
+/// A menu row `KEY MARK TEXT`, such as `a - a dagger` or `b + 2 arrows`. The mark is `-`, `#` or `+`/`*` for an
+/// entry not, partly or wholly selected.
+fn menu_entry(row: &str) -> Option<MenuEntry> {
+    let mut chars = row.trim_start().chars();
     let key = chars.next().filter(|c| ('!'..='~').contains(c))?;
-    let rest = chars.as_str();
-    let after_key = rest.trim_start();
-    if after_key.len() == rest.len() {
-        return None;
-    }
-    let rest = after_key.strip_prefix(['-', '#', '+', '*'])?;
-    let text = rest.trim();
-    (!text.is_empty() && rest.starts_with(char::is_whitespace)).then_some((key, text))
+    let rest = chars.as_str().strip_prefix(char::is_whitespace)?;
+    let rest = rest.trim_start().strip_prefix(['-', '#', '+', '*'])?;
+    let text = rest.strip_prefix(char::is_whitespace)?.trim().to_owned();
+    (!text.is_empty()).then_some(MenuEntry { key, text })
 }
 
 #[cfg(test)]
