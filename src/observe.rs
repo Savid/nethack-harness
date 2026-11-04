@@ -418,7 +418,7 @@ impl Memory {
     }
 
     /// Captures end-of-game text: the messages of the final turn, later messages, the tombstone's death line and
-    /// the farewell window.
+    /// the farewell window, and the death in full from the score list.
     fn read_end(&mut self, view: &View) {
         if self.end.is_none() && view.ended {
             let mut end = End::default();
@@ -437,6 +437,7 @@ impl Memory {
         self.end_screen = Some(print);
         match view.end {
             Some(EndKind::Disclosure) => {}
+            Some(EndKind::Scores) => complete_death(view, end),
             Some(EndKind::Tombstone | EndKind::Farewell) => {
                 self.end_window = true;
                 end_window(view, end);
@@ -675,6 +676,67 @@ fn end_window(view: &View, end: &mut End) {
         }
         push_line(&mut end.lines, text);
     }
+}
+
+/// Completes the tombstone's death text from the score list. The tombstone carves the reason without the
+/// circumstances of the death (`, while praying`) and cuts off what its lines cannot hold; the list prints it whole,
+/// capitalised, ending the entry with a period. The current game's entry is the last one printed highlighted; when
+/// its text holds the tombstone's, the death runs from there to that period.
+fn complete_death(view: &View, end: &mut End) {
+    let (Some(death), Some(header)) = (end.death.as_deref(), view.scores_header()) else {
+        return;
+    };
+    let mut entry = String::new();
+    let mut current = String::new();
+    let mut highlighted = false;
+    for (r, row) in view.rows.iter().enumerate().skip(header + 1) {
+        let text = without_hit_points(row).trim();
+        // An entry's first row shows its rank and points in the first 16 columns; its continuations leave them
+        // blank.
+        let first = row.chars().take(16).any(|c| c != ' ');
+        if text.is_empty() || first {
+            if highlighted {
+                std::mem::swap(&mut entry, &mut current);
+            }
+            current.clear();
+            highlighted = false;
+        }
+        if text.is_empty() {
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(text);
+        highlighted |= view.grid.cells[r].iter().any(|cell| cell.bold || cell.rev);
+    }
+    if highlighted {
+        entry = current;
+    }
+    let mut chars = death.chars();
+    let Some(initial) = chars.next() else {
+        return;
+    };
+    let shown = format!("{}{}", initial.to_ascii_uppercase(), chars.as_str());
+    let tail = entry
+        .find(&shown)
+        .and_then(|at| entry[at + shown.len()..].strip_suffix('.'));
+    if let Some(tail) = tail.filter(|tail| !tail.is_empty()) {
+        end.death = Some(format!("{death}{tail}"));
+    }
+}
+
+/// A score list row without the hit point column (`-  [13]`, `12 [16]`) that ends each entry.
+fn without_hit_points(row: &str) -> &str {
+    let row = row.trim_end();
+    let column = row.strip_suffix(']').and_then(|inner| {
+        let (before, max) = inner.rsplit_once('[')?;
+        let before = before.trim_end();
+        let (text, hp) = before.rsplit_once(' ').unwrap_or(("", before));
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        (digits(max) && (hp == "-" || digits(hp))).then_some(text.trim_end())
+    });
+    column.unwrap_or(row)
 }
 
 /// Keeps a message among the end-of-game lines, unless it is empty or a question awaiting a bracketed answer.
@@ -1202,6 +1264,99 @@ mod tests {
             memory.end().and_then(|e| e.death.clone()),
             Some("You quit in The Dungeons of Doom on dungeon level 3 with 12 points,".to_owned())
         );
+    }
+
+    /// The tombstone page with `face` carved on its death lines.
+    fn carved(face: [&str; 3]) -> Vec<String> {
+        let mut rows = tombstone();
+        for (row, line) in rows[9..12].iter_mut().zip(face) {
+            *row = format!("                  |{line:^18}|");
+        }
+        rows
+    }
+
+    /// The score list the game prints as it exits: each entry's rows after the column header, the entries marked
+    /// `true` in standout, as the game shows the current game's entry.
+    fn score_list(entries: &[(bool, &[&str])]) -> View {
+        let mut rows = vec![String::new(); ROWS];
+        rows[2] = " No  Points     Name                                                   Hp [max]"
+            .to_owned();
+        let mut standout = Vec::new();
+        let mut r = 3;
+        for &(own, lines) in entries {
+            for line in lines {
+                rows[r] = format!("{line:79}");
+                if own {
+                    standout.push(r);
+                }
+                r += 1;
+            }
+        }
+        let mut shown = grid(&rows);
+        for r in standout {
+            for cell in shown.cells[r].iter_mut().take(79) {
+                cell.rev = true;
+            }
+        }
+        View::parse(&shown, Pos::new(r as u8, 0))
+    }
+
+    #[test]
+    fn the_score_list_completes_the_death_the_tombstone_carves() {
+        let earlier: &[&str] = &[
+            "  1       1200  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on",
+            "                level 4.  Killed by an Aleax of Quetzalcoatl, while",
+            "                sleeping.                                               -  [40]",
+        ];
+        let own: &[&str] = &[
+            "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on",
+            "                level 1.  Killed by an Aleax of Quetzalcoatl, while",
+            "                praying.                                                -  [15]",
+        ];
+        let death = |entries: &[(bool, &[&str])]| {
+            let mut memory = Memory::default();
+            memory.ingest(&room("", 400));
+            let stone = carved(["killed by an", "Aleax of", "Quetzalcoatl"]);
+            memory.ingest(&view(&stone, 22, 8));
+            memory.ingest(&score_list(entries));
+            memory.end().and_then(|e| e.death.clone())
+        };
+        assert_eq!(
+            death(&[(false, earlier), (true, own)]).as_deref(),
+            Some("killed by an Aleax of Quetzalcoatl, while praying")
+        );
+        // Without the current game's entry in standout, the tombstone's text stands.
+        assert_eq!(
+            death(&[(false, earlier), (false, own)]).as_deref(),
+            Some("killed by an Aleax of Quetzalcoatl")
+        );
+        // An entry that does not continue the tombstone's text leaves it as carved.
+        let other: &[&str] = &[
+            "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on",
+            "                level 1.  Killed by a jackal, while praying.            -  [15]",
+        ];
+        assert_eq!(
+            death(&[(true, other)]).as_deref(),
+            Some("killed by an Aleax of Quetzalcoatl")
+        );
+    }
+
+    #[test]
+    fn the_hit_point_column_is_not_entry_text() {
+        assert_eq!(
+            without_hit_points(
+                "                praying.                                                -  [15]"
+            ),
+            "                praying."
+        );
+        assert_eq!(
+            without_hit_points(
+                "                level 1.  Killed by a jackal.                          12 [16]"
+            ),
+            "                level 1.  Killed by a jackal."
+        );
+        let wrapped = "  1       1200  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom [max 5]";
+        assert_eq!(without_hit_points(wrapped), wrapped);
     }
 
     fn level_id(memory: &Memory) -> Option<u16> {

@@ -5,7 +5,7 @@
 //! buffer and advance the cursor; the reply carries the bytes after the request's `after`, `truncated` when
 //! `after` is older than the buffer start, and `waiting` as the step says. A request with empty input is a pure
 //! read and never takes a step; with `wait` it lets a busy game settle, printing what it prints on settling. A request with input while the script is exhausted goes to the responder, if one is
-//! set, which returns what the game prints; without one it is answered like a game that printed nothing and waits. Like the real server, the buffer keeps the last 64 KiB, and a reply body over
+//! set, which returns the step the game takes; without one it is answered like a game that printed nothing and waits. Once the game has exited, every request is answered 410 `game has exited`. Like the real server, the buffer keeps the last 64 KiB, and a reply body over
 //! 2048 bytes is sent chunked.
 
 use std::collections::VecDeque;
@@ -43,10 +43,13 @@ pub enum Step {
     Restart(Vec<u8>),
     /// Takes this many milliseconds, then prints these bytes and waits for a key.
     Slow(u64, Vec<u8>),
+    /// Prints these bytes and exits, as the game does after its last screen: the reply says `waiting: false`, and
+    /// every later request is answered 410 `game has exited`.
+    Exit(Vec<u8>),
 }
 
-/// A game that answers each input the script leaves to it with the bytes it prints.
-pub type Responder = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+/// A game that answers each input the script leaves to it with the step it takes.
+pub type Responder = Box<dyn FnMut(&[u8]) -> Step + Send>;
 
 /// One request the server received.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +74,7 @@ struct Game {
     /// What the busy game prints once it settles.
     settles: Vec<u8>,
     stuck: bool,
+    exited: bool,
     received: Vec<Received>,
     connections: u32,
     streams: Vec<UnixStream>,
@@ -289,6 +293,11 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
         wait: request.wait,
         status: 200,
     };
+    if g.exited {
+        received.status = 410;
+        g.received.push(received);
+        return (410, "game has exited\n".to_owned());
+    }
     if received.input.is_empty() {
         if request.wait > 0 && g.busy {
             let settles = std::mem::take(&mut g.settles);
@@ -296,7 +305,11 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
             g.busy = false;
         }
     } else {
-        match g.script.pop_front() {
+        let step = match g.script.pop_front() {
+            Some(step) => Some(step),
+            None => g.responder.as_mut().map(|respond| respond(&received.input)),
+        };
+        match step {
             Some(Step::Refuse(status, text)) => {
                 received.status = status;
                 g.received.push(received);
@@ -327,13 +340,11 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
                 g.print(&bytes);
                 g.busy = false;
             }
-            None => {
-                let printed = g.responder.as_mut().map(|respond| respond(&received.input));
-                if let Some(bytes) = printed {
-                    g.print(&bytes);
-                }
-                g.busy = false;
+            Some(Step::Exit(bytes)) => {
+                g.print(&bytes);
+                g.exited = true;
             }
+            None => g.busy = false,
         }
     }
     g.received.push(received);
@@ -345,7 +356,7 @@ fn answer(body: &[u8], game: &Mutex<Game>) -> (u16, String) {
         "{{\"output\":\"{}\",\"cursor\":{cursor},\"truncated\":{},\"waiting\":{}}}\n",
         String::from_utf8_lossy(&output),
         request.after < g.start,
-        !g.busy && !g.stuck
+        !g.busy && !g.stuck && !g.exited
     );
     (200, reply)
 }
