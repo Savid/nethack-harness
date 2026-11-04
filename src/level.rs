@@ -17,9 +17,7 @@ pub const REFUSED_STEPS: usize = 64;
 /// never cross them.
 const PASSABLE: &[char] = &['.', '#', '<', '>', '^', '{', '_', '\\'];
 
-/// What a `+` is: a closed door and a spellbook are both drawn `+`. A door sits in a wall line or was remembered
-/// as a door; an object lies on remembered ground or has floor beside it both across and along; otherwise the
-/// screen cannot tell.
+/// What a `+` is: a closed door and a spellbook are both drawn `+`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plus {
     Door,
@@ -52,6 +50,17 @@ pub struct Near {
 }
 
 impl Near {
+    /// The neighbours `q` of `p`, in `DIRS` order, for which `keep(key, q)` holds, `key` stepping from `p` to `q`.
+    fn around(p: Pos, keep: impl Fn(u8, Pos) -> bool) -> Near {
+        let mut out = Near::default();
+        for (key, q) in p.neighbours() {
+            if keep(key, q) {
+                out.push(q);
+            }
+        }
+        out
+    }
+
     pub fn push(&mut self, p: Pos) {
         if (self.len as usize) < self.buf.len() {
             self.buf[self.len as usize] = p;
@@ -108,22 +117,15 @@ impl Paths {
         self.reached.contains(p).then(|| u32::from(self.cost[i].2))
     }
 
-    /// The route to `target`, excluding the start, written into `out`; false if not reached.
+    /// The route to `target`, excluding the start, written into `out`; false if not reached. Each square's cost
+    /// exceeds that of the square it was reached from, so the walk back ends at the start.
     pub fn route(&self, target: Pos, out: &mut Vec<Pos>) -> bool {
         out.clear();
         if !self.reached.contains(target) {
             return false;
         }
         let mut at = target;
-        while let Some(i) = at.index() {
-            let Some(back) = self.previous[i] else {
-                break;
-            };
-            // A route visits each square once; a longer walk back means the state is not one search's.
-            if out.len() >= MAP_SQUARES {
-                out.clear();
-                return false;
-            }
+        while let Some(back) = at.index().and_then(|i| self.previous[i]) {
             out.push(at);
             at = back;
         }
@@ -217,13 +219,10 @@ impl Level {
         let Some(i) = p.index() else {
             return;
         };
-        let previous = self.terrain[i];
-        self.terrain[i] = ch;
-        if colour.is_some() {
+        if colour.is_some() || self.terrain[i] != ch {
             self.colours[i] = colour;
-        } else if previous != ch {
-            self.colours[i] = None;
         }
+        self.terrain[i] = ch;
         self.inferred_floor.remove(p);
     }
 
@@ -249,11 +248,7 @@ impl Level {
             }
             self.seen.insert(p);
             let plus = (ch == '+').then(|| plus_kind(view, Some(self), p));
-            if plus == Some(Plus::DoorOrObject) {
-                self.maybe_doors.insert(p);
-            } else {
-                self.maybe_doors.remove(p);
-            }
+            mark(&mut self.maybe_doors, p, plus == Some(Plus::DoorOrObject));
             if is_item(ch) || statue || matches!(plus, Some(Plus::Object | Plus::DoorOrObject)) {
                 if self.terrain[i] == '\0' {
                     self.object_squares.insert(p);
@@ -261,23 +256,12 @@ impl Level {
                 continue;
             }
             self.object_squares.remove(p);
-            if is_floor_engraving(ch, colour) {
-                self.remember_terrain(p, '.', Some(colour.base));
-                self.engravings.insert(p);
-                self.open_doors.remove(p);
-                continue;
-            }
-            self.remember_terrain(p, ch, Some(colour.base));
-            if is_corridor_engraving(ch, colour) {
-                self.engravings.insert(p);
-            } else {
-                self.engravings.remove(p);
-            }
-            if matches!(ch, '|' | '-') && colour.base == Base::Brown {
-                self.open_doors.insert(p);
-            } else {
-                self.open_doors.remove(p);
-            }
+            let floor = is_floor_engraving(ch, colour);
+            self.remember_terrain(p, if floor { '.' } else { ch }, Some(colour.base));
+            let engraved = floor || is_corridor_engraving(ch, colour);
+            mark(&mut self.engravings, p, engraved);
+            let door = matches!(ch, '|' | '-') && colour.base == Base::Brown;
+            mark(&mut self.open_doors, p, door);
         }
         if let Some(hero) = view.hero
             && let Some(i) = hero.index()
@@ -298,15 +282,14 @@ impl Level {
 
     /// The name of the remembered feature at `p`; a liquid is named by its colour, a trap by what the game said.
     pub fn kind(&self, p: Pos) -> Option<&str> {
-        let ch = self.terrain(p)?;
-        match ch {
+        match self.terrain(p)? {
             '}' => Some(
                 self.colour(p)
                     .and_then(liquid_name)
                     .unwrap_or("water or lava"),
             ),
             '^' => Some(self.trap_kinds.get(&p).map_or("trap", String::as_str)),
-            _ => feature_name(ch),
+            ch => feature_name(ch),
         }
     }
 
@@ -317,16 +300,9 @@ impl Level {
     /// replaces a worn one. A `:` reading describes the whole square, so its caller removes the square's entry
     /// first.
     pub fn note_underfoot(&mut self, p: Pos, notes: &[String], turn: Option<u32>) {
-        let engraving = notes.iter().any(|n| is_engraving_text(n));
-        let other = notes.iter().any(|n| !is_engraving_text(n));
+        let has_kind = |engraving: bool| notes.iter().any(|n| is_engraving_text(n) == engraving);
         let entry = self.underfoot.entry(p).or_default();
-        entry.notes.retain(|n| {
-            if is_engraving_text(n) {
-                !engraving
-            } else {
-                !other
-            }
-        });
+        entry.notes.retain(|n| !has_kind(is_engraving_text(n)));
         for note in notes {
             if !entry.notes.contains(note) {
                 entry.notes.push(note.clone());
@@ -387,50 +363,21 @@ impl Level {
             && (ch != Some('#') || self.corridor(q))
     }
 
-    /// Whether the diagonal step from `p` to `q` joins squares that no cardinal path through `connects` joins.
-    fn linked(p: Pos, q: Pos, connects: impl Fn(Pos) -> bool) -> bool {
-        !(connects(Pos::new(p.y, q.x)) || connects(Pos::new(q.y, p.x)))
-    }
-
     /// The corridor squares `p` connects to: cardinal neighbours, and diagonal ones no cardinal path joins.
     pub fn corridor_links(&self, p: Pos) -> Near {
-        let mut out = Near::default();
-        for (key, q) in p.neighbours() {
-            if !self.connects(q) {
-                continue;
-            }
-            if cardinal(key)
-                || (self.corridor(q)
-                    && self.corridor(p)
-                    && Level::linked(p, q, |r| self.connects(r)))
-            {
-                out.push(q);
-            }
-        }
-        out
+        let joins = |q| self.corridor(p) && self.corridor(q) && linked(p, q, |r| self.connects(r));
+        Near::around(p, |key, q| self.connects(q) && (cardinal(key) || joins(q)))
     }
 
     /// Corridor squares beyond `p` not in `covered`, cardinal ones first.
     pub fn continuations(&self, p: Pos, covered: &SquareSet) -> Near {
-        let mut out = Near::default();
-        for (key, q) in p.neighbours() {
-            if cardinal(key) && !covered.contains(q) && self.corridor(q) {
-                out.push(q);
-            }
+        let open = |q| !covered.contains(q) && self.corridor(q);
+        let straight = Near::around(p, |key, q| cardinal(key) && open(q));
+        if !straight.is_empty() {
+            return straight;
         }
-        if !out.is_empty() {
-            return out;
-        }
-        for (key, q) in p.neighbours() {
-            if !cardinal(key)
-                && !covered.contains(q)
-                && self.corridor(q)
-                && Level::linked(p, q, |r| self.corridor(r))
-            {
-                out.push(q);
-            }
-        }
-        out
+        let diagonal = |q| linked(p, q, |r| self.corridor(r));
+        Near::around(p, |key, q| !cardinal(key) && open(q) && diagonal(q))
     }
 
     /// Fills `paths` with shortest routes from `start` avoiding `occupied`: fewest refused steps, then fewest
@@ -446,6 +393,7 @@ impl Level {
         paths.reached.insert(start);
         let mut order: u32 = 0;
         paths.queue.push(Reverse(((0, 0, 0), order, si as u16)));
+        let door = |p| self.open_doors.contains(p) || self.maybe_doors.contains(p);
         while let Some(Reverse((cost, _, index))) = paths.queue.pop() {
             let index = index as usize;
             if cost != paths.cost[index] {
@@ -455,18 +403,14 @@ impl Level {
             let (refused, traps, length) = cost;
             let refusing = self.refused_from.contains(p);
             for (key, q) in p.neighbours() {
-                if (q != start && occupied.contains(q)) || !self.passable(q) {
-                    continue;
-                }
                 let ch = self.terrain(q);
-                if ch == Some('#') && !self.corridor(q) {
+                let Some(qi) = q.index() else {
                     continue;
-                }
-                if !cardinal(key)
-                    && (self.open_doors.contains(p)
-                        || self.open_doors.contains(q)
-                        || self.maybe_doors.contains(p)
-                        || self.maybe_doors.contains(q))
+                };
+                if (q != start && occupied.contains(q))
+                    || !self.passable(q)
+                    || (ch == Some('#') && !self.corridor(q))
+                    || (!cardinal(key) && (door(p) || door(q)))
                 {
                     continue;
                 }
@@ -475,9 +419,6 @@ impl Level {
                     traps + u16::from(ch == Some('^')),
                     length + 1,
                 );
-                let Some(qi) = q.index() else {
-                    continue;
-                };
                 if paths.reached.contains(q) && paths.cost[qi] <= step {
                     continue;
                 }
@@ -511,31 +452,15 @@ impl Level {
     /// first, written into `out`.
     pub fn frontier_targets(&self, paths: &Paths, out: &mut Vec<(Pos, u32)>) {
         out.clear();
-        let mut visited = SquareSet::new();
-        let mut beside = SquareSet::new();
-        for &p in self.visits.keys() {
-            visited.insert(p);
-            for (_, n) in p.neighbours() {
-                beside.insert(n);
-            }
-        }
-        let unknown = |q: Pos| !self.seen.contains(q) && !beside.contains(q);
         let mut edge = SquareSet::new();
-        for p in paths.reached().iter() {
-            if !visited.contains(p) && p.neighbours().any(|(key, q)| cardinal(key) && unknown(q)) {
-                edge.insert(p);
-            }
+        for p in paths.reached().iter().filter(|&p| self.frontier(p)) {
+            edge.insert(p);
         }
-        if edge.is_empty() {
-            return;
-        }
-        let distance = |p: Pos| paths.distance(p).unwrap_or(0);
         // Each square enters the stack once, as it leaves `edge`.
         let mut stack = [Pos::default(); MAP_SQUARES];
         // The nearest distance of each group, by the index of its farthest square.
         let mut nearest = [0u32; MAP_SQUARES];
-        for i in 0..MAP_SQUARES {
-            let first = Pos::from_index(i);
+        for first in edge.clone().iter() {
             if !edge.remove(first) {
                 continue;
             }
@@ -546,11 +471,9 @@ impl Level {
             while top > 0 {
                 top -= 1;
                 let p = stack[top];
-                let d = distance(p);
+                let d = paths.distance(p).unwrap_or(0);
                 near = near.min(d);
-                if (d, p) > far {
-                    far = (d, p);
-                }
+                far = far.max((d, p));
                 for (_, q) in p.neighbours() {
                     if edge.remove(q) {
                         stack[top] = q;
@@ -567,25 +490,29 @@ impl Level {
     }
 }
 
-/// Whether a direction key is a cardinal one.
 fn cardinal(key: u8) -> bool {
     matches!(key, b'h' | b'j' | b'k' | b'l')
 }
 
-/// The character at the map square one step from `p`, or a space off the map.
-fn beside(view: &View, p: Pos, dy: i8, dx: i8) -> char {
-    p.step(dy, dx)
-        .filter(|q| q.on_map())
-        .map_or(' ', |q| view.grid.cell(q).ch)
+/// Whether the diagonal step from `p` to `q` joins squares that no cardinal path through `connects` joins.
+fn linked(p: Pos, q: Pos, connects: impl Fn(Pos) -> bool) -> bool {
+    !(connects(Pos::new(p.y, q.x)) || connects(Pos::new(q.y, p.x)))
+}
+
+/// Adds `p` to `set`, or removes it.
+fn mark(set: &mut SquareSet, p: Pos, on: bool) {
+    if on {
+        set.insert(p);
+    } else {
+        set.remove(p);
+    }
 }
 
 /// The stairs a note says are at the hero's square: `There is a staircase down here.` gives `>`.
 fn stairs_here(note: &str) -> Option<char> {
     let trimmed = note.strip_suffix('.').unwrap_or(note);
-    let ends_here = trimmed
-        .strip_suffix("here")
-        .is_some_and(|head| !head.chars().next_back().is_some_and(is_word));
-    if !ends_here {
+    let head = trimmed.strip_suffix("here")?;
+    if head.chars().next_back().is_some_and(is_word) {
         return None;
     }
     [
@@ -605,12 +532,15 @@ fn stairs_here(note: &str) -> Option<char> {
 /// One on remembered ground, or with floor beside it both across and along, is in no wall line: an object. The
 /// screen cannot tell the rest, such as a `+` at a corridor's end whose walls have not been seen.
 pub fn plus_kind(view: &View, level: Option<&Level>, p: Pos) -> Plus {
+    let beside = |dy, dx| p.step(dy, dx).map_or(' ', |q| view.ch(q));
     let remembered = level.and_then(|l| l.terrain(p));
-    if door_line(view, p) || remembered == Some('+') {
+    let wall_line =
+        beside(0, -1) == '-' || beside(0, 1) == '-' || beside(-1, 0) == '|' || beside(1, 0) == '|';
+    if wall_line || remembered == Some('+') {
         return Plus::Door;
     }
-    let across = beside(view, p, -1, 0) == '.' || beside(view, p, 1, 0) == '.';
-    let along = beside(view, p, 0, -1) == '.' || beside(view, p, 0, 1) == '.';
+    let across = beside(-1, 0) == '.' || beside(1, 0) == '.';
+    let along = beside(0, -1) == '.' || beside(0, 1) == '.';
     if remembered.is_some() || (across && along) {
         Plus::Object
     } else {
@@ -618,23 +548,9 @@ pub fn plus_kind(view: &View, level: Option<&Level>, p: Pos) -> Plus {
     }
 }
 
-/// Whether `p` sits in a wall line, as a door does.
-pub fn door_line(view: &View, p: Pos) -> bool {
-    beside(view, p, 0, -1) == '-'
-        || beside(view, p, 0, 1) == '-'
-        || beside(view, p, -1, 0) == '|'
-        || beside(view, p, 1, 0) == '|'
-}
-
 /// The squares a walk to a closed door ends on: its orthogonal neighbours, as doors refuse diagonal moves.
 pub fn door_sides(p: Pos) -> Near {
-    let mut out = Near::default();
-    for (key, q) in p.neighbours() {
-        if cardinal(key) {
-            out.push(q);
-        }
-    }
-    out
+    Near::around(p, |key, _| cardinal(key))
 }
 
 #[cfg(test)]
