@@ -32,25 +32,40 @@ const ALL_ROWS: u32 = (1 << ROWS) - 1;
 /// Stands in for a non-ASCII character inside an escape sequence, which no sequence uses.
 const FOREIGN: u8 = 0x80;
 
-/// The numeric parameters of one control sequence; `None` is an empty or non-numeric parameter.
+/// The numeric parameters of one control sequence. An empty or non-numeric parameter reads as 0, as does any
+/// past the last.
 struct Params {
-    nums: [Option<u32>; ESCAPE_MAX],
+    nums: [u32; ESCAPE_MAX],
     len: usize,
+    /// Whether a private-mode marker such as `?` leads the parameters.
+    private: bool,
 }
 
 impl Params {
-    /// Parameter `i`, or `default` when absent or empty; with a default of 1, zero also reads as 1.
-    fn num(&self, i: usize, default: u32) -> u32 {
-        let v = self.get(i).unwrap_or(default);
-        if v == 0 && default == 1 { 1 } else { v }
+    /// Parses the bytes between `[` and the final byte.
+    fn parse(raw: &[u8]) -> Params {
+        let start = raw
+            .iter()
+            .position(|b| !b"?>=!".contains(b))
+            .unwrap_or(raw.len());
+        let mut p = Params {
+            nums: [0; ESCAPE_MAX],
+            len: 0,
+            private: start > 0,
+        };
+        for (num, part) in p.nums.iter_mut().zip(raw[start..].split(|&b| b == b';')) {
+            if part.iter().all(u8::is_ascii_digit) {
+                *num = part.iter().fold(0u32, |n, &d| {
+                    n.saturating_mul(10).saturating_add(u32::from(d - b'0'))
+                });
+            }
+            p.len += 1;
+        }
+        p
     }
 
-    fn get(&self, i: usize) -> Option<u32> {
-        if i < self.len { self.nums[i] } else { None }
-    }
-
-    fn contains(&self, n: u32) -> bool {
-        self.nums[..self.len].contains(&Some(n))
+    fn get(&self, i: usize) -> u32 {
+        self.nums.get(i).copied().unwrap_or(0)
     }
 }
 
@@ -134,67 +149,53 @@ impl Vt {
     /// Whether any of the first `rows` rows was written since `clear_touched`: an untouched message line holds
     /// old text.
     pub fn message_written(&self, rows: usize) -> bool {
-        let mask = if rows >= 32 {
-            u32::MAX
-        } else {
-            (1u32 << rows) - 1
-        };
-        self.touched & mask != 0
+        self.touched & ((1 << rows.min(ROWS)) - 1) != 0
     }
 
-    /// Decodes one byte of UTF-8. A byte that cannot continue the pending sequence ends it as U+FFFD and is then
-    /// decoded afresh.
+    /// Decodes one byte of UTF-8. A byte that cannot continue the pending sequence ends it as one U+FFFD and is
+    /// then decoded afresh.
     fn byte(&mut self, b: u8) {
-        if self.utf8_len > 0 {
-            if continues_utf8(self.utf8[0], self.utf8_len, b) {
-                self.utf8[self.utf8_len] = b;
-                self.utf8_len += 1;
-                let need = utf8_len(self.utf8[0]);
-                if self.utf8_len == need {
-                    self.utf8_len = 0;
-                    let ch = std::str::from_utf8(&self.utf8[..need])
-                        .ok()
-                        .and_then(|s| s.chars().next())
-                        .unwrap_or(char::REPLACEMENT_CHARACTER);
-                    self.char(ch);
-                }
-                return;
-            }
-            self.utf8_len = 0;
-            self.char(char::REPLACEMENT_CHARACTER);
+        if self.utf8_len == 0 && b.is_ascii() {
+            self.char(char::from(b));
+            return;
         }
-        match b {
-            0x00..=0x7f => self.char(b as char),
-            0xc2..=0xf4 => {
-                self.utf8[0] = b;
-                self.utf8_len = 1;
+        self.utf8[self.utf8_len] = b;
+        self.utf8_len += 1;
+        match std::str::from_utf8(&self.utf8[..self.utf8_len]).map(|s| s.chars().next()) {
+            Ok(ch) => {
+                self.utf8_len = 0;
+                self.char(ch.unwrap_or(char::REPLACEMENT_CHARACTER));
             }
-            _ => self.char(char::REPLACEMENT_CHARACTER),
+            // The start of a valid sequence waits for the rest.
+            Err(e) if e.error_len().is_none() => {}
+            Err(_) => {
+                let pending = self.utf8_len > 1;
+                self.utf8_len = 0;
+                self.char(char::REPLACEMENT_CHARACTER);
+                if pending {
+                    self.byte(b);
+                }
+            }
         }
     }
 
     fn char(&mut self, ch: char) {
-        if self.escaping {
-            match ch {
-                // A new Escape abandons the unfinished sequence and starts another; CAN and SUB cancel it. Other
-                // controls take effect without ending the sequence, and DEL is ignored, as on a hardware terminal.
-                '\x1b' => self.esc_len = 0,
-                '\x18' | '\x1a' => self.end_escape(),
-                '\x7f' => {}
-                '\x00'..='\x1f' => self.control(ch),
-                _ => {
-                    self.esc[self.esc_len] = if ch.is_ascii() { ch as u8 } else { FOREIGN };
-                    self.esc_len += 1;
-                    self.escape();
-                }
+        match ch {
+            // An Escape starts a sequence, abandoning any unfinished one; CAN and SUB cancel one. Other controls
+            // take effect without ending a sequence, and DEL is ignored, as on a hardware terminal.
+            '\x1b' => {
+                self.escaping = true;
+                self.esc_len = 0;
             }
-        } else if ch == '\x1b' {
-            self.escaping = true;
-            self.esc_len = 0;
-        } else if (ch as u32) < 0x20 || ch == '\x7f' {
-            self.control(ch);
-        } else {
-            self.put(ch);
+            '\x18' | '\x1a' => self.end_escape(),
+            '\x7f' => {}
+            '\x00'..='\x1f' => self.control(ch),
+            _ if self.escaping => {
+                self.esc[self.esc_len] = if ch.is_ascii() { ch as u8 } else { FOREIGN };
+                self.esc_len += 1;
+                self.escape();
+            }
+            _ => self.put(ch),
         }
     }
 
@@ -207,14 +208,6 @@ impl Vt {
         self.touched |= 1 << row;
     }
 
-    fn y(&self) -> usize {
-        self.cursor.y as usize
-    }
-
-    fn x(&self) -> usize {
-        self.cursor.x as usize
-    }
-
     fn move_to(&mut self, y: usize, x: usize) {
         self.cursor = Pos::new(y.min(ROWS - 1) as u8, x.min(COLS - 1) as u8);
     }
@@ -222,17 +215,12 @@ impl Vt {
     fn put(&mut self, ch: char) {
         let ch = if self.dec { dec_graphics(ch) } else { ch };
         if self.wrap {
-            self.wrap = false;
             self.cursor.x = 0;
             self.linefeed();
         }
-        let (y, x) = (self.y(), self.x());
-        self.grid.cells[y][x] = Cell {
-            ch,
-            fg: self.attr.fg,
-            bold: self.attr.bold,
-            rev: self.attr.rev,
-        };
+        let (y, x) = (usize::from(self.cursor.y), usize::from(self.cursor.x));
+        let Attr { fg, bold, rev } = self.attr;
+        self.grid.cells[y][x] = Cell { ch, fg, bold, rev };
         self.touch(y);
         if x == COLS - 1 {
             self.wrap = true;
@@ -247,18 +235,12 @@ impl Vt {
                 self.cursor.x = 0;
                 self.wrap = false;
             }
-            '\n' | '\x0b' | '\x0c' => {
-                self.wrap = false;
-                self.linefeed();
-            }
+            '\n' | '\x0b' | '\x0c' => self.linefeed(),
             '\x08' => {
                 self.cursor.x = self.cursor.x.saturating_sub(1);
                 self.wrap = false;
             }
-            '\t' => {
-                let x = (self.x() / 8 + 1) * 8;
-                self.cursor.x = x.min(COLS - 1) as u8;
-            }
+            '\t' => self.cursor.x = ((self.cursor.x / 8 + 1) * 8).min(COLS as u8 - 1),
             '\x0e' => self.dec = true,
             '\x0f' => self.dec = false,
             _ => {}
@@ -266,28 +248,18 @@ impl Vt {
     }
 
     fn linefeed(&mut self) {
+        self.wrap = false;
         if self.cursor.y == self.bottom {
-            self.scroll(self.top as usize, self.bottom as usize, 1);
-        } else if self.y() < ROWS - 1 {
+            self.scroll(self.top as usize, 1, true);
+        } else if usize::from(self.cursor.y) < ROWS - 1 {
             self.cursor.y += 1;
         }
     }
 
-    fn reverse_index(&mut self) {
-        if self.cursor.y == self.top {
-            self.scroll(self.top as usize, self.bottom as usize, -1);
-        } else {
-            self.cursor.y = self.cursor.y.saturating_sub(1);
-        }
-    }
-
-    /// Blanks columns `x0..x1` of row `y`.
+    /// Blanks columns `x0..x1` of row `y`, stopping at the row's end.
     fn blank(&mut self, y: usize, x0: usize, x1: usize) {
         self.touch(y);
-        let x1 = x1.min(COLS);
-        if x0 < x1 {
-            self.grid.cells[y][x0..x1].fill(Cell::BLANK);
-        }
+        self.grid.cells[y][x0..x1.min(COLS)].fill(Cell::BLANK);
     }
 
     fn blank_rows(&mut self, from: usize, to: usize) {
@@ -296,113 +268,66 @@ impl Vt {
         }
     }
 
-    /// Scrolls rows `top..=bottom` up by `n`, or down when `n` is negative, blanking the rows uncovered.
-    fn scroll(&mut self, top: usize, bottom: usize, n: i64) {
+    /// Scrolls the rows from `top` to the bottom of the scroll region up by `n`, or down when not `up`, blanking
+    /// the rows uncovered.
+    fn scroll(&mut self, top: usize, n: usize, up: bool) {
+        let bottom = self.bottom as usize;
         for y in top..=bottom {
             self.touch(y);
         }
-        let block = &mut self.grid.cells[top..=bottom];
-        let k = (n.unsigned_abs() as usize).min(block.len());
-        let len = block.len();
-        if n > 0 {
-            block.rotate_left(k);
-            block[len - k..].fill([Cell::BLANK; COLS]);
-        } else {
-            block.rotate_right(k);
-            block[..k].fill([Cell::BLANK; COLS]);
-        }
+        let rows = &mut self.grid.cells[top..=bottom];
+        shift(rows, n, up, [Cell::BLANK; COLS]);
     }
 
     fn escape(&mut self) {
-        let first = self.esc[0];
-        if self.esc_len == 1 {
-            match first {
-                b'[' | b'(' | b')' | b'#' | b'%' => return,
-                b'7' => self.saved = (self.cursor, self.attr),
-                b'8' => {
-                    (self.cursor, self.attr) = self.saved;
-                    self.wrap = false;
-                }
-                b'M' => {
-                    self.wrap = false;
-                    self.reverse_index();
-                }
-                b'D' => {
-                    self.wrap = false;
-                    self.linefeed();
-                }
-                b'E' => {
-                    self.wrap = false;
-                    self.cursor.x = 0;
-                    self.linefeed();
-                }
-                b'c' => {
-                    self.reset();
-                    self.complete = true;
-                }
-                _ => {}
+        match self.esc[..self.esc_len] {
+            // These start longer sequences.
+            [b'[' | b'(' | b')' | b'#' | b'%'] => return,
+            [b'7'] => self.saved = (self.cursor, self.attr),
+            [b'8'] => {
+                (self.cursor, self.attr) = self.saved;
+                self.wrap = false;
             }
-            self.end_escape();
-            return;
-        }
-        if matches!(first, b'(' | b')' | b'#' | b'%') {
-            if first == b'(' {
-                self.dec = self.esc[1] == b'0';
+            [b'D'] => self.linefeed(),
+            [b'E'] => {
+                self.cursor.x = 0;
+                self.linefeed();
             }
-            self.end_escape();
-            return;
+            // Reverse index: up a row, scrolling down at the top of the scroll region.
+            [b'M'] => {
+                self.wrap = false;
+                if self.cursor.y == self.top {
+                    self.scroll(self.top as usize, 1, false);
+                } else {
+                    self.cursor.y = self.cursor.y.saturating_sub(1);
+                }
+            }
+            [b'c'] => {
+                self.reset();
+                self.complete = true;
+            }
+            [b'(', set] => self.dec = set == b'0',
+            [b'[', .., last @ b'@'..=b'~'] => {
+                let params = Params::parse(&self.esc[1..self.esc_len - 1]);
+                self.csi(&params, last);
+            }
+            // A control sequence continues to its final byte unless it grows too long.
+            [b'[', ..] if self.esc_len < ESCAPE_MAX => return,
+            _ => {}
         }
-        let last = self.esc[self.esc_len - 1];
-        if (b'@'..=b'~').contains(&last) {
-            let params = self.params();
-            let private =
-                matches!(self.esc.get(1), Some(b'?' | b'>' | b'=' | b'!')) && self.esc_len > 2;
-            self.end_escape();
-            self.csi(&params, private, last);
-        } else if self.esc_len >= ESCAPE_MAX {
-            self.end_escape();
-        }
+        self.end_escape();
     }
 
-    /// The parameters between `[` and the final byte, after any private-mode markers.
-    fn params(&self) -> Params {
-        let mut params = Params {
-            nums: [None; ESCAPE_MAX],
-            len: 0,
-        };
-        let raw = &self.esc[1..self.esc_len - 1];
-        if raw.is_empty() {
-            return params;
-        }
-        let start = raw
-            .iter()
-            .position(|b| !matches!(b, b'?' | b'>' | b'=' | b'!'))
-            .unwrap_or(raw.len());
-        for part in raw[start..].split(|&b| b == b';') {
-            if params.len == ESCAPE_MAX {
-                break;
-            }
-            params.nums[params.len] = if !part.is_empty() && part.iter().all(u8::is_ascii_digit) {
-                Some(part.iter().fold(0u32, |n, &d| {
-                    n.saturating_mul(10).saturating_add((d - b'0') as u32)
-                }))
-            } else {
-                None
-            };
-            params.len += 1;
-        }
-        params
-    }
-
-    fn csi(&mut self, p: &Params, private: bool, final_byte: u8) {
+    fn csi(&mut self, p: &Params, final_byte: u8) {
         // Every sequence but a colour change ends a pending wrap at the last column.
         if final_byte != b'm' {
             self.wrap = false;
         }
-        let (y, x) = (self.y(), self.x());
-        let n = p.num(0, 1) as usize;
+        let (y, x) = (usize::from(self.cursor.y), usize::from(self.cursor.x));
+        // A count or a 1-based coordinate, where 0 also means 1.
+        let n = p.get(0).max(1) as usize;
         match final_byte {
-            b'H' | b'f' => self.move_to(n - 1, p.num(1, 1) as usize - 1),
+            b'H' | b'f' => self.move_to(n - 1, p.get(1).max(1) as usize - 1),
             b'A' => self.move_to(y.saturating_sub(n), x),
             b'B' => self.move_to(y.saturating_add(n), x),
             b'C' => self.move_to(y, x.saturating_add(n)),
@@ -411,13 +336,11 @@ impl Vt {
             b'F' => self.move_to(y.saturating_sub(n), 0),
             b'G' | b'`' => self.move_to(y, n - 1),
             b'd' => self.move_to(n - 1, x),
-            b'J' => match p.num(0, 0) {
-                0 => {
+            // Erasing below from home clears the whole screen.
+            b'J' => match p.get(0) {
+                0 if (y, x) != (0, 0) => {
                     self.blank(y, x, COLS);
                     self.blank_rows(y + 1, ROWS);
-                    if y == 0 && x == 0 {
-                        self.complete = true;
-                    }
                 }
                 1 => {
                     self.blank_rows(0, y);
@@ -428,17 +351,17 @@ impl Vt {
                     self.complete = true;
                 }
             },
-            b'K' => match p.num(0, 0) {
+            b'K' => match p.get(0) {
                 0 => self.blank(y, x, COLS),
                 1 => self.blank(y, 0, x + 1),
                 _ => self.blank(y, 0, COLS),
             },
-            b'm' if !private => self.sgr(p),
-            b'r' if !private => {
+            b'm' if !p.private => self.sgr(p),
+            b'r' if !p.private => {
                 let top = n - 1;
                 let bottom = match p.get(1) {
-                    Some(b) if b > 0 => b as usize,
-                    _ => ROWS,
+                    0 => ROWS,
+                    b => b as usize,
                 } - 1;
                 if top < bottom && bottom < ROWS {
                     self.top = top as u8;
@@ -446,88 +369,57 @@ impl Vt {
                 }
                 self.cursor = Pos::new(0, 0);
             }
-            b'L' | b'M' if self.cursor.y >= self.top && self.cursor.y <= self.bottom => {
-                let k = n.min(ROWS) as i64;
-                self.scroll(
-                    y,
-                    self.bottom as usize,
-                    if final_byte == b'L' { -k } else { k },
-                );
+            b'L' | b'M' if (self.top..=self.bottom).contains(&self.cursor.y) => {
+                self.scroll(y, n, final_byte == b'M');
                 self.cursor.x = 0;
             }
-            b'S' => self.scroll(self.top as usize, self.bottom as usize, n.min(ROWS) as i64),
-            b'T' => self.scroll(
-                self.top as usize,
-                self.bottom as usize,
-                -(n.min(ROWS) as i64),
-            ),
-            b'P' => {
+            b'S' | b'T' => self.scroll(self.top as usize, n, final_byte == b'S'),
+            b'P' | b'@' => {
                 self.touch(y);
-                let k = n.min(COLS - x);
                 let row = &mut self.grid.cells[y][x..];
-                row.rotate_left(k);
-                let len = row.len();
-                row[len - k..].fill(Cell::BLANK);
-            }
-            b'@' => {
-                self.touch(y);
-                let k = n.min(COLS - x);
-                let row = &mut self.grid.cells[y][x..];
-                row.rotate_right(k);
-                row[..k].fill(Cell::BLANK);
+                shift(row, n, final_byte == b'P', Cell::BLANK);
             }
             b'X' => self.blank(y, x, x.saturating_add(n)),
-            b'h' if private && p.contains(1049) => self.blank_rows(0, ROWS),
+            b'h' if p.private && p.nums.contains(&1049) => self.blank_rows(0, ROWS),
             _ => {}
         }
     }
 
     fn sgr(&mut self, p: &Params) {
-        let mut attr = self.attr;
-        let len = p.len.max(1);
         let mut i = 0;
-        while i < len {
-            let n = p.get(i).unwrap_or(0);
-            match n {
-                0 => attr = Attr::default(),
-                1 => attr.bold = true,
-                22 => attr.bold = false,
-                7 => attr.rev = true,
-                27 => attr.rev = false,
-                39 => attr.fg = Colour::Default,
-                38 | 48 => i += if p.get(i + 1) == Some(5) { 2 } else { 4 },
-                _ => {
-                    if let Some(fg) = Colour::from_sgr(n.min(u16::MAX as u32) as u16) {
-                        attr.fg = fg;
+        while i < p.len {
+            match p.get(i) {
+                0 => self.attr = Attr::default(),
+                1 => self.attr.bold = true,
+                22 => self.attr.bold = false,
+                7 => self.attr.rev = true,
+                27 => self.attr.rev = false,
+                39 => self.attr.fg = Colour::Default,
+                // An extended colour is skipped with its arguments, `5;n` or `2;r;g;b`.
+                38 | 48 => i += if p.get(i + 1) == 5 { 2 } else { 4 },
+                n => {
+                    if let Some(fg) = u16::try_from(n).ok().and_then(Colour::from_sgr) {
+                        self.attr.fg = fg;
                     }
                 }
             }
             i += 1;
         }
-        self.attr = attr;
     }
 }
 
-/// The length of the UTF-8 sequence a lead byte starts.
-fn utf8_len(lead: u8) -> usize {
-    match lead {
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        _ => 4,
+/// Moves `items` `n` places toward the start when `to_start`, else toward the end, filling the places left with
+/// `blank`.
+fn shift<T: Copy>(items: &mut [T], n: usize, to_start: bool, blank: T) {
+    let len = items.len();
+    let n = n.min(len);
+    if to_start {
+        items.rotate_left(n);
+        items[len - n..].fill(blank);
+    } else {
+        items.rotate_right(n);
+        items[..n].fill(blank);
     }
-}
-
-/// Whether `b` can be byte `at` of the UTF-8 sequence led by `lead`, ruling out overlong forms, surrogates and
-/// code points past U+10FFFF.
-fn continues_utf8(lead: u8, at: usize, b: u8) -> bool {
-    let range = match (lead, at) {
-        (0xe0, 1) => 0xa0..=0xbf,
-        (0xed, 1) => 0x80..=0x9f,
-        (0xf0, 1) => 0x90..=0xbf,
-        (0xf4, 1) => 0x80..=0x8f,
-        _ => 0x80..=0xbf,
-    };
-    range.contains(&b)
 }
 
 const _: () = assert!(ROWS <= 32 && COLS == 80);
@@ -580,6 +472,30 @@ mod tests {
         vt.feed(b"\x1b[1;1H\xe2\x82");
         vt.feed(b"\xac");
         assert_eq!(cell(&vt, 0, 0).ch, '€');
+    }
+
+    #[test]
+    fn invalid_utf8_is_replaced_by_maximal_subpart() {
+        let mut vt = Vt::new();
+        vt.feed(b"\x1b[2J\xe0\x80|\xed\xa0\x80|\xf4\x90|\xc0\xaf|\xf0\x9f\x98x|\xf0\x9f");
+        vt.feed(b"\x98\x80|\xf5");
+        let r = '\u{fffd}';
+        let want = format!("{r}{r}|{r}{r}{r}|{r}{r}|{r}{r}|{r}x|😀|{r} ");
+        assert!(line(&vt, 0).starts_with(&want), "{}", line(&vt, 0));
+    }
+
+    #[test]
+    fn private_markers_are_not_colours_or_regions() {
+        let mut vt = Vt::new();
+        vt.feed(b"\x1b[2J\x1b[?1m\x1b[>31ma\x1b[?5;10r");
+        assert_eq!(
+            (cell(&vt, 0, 0).bold, cell(&vt, 0, 0).fg),
+            (false, Colour::Default)
+        );
+        assert_eq!(vt.cursor(), Pos::new(0, 1));
+        vt.feed(b"\x1b[24;1H\n");
+        assert_eq!(cell(&vt, 22, 0).ch, ' ');
+        assert_eq!(cell(&vt, 0, 0).ch, ' ');
     }
 
     #[test]
