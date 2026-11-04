@@ -3,7 +3,6 @@
 
 use crate::glyphs::{
     Shade, find_word, is_engraving_text, is_floor_engraving, is_item, is_monster, is_warning,
-    trap_kind,
 };
 use crate::level::{Inspection, Level, Plus, plus_kind};
 use crate::screen::{EndKind, MenuEntry, Phase, View, byte_at, strip_more};
@@ -604,8 +603,8 @@ impl Memory {
     }
 }
 
-/// Whether a sentence is something the game says about the hero's square: `There is … here`, `You see here …`,
-/// an engraving read-out (`Something is written here …`, `You read: "…"`) or a trap at the hero.
+/// Whether a sentence is something the game says about the hero's square: `There is … here` (a trap there among
+/// them), `You see here …`, or an engraving read-out (`Something is written here …`, `You read: "…"`).
 pub fn underfoot_sentence(sentence: &str) -> bool {
     let sentence = sentence.trim();
     let bare = sentence.strip_suffix('.').unwrap_or(sentence);
@@ -613,7 +612,6 @@ pub fn underfoot_sentence(sentence: &str) -> bool {
         && bare.ends_with(" here"))
         || sentence.starts_with("You see here ")
         || is_engraving_text(sentence)
-        || trap_kind(sentence).is_some()
 }
 
 /// Whether a sentence reports the engraving under the hero being written, added to or wiped out.
@@ -996,19 +994,21 @@ mod tests {
     }
 
     #[test]
-    fn a_trap_reported_by_a_message_is_remembered_where_the_hero_stands() {
+    fn a_trap_going_off_leaves_no_trap_underfoot_but_one_described_there_is_named() {
         let rows = [" ------- ", " |.@...| ", " ------- "];
-        let mut memory = Memory::default();
-        memory.ingest(&map("", &rows, 2, 3));
-        memory.ingest(&map(
+        for message in [
+            "A gush of water hits the gold golem!",
+            "Kaablamm!  You hear an explosion in the distance!",
             "A little dart shoots out at you!  You are hit by a little dart.",
-            &rows,
-            2,
-            3,
-        ));
-        let level = memory.current();
-        assert_eq!(level.and_then(|l| l.terrain(HERO)), Some('^'));
-        assert_eq!(level.and_then(|l| l.kind(HERO)), Some("dart trap"));
+        ] {
+            let mut memory = Memory::default();
+            memory.ingest(&map("", &rows, 2, 3));
+            memory.ingest(&map(message, &rows, 2, 3));
+            let level = memory.current();
+            assert_eq!(level.and_then(|l| l.terrain(HERO)), Some('.'), "{message}");
+            assert!(level.is_some_and(|l| l.trap_kinds.is_empty()), "{message}");
+            assert!(notes(&memory, HERO).is_empty(), "{message}");
+        }
 
         let mut memory = Memory::default();
         memory.ingest(&map("", &rows, 2, 3));

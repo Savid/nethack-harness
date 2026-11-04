@@ -1,4 +1,5 @@
-//! Decoding what the tty draws: map symbols, colours, status-line conditions and the game's trap messages.
+//! Decoding what the tty draws: map symbols, colours, status-line conditions and the game's description of a trap
+//! underfoot.
 
 use crate::types::Colour;
 
@@ -157,41 +158,13 @@ pub fn conditions(text: &str) -> Conditions {
 #[rustfmt::skip]
 const TRAP_NOUNS: [&str; 7] = ["trap", "trap door", "hole", "web", "pit", "squeaky board", "magic portal"];
 
-/// The game's announcements of traps that leave the hero where they triggered, matched without regard to case at
-/// the start of a word, with the trap each one names.
-#[rustfmt::skip]
-const TRAP_EVENTS: [(&[&str], &str); 11] = [
-    (&["dart shoots out at you"], "dart trap"),
-    (&["arrow shoots out at you"], "arrow trap"),
-    (&["bear trap closes on"], "bear trap"),
-    (&["you fall into a pit", "you fall into a spiked pit", "you fall in a pit", "you fall in a spiked pit",
-       "you land into a pit", "you land into a spiked pit", "you land in a pit", "you land in a spiked pit"], "pit"),
-    (&["sharp iron spikes"], "spiked pit"),
-    (&["board beneath you squeaks"], "squeaky board"),
-    (&["rock falls on your head"], "falling rock trap"),
-    (&["cloud of gas"], "sleeping gas trap"),
-    (&["gush of water hits"], "rust trap"),
-    (&["stumble into a web", "stumble into a spider web", "caught in a web", "caught in a spider web"], "web"),
-    (&["kaablamm"], "land mine"),
-];
-
-/// The trap a message reports at the hero's square: the game's `There is a … trap here` description, or the
-/// announcement of a trap that leaves the hero where it triggered (`A dart shoots out at you!` is `dart trap`).
+/// The trap the game describes at the hero's square: the first `There is a(n) <words> <trap noun> here` in
+/// `message`, as `:` reads it out. A trap going off is not one: the game marks a trap the hero sets off as seen and
+/// draws it once the hero steps off, and the same announcements report traps that monsters set off elsewhere.
 pub fn trap_kind(message: &str) -> Option<&str> {
-    // The first `There is a(n) <words> <trap noun> here`.
-    let described = message.match_indices("There is a").find_map(|(at, lead)| {
+    message.match_indices("There is a").find_map(|(at, lead)| {
         let rest = &message[at + lead.len()..];
         trap_phrase(rest.strip_prefix("n ").or_else(|| rest.strip_prefix(' '))?)
-    });
-    described.or_else(|| {
-        TRAP_EVENTS
-            .iter()
-            .find(|(phrases, _)| {
-                phrases
-                    .iter()
-                    .any(|p| contains_ignore_case(message, p, true))
-            })
-            .map(|&(_, kind)| kind)
     })
 }
 
@@ -220,17 +193,10 @@ pub fn find_word(text: &str, word: &str) -> Option<usize> {
     })
 }
 
-/// Whether ASCII `needle` occurs in `hay` without regard to ASCII case; with `word_start`, only where it starts a
-/// word.
-pub fn contains_ignore_case(hay: &str, needle: &str, word_start: bool) -> bool {
+/// Whether ASCII `needle` occurs in `hay` without regard to ASCII case.
+pub fn contains_ignore_case(hay: &str, needle: &str) -> bool {
     let (h, n) = (hay.as_bytes(), needle.as_bytes());
-    !n.is_empty()
-        && h.windows(n.len()).enumerate().any(|(i, w)| {
-            w.eq_ignore_ascii_case(n)
-                && (!word_start
-                    || hay.is_char_boundary(i)
-                        && !hay[..i].chars().next_back().is_some_and(is_word))
-        })
+    !n.is_empty() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
 }
 
 /// The shortest run of `[\w-]+ ` words then a trap noun that starts `text` and is followed by ` here`.
@@ -359,29 +325,18 @@ mod tests {
     }
 
     #[test]
-    fn trap_announcements_name_the_trap() {
-        assert_eq!(
-            trap_kind("A little dart shoots out at you!  You are hit by a little dart."),
-            Some("dart trap")
-        );
-        assert_eq!(trap_kind("You fall into a pit!"), Some("pit"));
-        assert_eq!(trap_kind("You land in a spiked pit."), Some("pit"));
-        assert_eq!(
-            trap_kind("KAABLAMM!!!  You triggered a land mine!"),
-            Some("land mine")
-        );
-        assert_eq!(trap_kind("kaablamm"), Some("land mine"));
-        assert_eq!(trap_kind("You stumble into a spider web."), Some("web"));
-        assert_eq!(
-            trap_kind("The bear trap closes on your foot!"),
-            Some("bear trap")
-        );
-        assert_eq!(
-            trap_kind("A narrow dart shoots out at you"),
-            Some("dart trap")
-        );
-        assert_eq!(trap_kind("Asharp iron spikes"), None);
-        assert_eq!(trap_kind("You hit the jackal."), None);
+    fn a_trap_going_off_names_no_trap() {
+        for event in [
+            "A gush of water hits the gold golem!",
+            "Kaablamm!  You hear an explosion in the distance!",
+            "KAABLAMM!!!  You triggered a land mine!",
+            "A little dart shoots out at you!  You are hit by a little dart.",
+            "You fall into a pit!",
+            "The bear trap closes on your foot!",
+            "You hit the jackal.",
+        ] {
+            assert_eq!(trap_kind(event), None, "{event}");
+        }
     }
 
     #[test]

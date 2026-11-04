@@ -175,7 +175,7 @@ pub struct Level {
     /// Times the hero stood on each square, counted once per turn.
     pub visits: BTreeMap<Pos, u32>,
     pub inspections: BTreeMap<Pos, Inspection>,
-    /// Trap names learned from messages.
+    /// Trap names the game gave for the hero's square (`There is a dart trap here.`).
     pub trap_kinds: BTreeMap<Pos, String>,
     /// Monster glyphs a farlook named as statues, with the colour shown.
     pub statues: BTreeMap<Pos, (char, Shade)>,
@@ -237,7 +237,8 @@ impl Level {
     }
 
     /// Takes in every map square of a screen in normal play: terrain, objects, doors, engravings and the hero's
-    /// square.
+    /// square. A remembered trap whose square the screen shows with other terrain is forgotten, with its name and
+    /// the notes underfoot that describe it: the game draws every trap it has seen.
     pub fn observe(&mut self, view: &View) {
         let blind = view.cond.contains(BLIND);
         for i in 0..MAP_SQUARES {
@@ -267,6 +268,9 @@ impl Level {
             }
             self.object_squares.remove(p);
             let floor = is_floor_engraving(ch, colour);
+            if ch != '^' && self.terrain[i] == '^' {
+                self.forget_trap(p);
+            }
             self.remember_terrain(p, if floor { '.' } else { ch }, Some(colour.base));
             let engraved = floor || is_corridor_engraving(ch, colour);
             mark(&mut self.engravings, p, engraved);
@@ -327,6 +331,14 @@ impl Level {
                 self.remember_terrain(p, '^', None);
                 self.trap_kinds.insert(p, trap.to_owned());
             }
+        }
+    }
+
+    /// Forgets the trap at `p`: its name and the notes underfoot that describe it.
+    fn forget_trap(&mut self, p: Pos) {
+        self.trap_kinds.remove(&p);
+        if let Some(underfoot) = self.underfoot.get_mut(&p) {
+            underfoot.notes.retain(|note| trap_kind(note).is_none());
         }
     }
 
@@ -1058,10 +1070,13 @@ mod tests {
         assert_eq!(level.terrain(at(2, 3)), Some('>'));
         assert!(!level.inferred_floor.contains(at(2, 3)));
         assert_eq!(level.underfoot[&at(2, 3)].notes, notes);
-        let trap = ["A little dart shoots out at you!".to_owned()];
+        let trap = ["There is a dart trap here.".to_owned()];
         level.note_underfoot(at(2, 4), &trap, Some(402));
         assert_eq!(level.terrain(at(2, 4)), Some('^'));
         assert_eq!(level.kind(at(2, 4)), Some("dart trap"));
+        let event = ["A little dart shoots out at you!".to_owned()];
+        level.note_underfoot(at(2, 5), &event, Some(403));
+        assert_eq!(level.terrain(at(2, 5)), Some('.'));
         level.note_underfoot(at(2, 5), &["There is a ladder up here".to_owned()], None);
         assert_eq!(level.terrain(at(2, 5)), Some('<'));
         level.note_underfoot(
@@ -1070,6 +1085,48 @@ mod tests {
             None,
         );
         assert_eq!(level.terrain(at(2, 2)), Some('.'));
+    }
+
+    #[test]
+    fn a_trap_drawn_after_the_hero_steps_off_is_remembered_and_forgotten_once_shown_plain() {
+        let rows = |hero: u8, trap: char| {
+            let mut row: Vec<char> = " |.....| ".chars().collect();
+            row[4] = trap;
+            row[hero as usize] = '@';
+            [
+                " ------- ".to_owned(),
+                row.into_iter().collect(),
+                " ------- ".to_owned(),
+            ]
+        };
+        let shown = |hero: u8, trap: char| {
+            let rows = rows(hero, trap);
+            let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+            map(&rows)
+        };
+        // The hero stood on 4,2 and stepped off; the game now draws the trap there.
+        let mut level = observed(&shown(4, '.'), 2, 4);
+        assert_eq!(level.terrain(at(2, 4)), Some('.'));
+        visit(&mut level, &shown(5, '^'), 2, 5, 401);
+        assert_eq!(level.terrain(at(2, 4)), Some('^'));
+        assert_eq!(level.kind(at(2, 4)), Some("trap"));
+        // Described underfoot, it is named; shown plain from beside it, it is gone with its name and its note.
+        let described = [
+            "There is a rust trap here.".to_owned(),
+            "You see here a dagger.".to_owned(),
+        ];
+        level.note_underfoot(at(2, 4), &described, Some(402));
+        assert_eq!(level.kind(at(2, 4)), Some("rust trap"));
+        visit(&mut level, &shown(5, '.'), 2, 5, 403);
+        assert_eq!(level.terrain(at(2, 4)), Some('.'));
+        assert!(level.trap_kinds.is_empty());
+        assert_eq!(level.underfoot[&at(2, 4)].notes, ["You see here a dagger."]);
+        // A trap under the hero stays while the hero hides it, and under a monster or an object too.
+        level.note_underfoot(at(2, 4), &described[..1], Some(404));
+        visit(&mut level, &shown(4, '.'), 2, 4, 405);
+        visit(&mut level, &shown(5, 'd'), 2, 5, 406);
+        visit(&mut level, &shown(5, ')'), 2, 5, 407);
+        assert_eq!(level.kind(at(2, 4)), Some("rust trap"));
     }
 
     #[test]
