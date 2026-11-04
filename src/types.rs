@@ -10,15 +10,10 @@ pub const MAP_BOTTOM: u8 = 21;
 pub const MAP_SQUARES: usize = (MAP_BOTTOM - MAP_TOP + 1) as usize * COLS;
 
 /// The eight direction keys and their (row, column) steps, cardinal first, in the order routes try them.
+#[rustfmt::skip]
 pub const DIRS: [(u8, i8, i8); 8] = [
-    (b'h', 0, -1),
-    (b'j', 1, 0),
-    (b'k', -1, 0),
-    (b'l', 0, 1),
-    (b'y', -1, -1),
-    (b'u', -1, 1),
-    (b'b', 1, -1),
-    (b'n', 1, 1),
+    (b'h', 0, -1), (b'j', 1, 0), (b'k', -1, 0), (b'l', 0, 1),
+    (b'y', -1, -1), (b'u', -1, 1), (b'b', 1, -1), (b'n', 1, 1),
 ];
 
 /// A screen square: `y` is the terminal row, `x` the terminal column; it orders by row, then column.
@@ -53,9 +48,8 @@ impl Pos {
 
     /// The direction key that steps from `self` to the adjacent square `to`.
     pub fn direction_to(self, to: Pos) -> Option<u8> {
-        self.neighbours()
-            .find(|&(_, q)| q == to)
-            .map(|(key, _)| key)
+        let (key, _) = self.neighbours().find(|&(_, q)| q == to)?;
+        Some(key)
     }
 
     /// King-move distance.
@@ -169,7 +163,6 @@ pub enum Colour {
 }
 
 impl Colour {
-    /// The colour of SGR code `n` (30–37 or 90–97).
     pub fn from_sgr(n: u16) -> Option<Colour> {
         use Colour::*;
         #[rustfmt::skip]
@@ -282,8 +275,7 @@ impl Serialize for ExitCode {
     }
 }
 
-/// The daemon's answer to one request: the exit code, the text view with any report line first, and the same
-/// observation in machine form.
+/// The answer to one request: the exit code, the text view with any report line first, and its machine form.
 #[derive(Clone, Debug, Serialize)]
 pub struct Reply {
     pub code: ExitCode,
@@ -429,13 +421,8 @@ pub struct Answered {
 }
 
 /// The named key escapes: `\e \r \n \t \\`, with the byte each stands for.
-const ESCAPES: [(u8, u8); 5] = [
-    (0x1b, b'e'),
-    (b'\r', b'r'),
-    (b'\n', b'n'),
-    (b'\t', b't'),
-    (b'\\', b'\\'),
-];
+#[rustfmt::skip]
+const ESCAPES: [(u8, u8); 5] = [(0x1b, b'e'), (b'\r', b'r'), (b'\n', b'n'), (b'\t', b't'), (b'\\', b'\\')];
 
 /// Decodes the key escape syntax: the named escapes and `\xHH`; any other character must be ASCII and stands for
 /// its code, so `\xHH` is the only way to send a byte above 0x7f.

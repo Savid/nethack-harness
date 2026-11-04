@@ -1,6 +1,7 @@
 //! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view.
 
-use crate::exec::{self, Executor, Kind, Outcome, Stop};
+use crate::exec::{self, Changed, Executor, Kind, Outcome, Stop};
+use crate::glyphs::is_engraving_text;
 use crate::link::{LinkError, Term, Terminal};
 use crate::observe::{Entity, Memory};
 use crate::screen::{Phase, strip_more};
@@ -16,14 +17,6 @@ pub const STEPS_MAX: u32 = 64;
 /// The refusal while a prompt is open.
 pub const PROMPT_OPEN: &str = "a prompt is open: answer or cancel it with send first";
 
-/// What the last bounded action was, for its report.
-#[derive(Clone, Copy, Debug)]
-struct Last {
-    kind: Kind,
-    target: Option<Pos>,
-    route: usize,
-}
-
 /// One game played through a terminal: memory, the executor, names and the renderer, reused across commands.
 pub struct Play<T: Terminal> {
     term: T,
@@ -38,23 +31,21 @@ pub struct Play<T: Terminal> {
     unnamed: Vec<Entity>,
     landmarks: Vec<Landmark>,
     edges: Vec<(Pos, u32)>,
-    route: Vec<Pos>,
     answered: Vec<Answered>,
-    last: Option<Last>,
+    /// The last caller action, for its report.
+    last: Option<exec::Action>,
 }
 
 /// The phrase for each changed observation, in the order a report lists them.
-const CHANGES: [(exec::Changed, &str); 7] = [
-    (exec::Changed::STATUS, "the status line changed"),
-    (exec::Changed::CONDITIONS, "a condition changed"),
-    (exec::Changed::ENGULFED, "the hero was engulfed"),
-    (exec::Changed::TERRAIN, "new terrain came into view"),
-    (exec::Changed::HP_FULL, "HP is full"),
-    (
-        exec::Changed::ENTITIES,
-        "a monster came into view or next to the hero",
-    ),
-    (exec::Changed::MESSAGE, "a message appeared"),
+#[rustfmt::skip]
+const CHANGES: [(Changed, &str); 7] = [
+    (Changed::STATUS, "the status line changed"),
+    (Changed::CONDITIONS, "a condition changed"),
+    (Changed::ENGULFED, "the hero was engulfed"),
+    (Changed::TERRAIN, "new terrain came into view"),
+    (Changed::HP_FULL, "HP is full"),
+    (Changed::ENTITIES, "a monster came into view or next to the hero"),
+    (Changed::MESSAGE, "a message appeared"),
 ];
 
 /// Parses `x,y` with optional spaces around each number.
@@ -84,7 +75,6 @@ impl<T: Terminal> Play<T> {
             unnamed: Vec::new(),
             landmarks: Vec::new(),
             edges: Vec::new(),
-            route: Vec::new(),
             answered: Vec::new(),
             last: None,
         }
@@ -106,16 +96,14 @@ impl<T: Terminal> Play<T> {
             return reply;
         }
         self.inquire();
-        let code = self.over().unwrap_or(ExitCode::Done);
-        self.reply(code, None)
+        self.reply(self.over().unwrap_or(ExitCode::Done), None)
     }
 
     /// Renders the current screen as it stands, sending nothing: no farlooks and no look underfoot.
     pub fn show(&mut self) -> Reply {
         self.memory.ingest(self.term.view());
         self.keep_visible_names();
-        let code = self.over().unwrap_or(ExitCode::Done);
-        self.reply(code, None)
+        self.reply(self.over().unwrap_or(ExitCode::Done), None)
     }
 
     /// Sends the caller's keys, 1 to `KEYS_MAX` as the request check allows, and renders the result, with every
@@ -124,8 +112,7 @@ impl<T: Terminal> Play<T> {
         if let Some(reply) = self.prepare("send") {
             return reply;
         }
-        let action = exec::keys(keys);
-        self.execute("send", &action)
+        self.execute("send", exec::keys(keys))
     }
 
     /// Walks toward `target` (`x,y`, a map glyph, a feature kind, or `frontier`) along the known route.
@@ -157,7 +144,7 @@ impl<T: Terminal> Play<T> {
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
         let kind = if explore { Kind::Explore } else { Kind::Travel };
         let action = exec::walk(kind, &self.renderer.routes.paths, goal, self.max_steps);
-        self.execute(&verb, &action)
+        self.execute(&verb, action)
     }
 
     /// Searches in place up to `count` times, 1 to `REST_MAX` as the request check allows.
@@ -169,25 +156,23 @@ impl<T: Terminal> Play<T> {
         if self.term.view().phase() != Phase::Play {
             return Reply::message(ExitCode::Failed, PROMPT_OPEN);
         }
-        self.execute(&verb, &exec::search(count))
+        self.execute(&verb, exec::search(count))
     }
 
     /// The places a `go` target names on the current level, written into `out`; an error says why none match. It
     /// leaves the routes from the hero around monsters in the play's path buffer.
     pub fn places(&mut self, target: &str, out: &mut Vec<Landmark>) -> Result<(), String> {
         out.clear();
-        self.route_from_hero();
+        let routes = &mut self.renderer.routes;
+        routes.from_hero(&self.memory, self.term.view());
         let Some(level) = self.memory.current() else {
             return Err(PROMPT_OPEN.to_owned());
         };
         if let Some((x, y)) = coordinates(target) {
             let p = match (u8::try_from(y), u8::try_from(x)) {
-                (Ok(y), Ok(x)) => Pos::new(y, x),
+                (Ok(y), Ok(x)) if Pos::new(y, x).on_map() => Pos::new(y, x),
                 _ => return Err(format!("{target} is off the map")),
             };
-            if !p.on_map() {
-                return Err(format!("{target} is off the map"));
-            }
             if level.terrain(p) == Some('+') {
                 out.push(Landmark::door(p));
             } else {
@@ -197,20 +182,15 @@ impl<T: Terminal> Play<T> {
         }
         let word = target.trim().to_lowercase();
         if word == "frontier" {
-            level.frontier_targets(&self.renderer.routes.paths, &mut self.edges);
-            out.extend(
-                self.edges
-                    .iter()
-                    .map(|&(p, _)| Landmark::at(p, None, "frontier")),
-            );
+            level.frontier_targets(&routes.paths, &mut self.edges);
+            for &(p, _) in &self.edges {
+                out.push(Landmark::at(p, None, "frontier"));
+            }
             return Ok(());
         }
-        landmarks(level, &self.renderer.routes.entities, out);
+        landmarks(level, &routes.entities, out);
         out.retain(|place| {
-            let glyph = place
-                .glyph
-                .is_some_and(|g| word.chars().eq(std::iter::once(g)));
-            glyph
+            place.glyph.is_some_and(|g| word.chars().eq([g]))
                 || place.label == word
                 || place.label != "open door" && place.label.split(' ').any(|part| part == word)
         });
@@ -225,7 +205,8 @@ impl<T: Terminal> Play<T> {
     /// Why no known route reaches `target`: the monsters standing on every route over terrain, the target never
     /// seen, or no route at all.
     pub fn unreachable(&mut self, target: &str, places: &[Landmark]) -> String {
-        self.route_from_hero();
+        let routes = &mut self.renderer.routes;
+        routes.from_hero(&self.memory, self.term.view());
         let frontier = target.trim().eq_ignore_ascii_case("frontier");
         let none = if frontier {
             "no reachable known square borders unexplored ones".to_owned()
@@ -235,48 +216,38 @@ impl<T: Terminal> Play<T> {
         let (Some(level), Some(hero)) = (self.memory.current(), self.term.view().hero) else {
             return none;
         };
-        let routes = &mut self.renderer.routes;
         let occupied = routes.occupied.clone();
         let terrain = routes.terrain(level, hero);
         let mut blockers = SquareSet::new();
-        let goals: Vec<Pos> = if frontier {
-            let reached = terrain.reached();
-            reached.iter().filter(|&p| level.frontier(p)).collect()
+        let mut route = Vec::new();
+        let mut goals = Vec::new();
+        if frontier {
+            goals.extend(terrain.reached().iter().filter(|&p| level.frontier(p)));
         } else {
-            places
-                .iter()
-                .flat_map(|place| place.goals.as_slice().to_vec())
-                .collect()
-        };
+            goals.extend(places.iter().flat_map(|place| place.goals.as_slice()));
+        }
         for goal in goals {
-            if terrain.route(goal, &mut self.route) {
-                for &q in &self.route {
-                    if occupied.contains(q) {
-                        blockers.insert(q);
-                    }
+            if terrain.route(goal, &mut route) {
+                for &q in route.iter().filter(|&&q| occupied.contains(q)) {
+                    blockers.insert(q);
                 }
             }
         }
         if !blockers.is_empty() {
             let at: Vec<String> = blockers.iter().take(3).map(|p| p.to_string()).collect();
-            return format!(
-                "the known route to {target} is blocked by a monster at {}",
-                at.join(" or ")
-            );
+            let at = at.join(" or ");
+            return format!("the known route to {target} is blocked by a monster at {at}");
         }
-        match places {
-            [place]
-                if place.label == "chosen square"
-                    && level.terrain(place.pos).is_none()
-                    && !level.object_squares.contains(place.pos) =>
-            {
-                format!("{target} has not been seen")
-            }
-            _ => none,
+        if let [place] = places
+            && place.label == "chosen square"
+            && level.terrain(place.pos).is_none()
+            && !level.object_squares.contains(place.pos)
+        {
+            return format!("{target} has not been seen");
         }
+        none
     }
 
-    /// The report for `outcome` of the command labelled `verb`.
     pub fn report(&self, verb: &str, outcome: &Outcome) -> Report {
         let mut report = Report {
             verb: verb.to_owned(),
@@ -284,47 +255,39 @@ impl<T: Terminal> Play<T> {
             turns: outcome.turns,
             ..Report::default()
         };
-        let (kind, target, route) = self.last.map_or((Kind::Keys, None, 0), |last| {
-            (last.kind, last.target, last.route)
+        let (kind, target, route) = self.last.as_ref().map_or((Kind::Keys, None, 0), |last| {
+            (last.kind, last.target, last.route.len())
         });
-        let hero = self.term.view().hero;
-        if refused_search(kind, outcome) {
-            report.stopped.push("no time passed".to_owned());
-            return report;
-        }
+        let walked = matches!(kind, Kind::Travel | Kind::Explore);
+        let stopped = &mut report.stopped;
         match &outcome.stop {
+            _ if refused_search(kind, outcome) => stopped.push("no time passed".to_owned()),
             Stop::Link(error) => report.error = Some(error.to_string()),
             Stop::Failed(error) => report.error = Some(error.clone()),
-            Stop::Completed => {
-                if matches!(kind, Kind::Travel | Kind::Explore)
-                    && target.is_some()
-                    && hero != target
-                {
-                    report.stopped.push(format!(
-                        "it reached its step limit, {} squares short",
-                        route.saturating_sub(outcome.steps as usize)
-                    ));
-                } else {
-                    report.done = true;
-                }
+            // The caller's own keys are done once sent, unless the game ended.
+            stop if kind == Kind::Keys && *stop != Stop::GameOver => report.done = true,
+            Stop::Completed if walked && target.is_some() && self.term.view().hero != target => {
+                let short = route.saturating_sub(outcome.steps as usize);
+                stopped.push(format!("it reached its step limit, {short} squares short"));
             }
-            Stop::Refused { from, to } => report
-                .stopped
-                .push(format!("step {from}->{to} refused; routing around it")),
+            Stop::Completed => report.done = true,
+            Stop::Refused { from, to } => {
+                stopped.push(format!("step {from}->{to} refused; routing around it"));
+            }
             Stop::Changed if !outcome.changed.is_empty() => {
                 for (flag, phrase) in CHANGES {
                     if !outcome.changed.contains(flag) {
                         continue;
                     }
                     match outcome.arrival {
-                        Some(arrival) if flag == exec::Changed::ENTITIES => report
-                            .stopped
-                            .push(format!("{phrase} ({} {})", arrival.glyph, arrival.pos)),
-                        _ => report.stopped.push(phrase.to_owned()),
+                        Some(arrival) if flag == Changed::ENTITIES => {
+                            stopped.push(format!("{phrase} ({} {})", arrival.glyph, arrival.pos));
+                        }
+                        _ => stopped.push(phrase.to_owned()),
                     }
                 }
             }
-            stop => report.stopped.push(
+            stop => stopped.push(
                 match stop {
                     Stop::StepLimit => "it reached its step limit",
                     Stop::Prompt => "a prompt opened",
@@ -340,10 +303,6 @@ impl<T: Terminal> Play<T> {
                 .to_owned(),
             ),
         }
-        if kind == Kind::Keys && report.error.is_none() && outcome.stop != Stop::GameOver {
-            report.done = true;
-            report.stopped.clear();
-        }
         report
     }
 
@@ -352,20 +311,22 @@ impl<T: Terminal> Play<T> {
         let view = self.term.view();
         view.phase() == Phase::Play
             && !view.engulfed
-            && view
-                .hero
-                .is_some_and(|hero| view.cursor == hero && view.ch(hero) == '@')
+            && view.hero == Some(view.cursor)
+            && view.ch(view.cursor) == '@'
             && !self.term.prompts().position
             && view.status.hp.is_some()
             && view.status.turn.is_some()
             && view.status.location.is_some()
     }
 
-    /// Reads the screen into memory, paging through the end of a game that has just ended; a link failure is
-    /// answered here.
+    /// Reads the screen into memory, paging through the end of a game that has just ended. A link failure is
+    /// answered here; once the game has ended, with the last screen and the end text.
     fn read(&mut self, verb: &str) -> Option<Reply> {
         if let Err(error) = self.term.poll() {
-            return Some(self.failure(verb, &error));
+            return Some(match self.over() {
+                Some(code) => self.reply(code, Some(failed(verb, &error.to_string()))),
+                None => Reply::message(error.code(), format!("{verb}: {error}")),
+            });
         }
         self.memory.ingest(self.term.view());
         if self.term.view().ended {
@@ -385,19 +346,14 @@ impl<T: Terminal> Play<T> {
     }
 
     /// Runs a caller's action and answers with its report and the view after it.
-    fn execute(&mut self, verb: &str, action: &exec::Action) -> Reply {
-        self.last = Some(Last {
-            kind: action.kind,
-            target: action.target,
-            route: action.route.len(),
-        });
-        let mut outcome = self.exec.run(&mut self.term, &mut self.memory, action);
+    fn execute(&mut self, verb: &str, action: exec::Action) -> Reply {
+        let mut outcome = self.exec.run(&mut self.term, &mut self.memory, &action);
+        let refused = refused_search(action.kind, &outcome);
+        self.last = Some(action);
         self.fresh.clear();
-        if outcome.messages_left_out > 0 {
-            self.fresh.push(format!(
-                "({} earlier lines left out)",
-                outcome.messages_left_out
-            ));
+        let lines = outcome.messages_left_out;
+        if lines > 0 {
+            self.fresh.push(format!("({lines} earlier lines left out)"));
         }
         self.fresh.append(&mut outcome.messages);
         self.answered.clear();
@@ -415,7 +371,7 @@ impl<T: Terminal> Play<T> {
             Stop::Link(error) => error.code(),
             Stop::Failed(_) => ExitCode::Failed,
             Stop::GameOver => ExitCode::Over,
-            _ if refused_search(action.kind, &outcome) => ExitCode::Failed,
+            _ if refused => ExitCode::Failed,
             _ if report.done => ExitCode::Done,
             _ => ExitCode::Short,
         };
@@ -440,14 +396,6 @@ impl<T: Terminal> Play<T> {
         (self.memory.end().is_some() || self.term.view().ended).then_some(ExitCode::Over)
     }
 
-    /// Answers a link failure; once the game has ended, with the last screen and the end text.
-    fn failure(&mut self, verb: &str, error: &LinkError) -> Reply {
-        let Some(code) = self.over() else {
-            return Reply::message(error.code(), format!("{verb}: {error}"));
-        };
-        self.reply(code, Some(failed(verb, &error.to_string())))
-    }
-
     /// Renders the view with `report` under `code`; a refused view is answered with its reason instead.
     fn reply(&mut self, code: ExitCode, report: Option<Report>) -> Reply {
         for message in self.memory.messages_since(self.reported) {
@@ -470,22 +418,9 @@ impl<T: Terminal> Play<T> {
         self.answered.clear();
         match rendered {
             Ok((text, facts)) => Reply { code, text, facts },
-            Err(message) => Reply::message(
-                if code == ExitCode::Done {
-                    ExitCode::Failed
-                } else {
-                    code
-                },
-                message,
-            ),
+            Err(message) if code == ExitCode::Done => Reply::message(ExitCode::Failed, message),
+            Err(message) => Reply::message(code, message),
         }
-    }
-
-    /// Routes from the hero around the monsters in view, in the renderer's buffers.
-    fn route_from_hero(&mut self) {
-        self.renderer
-            .routes
-            .from_hero(&self.memory, self.term.view());
     }
 
     /// The square to walk to: the nearest goal of `places` a route reaches, preferring one the hero is not on.
@@ -496,9 +431,7 @@ impl<T: Terminal> Play<T> {
             for &goal in place.goals.as_slice() {
                 match self.renderer.routes.paths.distance(goal) {
                     Some(0) if here.is_none_or(|h| goal < h) => here = Some(goal),
-                    Some(steps) if best.is_none_or(|b| (steps, goal) < b) => {
-                        best = Some((steps, goal));
-                    }
+                    Some(n) if best.is_none_or(|b| (n, goal) < b) => best = Some((n, goal)),
                     _ => {}
                 }
             }
@@ -526,29 +459,25 @@ impl<T: Terminal> Play<T> {
     /// Drops names whose monster left its square or changed its look.
     fn keep_visible_names(&mut self) {
         let view = self.term.view();
-        if !view.normal {
-            return;
-        }
-        let Some(level) = self.memory.current().map(|level| level.id) else {
+        let (true, Some(level)) = (view.normal, self.memory.current()) else {
             return;
         };
         let entities = &mut self.renderer.routes.entities;
         self.memory.entities(view, entities);
-        self.names.retain_visible(level, entities);
+        self.names.retain_visible(level.id, entities);
     }
 
     /// Names each monster in view by farlook. A name is kept while the monster stays on its square looking the
     /// same; one that moved or arrived is looked at again, nearest first, at most `FARLOOKS` per look.
     fn name_monsters(&mut self) {
+        self.keep_visible_names();
         let view = self.term.view();
         let (Some(level), Some(hero)) = (self.memory.current().map(|level| level.id), view.hero)
         else {
             return;
         };
         let turn = view.status.turn;
-        let entities = &mut self.renderer.routes.entities;
-        self.memory.entities(view, entities);
-        self.names.retain_visible(level, entities);
+        let entities = &self.renderer.routes.entities;
         self.names.unnamed(level, hero, entities, &mut self.unnamed);
         let unnamed = std::mem::take(&mut self.unnamed);
         for entity in &unnamed {
@@ -587,33 +516,23 @@ impl<T: Terminal> Play<T> {
     /// reading. Memory makes the reading what is noted there, so a scuffed or wiped engraving is not kept.
     fn look_underfoot(&mut self) {
         let view = self.term.view();
-        let turn = view.status.turn;
         let (Some(level), Some(hero)) = (self.memory.current(), view.hero) else {
             return;
         };
         let arrived = self.last_square != Some((level.id, hero));
         self.last_square = Some((level.id, hero));
         let known = level.underfoot.get(&hero);
-        if known.is_some_and(|known| known.turn == turn) {
+        if known.is_some_and(|known| known.turn == view.status.turn) {
             return;
         }
-        let object = level.inferred_floor.contains(hero)
-            || self
-                .renderer
-                .listed_items()
-                .is_some_and(|(listed, items)| listed == level.id && items.contains(hero));
+        let object =
+            level.inferred_floor.contains(hero) || self.renderer.listed_item(level.id, hero);
         let engraving = level.engravings.contains(hero)
-            || known.is_some_and(|known| {
-                known
-                    .notes
-                    .iter()
-                    .any(|note| crate::glyphs::is_engraving_text(note))
-            });
-        if !(arrived && object || engraving) {
-            return;
+            || known.is_some_and(|known| known.notes.iter().any(|note| is_engraving_text(note)));
+        if arrived && object || engraving {
+            let action = exec::look_here();
+            self.exec.run(&mut self.term, &mut self.memory, &action);
         }
-        self.exec
-            .run(&mut self.term, &mut self.memory, &exec::look_here());
     }
 }
 
@@ -629,7 +548,6 @@ impl Play<Term> {
     }
 }
 
-/// The report of a command labelled `verb` that failed with `error`.
 fn failed(verb: &str, error: &str) -> Report {
     Report {
         verb: verb.to_owned(),
@@ -647,7 +565,7 @@ fn refused_search(kind: Kind, outcome: &Outcome) -> bool {
         && match outcome.stop {
             Stop::Completed => outcome.steps > 1,
             Stop::NoEffect => outcome.steps > 0,
-            Stop::Changed => outcome.changed == exec::Changed::MESSAGE,
+            Stop::Changed => outcome.changed == Changed::MESSAGE,
             _ => false,
         }
 }
@@ -983,7 +901,10 @@ mod tests {
             reply.text.lines().next(),
             Some("go >: 2 steps, 2 turns, now at 4,2; stopped: a message appeared")
         );
-        assert_eq!(play.last.and_then(|last| last.target), Some(Pos::new(2, 6)));
+        assert_eq!(
+            play.last.as_ref().and_then(|last| last.target),
+            Some(Pos::new(2, 6))
+        );
         assert!(has_line(&reply.text, "msg: You hear a door open."));
         let report = reply.facts.report.unwrap();
         assert_eq!((report.done, report.steps), (false, 2));
@@ -1053,7 +974,7 @@ mod tests {
         let mut play = play(vec![start().view()]);
         play.go("door");
         assert_eq!(
-            play.last.and_then(|last| last.target),
+            play.last.as_ref().and_then(|last| last.target),
             Some(Pos::new(5, 31))
         );
     }
@@ -1063,7 +984,7 @@ mod tests {
         let mut play = play(vec![start().view()]);
         play.go("30,5");
         assert_eq!(
-            play.last.and_then(|last| last.target),
+            play.last.as_ref().and_then(|last| last.target),
             Some(Pos::new(5, 31))
         );
         let reply = play.go("32,7");
@@ -1090,7 +1011,11 @@ mod tests {
             let mut play = Play::new(ScriptedTerm::new(vec![text("", &["", "   @##"], 2, 3)]), 4);
             play.show();
             play.go(target);
-            assert_eq!(play.last.map(|last| last.kind), Some(kind), "{target}");
+            assert_eq!(
+                play.last.as_ref().map(|last| last.kind),
+                Some(kind),
+                "{target}"
+            );
         }
     }
 
@@ -1160,7 +1085,7 @@ mod tests {
         play.go("frontier");
         let goal = &reply.facts.frontier[0];
         let goal = Pos::new(goal.y, goal.x);
-        assert_eq!(play.last.and_then(|last| last.target), Some(goal));
+        assert_eq!(play.last.as_ref().and_then(|last| last.target), Some(goal));
         assert_eq!(sent(&play)[..1], ["mk"]);
     }
 
@@ -1443,11 +1368,7 @@ mod tests {
     #[test]
     fn a_monster_arriving_stops_a_rest_short_and_is_named_with_its_square() {
         let mut play = play(vec![start().view()]);
-        play.last = Some(Last {
-            kind: Kind::Search,
-            target: None,
-            route: 0,
-        });
+        play.last = Some(exec::search(20));
         let outcome = Outcome {
             stop: Stop::Changed,
             changed: exec::Changed::ENTITIES,

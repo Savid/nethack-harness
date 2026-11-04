@@ -7,12 +7,12 @@
 
 use std::fmt::{Arguments, Write};
 
-use crate::glyphs::feature_name;
+use crate::glyphs::{Shade, feature_name};
 use crate::level::{Level, Near, Paths, door_sides};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, View, strip_more};
 use crate::types::{
-    Answered, COLS, DIRS, Facts, Frontier, MAP_BOTTOM, MAP_TOP, Monster, Place, Pos, ROWS, Report,
+    Answered, COLS, Facts, Frontier, MAP_BOTTOM, MAP_TOP, Monster, Place, Pos, ROWS, Report,
     SquareSet,
 };
 
@@ -24,29 +24,18 @@ pub const LISTED: usize = 6;
 pub const ASCII: &str = "the map holds non-ASCII symbols: the harness reads the default ASCII symbol set, so turn \
                          off DECgraphics, IBMgraphics and other symsets";
 
-/// A farlook name kept for one monster, with the level it was seen on and the turn it was looked at.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Named {
-    level: u16,
-    entity: Entity,
-    name: String,
-    turn: u32,
+/// What a farlook name is kept under: the level, and the monster's square, glyph, colour and pet highlight.
+type Key = (u16, Pos, char, Shade, bool);
+
+fn key_of(level: u16, entity: &Entity) -> Key {
+    (level, entity.pos, entity.glyph, entity.shade, entity.pet)
 }
 
-impl Named {
-    fn matches(&self, level: u16, entity: &Entity) -> bool {
-        let named = &self.entity;
-        self.level == level
-            && (named.pos, named.glyph, named.shade, named.pet)
-                == (entity.pos, entity.glyph, entity.shade, entity.pet)
-    }
-}
-
-/// Farlook names by (level, square, glyph, colour, pet highlight). A name lasts while its monster stays on its
+/// Farlook names, each with its key and the turn it was looked at. A name lasts while its monster stays on its
 /// square looking the same; only monsters in view are kept, so the cache never outgrows the screen.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct Names {
-    entries: Vec<Named>,
+    entries: Vec<(Key, String, u32)>,
 }
 
 /// Whether farlook names `entity`: a monster other than a long worm's tail.
@@ -57,41 +46,31 @@ fn nameable(entity: &Entity) -> bool {
 impl Names {
     /// The kept name and look turn for `entity` on `level`.
     pub fn get(&self, level: u16, entity: &Entity) -> Option<(&str, u32)> {
-        self.entries
-            .iter()
-            .find(|named| named.matches(level, entity))
-            .map(|named| (named.name.as_str(), named.turn))
+        let key = key_of(level, entity);
+        let (_, name, turn) = self.entries.iter().find(|(k, ..)| *k == key)?;
+        Some((name, *turn))
     }
 
     /// Keeps only the names whose monster is still in `entities` on `level`.
     pub fn retain_visible(&mut self, level: u16, entities: &[Entity]) {
-        self.entries.retain(|named| {
+        self.entries.retain(|(key, ..)| {
             entities
                 .iter()
-                .any(|entity| nameable(entity) && named.matches(level, entity))
+                .any(|entity| nameable(entity) && key_of(level, entity) == *key)
         });
     }
 
     pub fn insert(&mut self, level: u16, entity: &Entity, name: &str, turn: u32) {
-        self.entries.retain(|named| !named.matches(level, entity));
-        self.entries.push(Named {
-            level,
-            entity: *entity,
-            name: name.to_owned(),
-            turn,
-        });
+        let key = key_of(level, entity);
+        self.entries.retain(|(k, ..)| *k != key);
+        self.entries.push((key, name.to_owned(), turn));
     }
 
-    /// The monsters in `entities` with no kept name, nearest to `hero` first, at most `FARLOOKS`, written into
-    /// `out`.
+    /// The unnamed monsters in `entities`, nearest to `hero` first, at most `FARLOOKS`, written into `out`.
     pub fn unnamed(&self, level: u16, hero: Pos, entities: &[Entity], out: &mut Vec<Entity>) {
         out.clear();
-        out.extend(
-            entities
-                .iter()
-                .filter(|entity| nameable(entity) && self.get(level, entity).is_none())
-                .copied(),
-        );
+        out.extend_from_slice(entities);
+        out.retain(|entity| nameable(entity) && self.get(level, entity).is_none());
         out.sort_by_key(|entity| entity.pos.chebyshev(hero));
         out.truncate(FARLOOKS);
     }
@@ -235,7 +214,6 @@ fn line(out: &mut String, line: Arguments) {
     let _ = out.write_fmt(line);
 }
 
-/// Appends each of `items`, written by `write`, with `separator` between them.
 fn join<T>(
     out: &mut String,
     separator: &str,
@@ -271,31 +249,22 @@ fn plural(count: i64, word: &str, out: &mut String) {
 }
 
 impl Renderer {
-    /// The squares the last map view listed under `items:`, with the level they were on.
-    pub fn listed_items(&self) -> Option<(u16, &SquareSet)> {
-        self.listed_level.map(|level| (level, &self.listed_items))
+    /// Whether the last map view listed `p` on `level` under `items:`.
+    pub fn listed_item(&self, level: u16, p: Pos) -> bool {
+        self.listed_level == Some(level) && self.listed_items.contains(p)
     }
 
-    /// The text view and its machine form. Fails with `ASCII` when the map or a prompt screen holds non-ASCII
-    /// symbols.
+    /// The text view and its machine form. Fails with `ASCII` when a shown map holds non-ASCII symbols.
     pub fn render(&mut self, scene: &Scene) -> Result<(String, Facts), String> {
         let view = scene.view;
         let phase = view.phase();
-        let map_shown = matches!(
+        // Pages, menus, end-of-game and unrecognised screens print in full rather than as a map.
+        let map_shown = !matches!(
             phase,
-            Phase::Play
-                | Phase::Choice
-                | Phase::Text
-                | Phase::Direction
-                | Phase::Item
-                | Phase::Spell
-                | Phase::Position
+            Phase::More | Phase::Menu | Phase::Ended | Phase::Unknown
         );
-        if map_shown
-            && view.rows[MAP_TOP as usize..=MAP_BOTTOM as usize]
-                .iter()
-                .any(|row| !row.is_ascii())
-        {
+        let map_rows = &view.rows[MAP_TOP as usize..=MAP_BOTTOM as usize];
+        if map_shown && map_rows.iter().any(|row| !row.is_ascii()) {
             return Err(ASCII.to_owned());
         }
         let mut text = String::with_capacity(4096);
@@ -334,212 +303,62 @@ impl Renderer {
             line(&mut text, format_args!("msg: {message}"));
             facts.msgs.push(message.clone());
         }
-        self.line.clear();
-        let hinted = hint(view, phase, &mut self.line);
         if !map_shown {
             line(&mut text, format_args!("screen ({}):", phase.name()));
             let rows = &view.rows[..if status.hp.is_some() { ROWS - 2 } else { ROWS }];
             for row in rows.iter().filter(|row| !row.trim().is_empty()) {
                 line(&mut text, format_args!("{}", row.trim_end()));
             }
-            if hinted {
-                line(&mut text, format_args!("{}", self.line));
-            }
-            if phase == Phase::Ended && view.yn.is_some() || phase == Phase::More {
+            if phase == Phase::More || phase == Phase::Ended && view.yn.is_some() {
                 facts.prompt = Some(prompt);
             }
-            Self::tail(scene, &mut text, &mut facts, false);
-            return Ok((text, facts));
-        }
-        if phase != Phase::Play {
+        } else if phase != Phase::Play {
             line(&mut text, format_args!("prompt: {prompt}"));
             if phase == Phase::Position && view.cursor.on_map() {
                 line(&mut text, format_args!("cursor: {}", view.cursor));
             }
-            if hinted {
-                line(&mut text, format_args!("{}", self.line));
-            }
             facts.prompt = Some(prompt);
         }
-        map_lines(view, &mut text);
-        if phase == Phase::Play
-            && let Some(hero) = view.hero
-        {
+        self.line.clear();
+        hint(view, phase, &mut self.line);
+        if !self.line.is_empty() {
+            line(&mut text, format_args!("{}", self.line));
+        }
+        if map_shown {
+            map_lines(view, &mut text);
+        }
+        if let Some(hero) = view.hero.filter(|_| phase == Phase::Play) {
             facts.pos = Some(hero);
             if view.engulfed {
                 line(&mut text, format_args!("you: {hero}, engulfed"));
-            } else if let Some(level) = scene.memory.current() {
-                self.surroundings(scene, level, hero, &mut text, &mut facts);
+            } else {
+                self.surroundings(scene, &mut text, &mut facts);
             }
         }
         let map = phase == Phase::Play && !view.engulfed;
-        Self::tail(scene, &mut text, &mut facts, map);
+        tail(scene, map, &mut text, &mut facts);
         Ok((text, facts))
     }
 
-    /// The parts after the map: `inventory:` on the map view, then `answered:` and `end:`.
-    fn tail(scene: &Scene, text: &mut String, facts: &mut Facts, map: bool) {
-        if let Some(inventory) = scene.memory.inventory() {
-            if map && !inventory.lines.is_empty() {
-                line(text, format_args!("inventory: "));
-                if let Some(turn) = inventory.turn {
-                    let _ = write!(text, "(T:{turn}) ");
-                }
-                join(text, "; ", &inventory.lines, |text, item| {
-                    text.push_str(item)
-                });
-            }
-            facts.inventory = Some(inventory.clone());
-        }
-        if !scene.answered.is_empty() {
-            line(text, format_args!("answered: "));
-            join(text, "; ", scene.answered, |text, answered| {
-                if answered.key.is_empty() {
-                    let _ = write!(text, "({})", answered.prompt);
-                    return;
-                }
-                let _ = write!(text, "\"{}\" \u{2190} {}", answered.prompt, answered.key);
-                if answered.text_entry {
-                    text.push_str(" (typed into a text prompt)");
-                }
-            });
-            facts.answered.extend_from_slice(scene.answered);
-        }
-        if let Some(end) = scene.memory.end() {
-            let rest = end
-                .lines
-                .iter()
-                .filter(|line| end.death.as_ref() != Some(*line));
-            for death in end.death.iter().chain(rest) {
-                line(text, format_args!("end: {death}"));
-            }
-            facts.end = Some(end.clone());
-        }
-    }
-
-    /// `you:`, `monsters:`, `seen:`, `items:` and `frontier:` for the map view.
-    fn surroundings(
-        &mut self,
-        scene: &Scene,
-        level: &Level,
-        hero: Pos,
-        text: &mut String,
-        facts: &mut Facts,
-    ) {
+    /// `you:`, `monsters:` (nearest first, with kept farlook names) and the places for the map view.
+    fn surroundings(&mut self, scene: &Scene, text: &mut String, facts: &mut Facts) {
+        let (Some(level), Some(hero)) = (scene.memory.current(), scene.view.hero) else {
+            return;
+        };
         self.routes.from_hero(scene.memory, scene.view);
         self.line.clear();
         here(level, hero, &mut self.line);
         line(text, format_args!("you: {hero}  here: {}", self.line));
         facts.here = Some(self.line.clone());
-
-        self.monsters(scene, level.id, hero, text, facts);
-
-        landmarks(level, &self.routes.entities, &mut self.landmarks);
-        self.seen.clear();
-        self.items.clear();
-        self.listed_items.clear();
-        self.listed_level = Some(level.id);
-        for landmark in &self.landmarks {
-            let item = landmark.is_item();
-            match landmark.glyph {
-                Some('>') if !item && facts.stairs_down.is_none() => {
-                    facts.stairs_down = Some(landmark.pos)
-                }
-                Some('<') if !item && facts.stairs_up.is_none() => {
-                    facts.stairs_up = Some(landmark.pos)
-                }
-                _ => {}
-            }
-            if landmark.pos == hero {
-                continue;
-            }
-            let goals = landmark.goals.as_slice();
-            let steps = goals
-                .iter()
-                .filter_map(|&goal| self.routes.paths.distance(goal))
-                .min();
-            let blocked = steps.is_none() && {
-                let terrain = self.routes.terrain(level, hero);
-                goals.iter().any(|&goal| terrain.reaches(goal))
-            };
-            let glyph = landmark.glyph.unwrap_or(' ');
-            let plain = landmark.label == "item";
-            let label = if plain { "" } else { landmark.label.as_str() };
-            let mut entry = String::from(glyph);
-            if !plain {
-                let _ = write!(entry, " {label}");
-            }
-            let _ = match (hero.direction_to(landmark.pos), steps) {
-                (Some(key), _) => write!(entry, " {} (adjacent {})", landmark.pos, key as char),
-                (None, Some(n)) => write!(entry, " {} ({n})", landmark.pos),
-                (None, None) if blocked => write!(entry, " {} (blocked)", landmark.pos),
-                (None, None) => write!(entry, " {} (no route)", landmark.pos),
-            };
-            let listed = Listed {
-                place: Place {
-                    glyph,
-                    label: label.to_owned(),
-                    x: landmark.pos.x,
-                    y: landmark.pos.y,
-                    steps,
-                    blocked,
-                },
-                text: entry,
-            };
-            if item {
-                self.listed_items.insert(landmark.pos);
-                self.items.push(listed);
-            } else {
-                self.seen.push(listed);
-            }
-        }
-        for (title, entries, out) in [
-            ("seen", &mut self.seen, &mut facts.seen),
-            ("items", &mut self.items, &mut facts.items),
-        ] {
-            entries.sort_by(|a, b| {
-                let key =
-                    |e: &Listed| (e.place.steps.is_none(), e.place.steps, e.place.y, e.place.x);
-                key(a).cmp(&key(b)).then_with(|| a.text.cmp(&b.text))
-            });
-            listing(text, title, entries, |text, entry| {
-                text.push_str(&entry.text)
-            });
-            out.extend(entries.drain(..).map(|entry| entry.place));
-        }
-
-        level.frontier_targets(&self.routes.paths, &mut self.edges);
-        listing(text, "frontier", &self.edges, |text, (p, steps)| {
-            let _ = write!(text, "{p} ({steps})");
-        });
-        let frontier = self.edges.iter().map(|&(p, steps)| Frontier {
-            x: p.x,
-            y: p.y,
-            steps,
-        });
-        facts.frontier.extend(frontier);
-    }
-
-    /// `monsters:`: monsters and unseen presences, nearest first, with kept farlook names.
-    fn monsters(
-        &mut self,
-        scene: &Scene,
-        level: u16,
-        hero: Pos,
-        text: &mut String,
-        facts: &mut Facts,
-    ) {
         let turn = scene.view.status.turn;
         // A stable sort keeps row-then-column order among monsters at the same distance.
-        self.routes
-            .entities
-            .sort_by_key(|entity| entity.pos.chebyshev(hero));
-        let mut first = true;
-        for entity in &self.routes.entities {
+        let entities = &mut self.routes.entities;
+        entities.sort_by_key(|entity| entity.pos.chebyshev(hero));
+        for entity in entities.iter() {
             if !matches!(entity.kind, EntityKind::Monster | EntityKind::Unseen) {
                 continue;
             }
-            let named = scene.names.get(level, entity);
+            let named = scene.names.get(level.id, entity);
             let looked = named.and_then(|(_, looked)| (Some(looked) != turn).then_some(looked));
             self.line.clear();
             match named {
@@ -556,9 +375,8 @@ impl Renderer {
                 }
                 self.line.push_str("pet");
             }
-            if first {
+            if facts.monsters.is_empty() {
                 line(text, format_args!("monsters: "));
-                first = false;
             } else {
                 text.push_str("; ");
             }
@@ -581,6 +399,115 @@ impl Renderer {
                 pet: entity.pet,
             });
         }
+        self.places(level, hero, text, facts);
+    }
+
+    /// `seen:`, `items:` and `frontier:` for the map view.
+    fn places(&mut self, level: &Level, hero: Pos, text: &mut String, facts: &mut Facts) {
+        landmarks(level, &self.routes.entities, &mut self.landmarks);
+        self.listed_items.clear();
+        self.listed_level = Some(level.id);
+        for landmark in &self.landmarks {
+            let item = landmark.is_item();
+            if !item && landmark.glyph == Some('>') {
+                facts.stairs_down.get_or_insert(landmark.pos);
+            }
+            if !item && landmark.glyph == Some('<') {
+                facts.stairs_up.get_or_insert(landmark.pos);
+            }
+            if landmark.pos == hero {
+                continue;
+            }
+            let goals = landmark.goals.as_slice();
+            let paths = &self.routes.paths;
+            let steps = goals.iter().filter_map(|&goal| paths.distance(goal)).min();
+            let blocked = steps.is_none() && {
+                let terrain = self.routes.terrain(level, hero);
+                goals.iter().any(|&goal| terrain.reaches(goal))
+            };
+            let glyph = landmark.glyph.unwrap_or(' ');
+            let plain = landmark.label == "item";
+            let label = if plain { "" } else { landmark.label.as_str() };
+            let mut entry = String::from(glyph);
+            if !plain {
+                let _ = write!(entry, " {label}");
+            }
+            let _ = match (hero.direction_to(landmark.pos), steps) {
+                (Some(key), _) => write!(entry, " {} (adjacent {})", landmark.pos, key as char),
+                (None, Some(n)) => write!(entry, " {} ({n})", landmark.pos),
+                (None, None) if blocked => write!(entry, " {} (blocked)", landmark.pos),
+                (None, None) => write!(entry, " {} (no route)", landmark.pos),
+            };
+            let place = Place {
+                glyph,
+                label: label.to_owned(),
+                x: landmark.pos.x,
+                y: landmark.pos.y,
+                steps,
+                blocked,
+            };
+            let listed = Listed { place, text: entry };
+            if item {
+                self.listed_items.insert(landmark.pos);
+                self.items.push(listed);
+            } else {
+                self.seen.push(listed);
+            }
+        }
+        let order = |e: &Listed| (e.place.steps.is_none(), e.place.steps, e.place.y, e.place.x);
+        for (title, entries, places) in [
+            ("seen", &mut self.seen, &mut facts.seen),
+            ("items", &mut self.items, &mut facts.items),
+        ] {
+            entries.sort_by(|a, b| order(a).cmp(&order(b)).then_with(|| a.text.cmp(&b.text)));
+            listing(text, title, entries, |out, entry| out.push_str(&entry.text));
+            places.extend(entries.drain(..).map(|entry| entry.place));
+        }
+
+        level.frontier_targets(&self.routes.paths, &mut self.edges);
+        listing(text, "frontier", &self.edges, |text, (p, steps)| {
+            let _ = write!(text, "{p} ({steps})");
+        });
+        for &(p, steps) in &self.edges {
+            let (x, y) = (p.x, p.y);
+            facts.frontier.push(Frontier { x, y, steps });
+        }
+    }
+}
+
+/// The parts after the map: `inventory:` on the map view, then `answered:` and `end:`.
+fn tail(scene: &Scene, map: bool, text: &mut String, facts: &mut Facts) {
+    if let Some(inventory) = scene.memory.inventory() {
+        if map && !inventory.lines.is_empty() {
+            line(text, format_args!("inventory: "));
+            if let Some(turn) = inventory.turn {
+                let _ = write!(text, "(T:{turn}) ");
+            }
+            join(text, "; ", &inventory.lines, |out, s| out.push_str(s));
+        }
+        facts.inventory = Some(inventory.clone());
+    }
+    if !scene.answered.is_empty() {
+        line(text, format_args!("answered: "));
+        join(text, "; ", scene.answered, |text, answered| {
+            if answered.key.is_empty() {
+                let _ = write!(text, "({})", answered.prompt);
+                return;
+            }
+            let _ = write!(text, "\"{}\" \u{2190} {}", answered.prompt, answered.key);
+            if answered.text_entry {
+                text.push_str(" (typed into a text prompt)");
+            }
+        });
+        facts.answered.extend_from_slice(scene.answered);
+    }
+    if let Some(end) = scene.memory.end() {
+        let death = end.death.as_ref();
+        let rest = end.lines.iter().filter(|&line| Some(line) != death);
+        for shown in death.into_iter().chain(rest) {
+            line(text, format_args!("end: {shown}"));
+        }
+        facts.end = Some(end.clone());
     }
 }
 
@@ -593,11 +520,8 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
         return;
     }
     let rest = report.verb.starts_with("rest");
-    plural(
-        i64::from(report.steps),
-        if rest { "search" } else { "step" },
-        out,
-    );
+    let unit = if rest { "search" } else { "step" };
+    plural(report.steps.into(), unit, out);
     if let Some(turns) = report.turns {
         out.push_str(", ");
         plural(turns, "turn", out);
@@ -609,25 +533,18 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
         out.push_str("; done");
     } else {
         out.push_str("; stopped: ");
-        join(out, ", ", &report.stopped, |out, reason| {
-            out.push_str(reason)
-        });
+        join(out, ", ", &report.stopped, |out, why| out.push_str(why));
     }
 }
 
-/// The `keys:` hint for a prompt: the answers the screen itself offers.
-pub fn hint(view: &View, phase: Phase, out: &mut String) -> bool {
-    let start = out.len();
-    let spaced = |out: &mut String, keys: &mut dyn Iterator<Item = char>| {
-        join(out, " ", keys, String::push);
-    };
-    let directions =
-        |out: &mut String| spaced(out, &mut DIRS.iter().map(|&(key, _, _)| key as char));
+/// The `keys:` hint for a prompt, if any: the answers the screen itself offers.
+pub fn hint(view: &View, phase: Phase, out: &mut String) {
     match phase {
         Phase::More => out.push_str("keys: ' ' continues"),
         Phase::Choice => {
+            let yn = view.yn.as_deref().unwrap_or("");
             out.push_str("keys: ");
-            spaced(out, &mut view.yn.as_deref().unwrap_or("").chars());
+            join(out, " ", yn.chars(), String::push);
             let mut tail = view.msg.trim_end().chars().rev();
             if let (Some(')'), Some(default), Some('(')) = (tail.next(), tail.next(), tail.next()) {
                 let _ = write!(out, "; default {default}");
@@ -635,25 +552,19 @@ pub fn hint(view: &View, phase: Phase, out: &mut String) -> bool {
             out.push_str("; \\e cancels");
         }
         Phase::Item | Phase::Spell => {
-            let open = view.msg.find('[');
-            let close = open.and_then(|open| view.msg[open..].find(']').map(|close| open + close));
-            let choices = match (open, close) {
-                (Some(open), Some(close)) => &view.msg[open..=close],
-                _ => "the listed letters",
+            let (_, after) = view.msg.split_once('[').unwrap_or_default();
+            let _ = match after.split_once(']') {
+                Some((letters, _)) => write!(out, "keys: one of [{letters}]; \\e cancels"),
+                None => write!(out, "keys: one of the listed letters; \\e cancels"),
             };
-            let _ = write!(out, "keys: one of {choices}; \\e cancels");
         }
         Phase::Direction => {
-            out.push_str("keys: a direction ");
-            directions(out);
-            out.push_str(", < up, > down, . self; \\e cancels");
+            out.push_str("keys: a direction h j k l y u b n, < up, > down, . self; \\e cancels")
         }
         Phase::Text => out.push_str("keys: type the text, then \\r; \\e cancels"),
-        Phase::Position => {
-            out.push_str("keys: move the cursor with ");
-            directions(out);
-            out.push_str(", then . or , to pick; \\e cancels");
-        }
+        Phase::Position => out.push_str(
+            "keys: move the cursor with h j k l y u b n, then . or , to pick; \\e cancels",
+        ),
         Phase::Menu => {
             let mut entries = Vec::new();
             view.menu_entries(&mut entries);
@@ -661,7 +572,8 @@ pub fn hint(view: &View, phase: Phase, out: &mut String) -> bool {
             if entries.is_empty() {
                 out.push_str("\\r closes");
             } else {
-                spaced(out, &mut entries.iter().map(|entry| entry.key));
+                let keys = entries.iter().map(|entry| entry.key);
+                join(out, " ", keys, String::push);
                 out.push_str(" select, \\r accepts");
             }
             if view.menu_page().is_some_and(|(page, pages)| page < pages) {
@@ -672,33 +584,26 @@ pub fn hint(view: &View, phase: Phase, out: &mut String) -> bool {
         Phase::Ended => {
             if let Some(yn) = view.yn.as_deref() {
                 out.push_str("keys: ");
-                spaced(out, &mut yn.chars());
+                join(out, " ", yn.chars(), String::push);
             }
         }
         Phase::Play | Phase::Unknown => {}
     }
-    out.len() > start
 }
 
 /// Appends the column ruler for columns `left..right`: a row of labels at the first column and every tenth one
 /// that fits, then a row of unit digits.
 fn ruler(left: usize, right: usize, out: &mut String) {
-    let mut labels = [b' '; COLS + 2];
-    let width = right - left + 2;
+    line(out, format_args!("   "));
+    let start = out.len();
     for c in (left..right).filter(|&c| c == left || c % 10 == 0) {
-        // Columns are below 100, so a label is one or two digits.
-        let digits = [b'0' + (c / 10) as u8, b'0' + (c % 10) as u8];
-        let label = &digits[usize::from(c < 10)..];
-        let at = c - left;
-        let to = (at + label.len()).min(width);
-        if labels[at.saturating_sub(1)..to].iter().all(|&b| b == b' ') {
-            labels[at..at + label.len()].copy_from_slice(label);
+        let at = start + c - left;
+        // A label after the first needs a blank column before it.
+        if c == left || out.len() < at {
+            out.extend(std::iter::repeat_n(' ', at - out.len()));
+            let _ = write!(out, "{c}");
         }
     }
-    let labels = &labels[..width];
-    let end = labels.iter().rposition(|&b| b != b' ').map_or(0, |i| i + 1);
-    line(out, format_args!("   "));
-    out.extend(labels[..end].iter().map(|&b| b as char));
     line(out, format_args!("   "));
     out.extend((left..right).map(|c| (b'0' + (c % 10) as u8) as char));
 }
@@ -710,22 +615,18 @@ pub fn map_lines(view: &View, out: &mut String) {
             .map(|r| (r, view.rows[r].trim_end()))
             .filter(|(_, text)| !text.trim_start().is_empty())
     };
-    let Some(left) = rows()
-        .map(|(_, text)| text.len() - text.trim_start().len())
-        .min()
-    else {
+    let (mut left, mut right) = (COLS, 0);
+    for (_, text) in rows() {
+        left = left.min(text.len() - text.trim_start().len());
+        right = right.max(text.chars().count());
+    }
+    if right == 0 {
         return;
-    };
-    let right = rows()
-        .map(|(_, text)| text.chars().count())
-        .max()
-        .unwrap_or(0);
+    }
     ruler(left, right.max(left), out);
     for (r, text) in rows() {
-        line(
-            out,
-            format_args!("{r:>2} {}", text.get(left..).unwrap_or("")),
-        );
+        let row = text.get(left..).unwrap_or("");
+        line(out, format_args!("{r:>2} {row}"));
     }
 }
 
@@ -737,19 +638,18 @@ pub fn here(level: &Level, hero: Pos, out: &mut String) {
     {
         out.push(ground);
         let name = if feature_name(ground).is_some() {
-            level.kind(hero)
+            level.kind(hero).unwrap_or("")
         } else if level.corridor(hero) {
-            Some("corridor")
+            "corridor"
         } else if level.open_doors.contains(hero) {
-            Some("open door")
+            "open door"
         } else if level.engravings.contains(hero) {
-            Some("engraving")
+            "engraving"
         } else {
-            None
+            ""
         };
-        if let Some(name) = name.filter(|name| !name.is_empty()) {
-            out.push(' ');
-            out.push_str(name);
+        if !name.is_empty() {
+            let _ = write!(out, " {name}");
         }
     }
     if let Some(underfoot) = level.underfoot.get(&hero) {
@@ -941,7 +841,7 @@ mod tests {
             35,
         );
         let mut out = String::new();
-        assert!(hint(&eat, eat.phase(), &mut out));
+        hint(&eat, eat.phase(), &mut out);
         assert_eq!(out, "keys: one of [k or ?*]; \\e cancels");
         let ask = view(
             &screen("Really attack the guard? [yn] (n)", &[], STATUS1, STATUS2),
@@ -949,16 +849,16 @@ mod tests {
             34,
         );
         out.clear();
-        assert!(hint(&ask, Phase::Choice, &mut out));
+        hint(&ask, Phase::Choice, &mut out);
         assert_eq!(out, "keys: y n; default n; \\e cancels");
         out.clear();
-        assert!(hint(&ask, Phase::Direction, &mut out));
+        hint(&ask, Phase::Direction, &mut out);
         assert_eq!(
             out,
             "keys: a direction h j k l y u b n, < up, > down, . self; \\e cancels"
         );
         out.clear();
-        assert!(!hint(&ask, Phase::Play, &mut out));
+        hint(&ask, Phase::Play, &mut out);
         assert!(out.is_empty());
     }
 }
