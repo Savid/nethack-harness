@@ -5,9 +5,9 @@ use crate::glyphs::{
     Shade, find_word, is_engraving_text, is_floor_engraving, is_item, is_monster, is_warning,
     trap_kind,
 };
-use crate::level::{Inspection, Level, Plus, Underfoot, plus_kind};
+use crate::level::{Inspection, Level, Plus, plus_kind};
 use crate::screen::{EndKind, MenuEntry, Phase, View, byte_at, strip_more};
-use crate::types::{COLS, End, Inventory, MAP_BOTTOM, MAP_TOP, Pos, ROWS};
+use crate::types::{End, Inventory, MAP_SQUARES, Pos};
 
 /// Messages kept for the view.
 pub const MESSAGES: usize = 20;
@@ -18,11 +18,9 @@ const PETS: usize = 16;
 /// Most levels remembered under one location label: branches share dungeon level numbers, and arrivals that no
 /// stair connects (a trap door, a level teleport) start a new copy; the oldest copy beyond this is forgotten.
 const LEVELS_PER_LABEL: usize = 3;
-/// Most end-of-game lines kept.
 const END_LINES: usize = 64;
-/// Most inventory lines kept from one menu.
 const INVENTORY_LINES: usize = 128;
-/// Most menu pages an inventory read tracks.
+/// Most menu pages an inventory read tracks, one bit each of a `u64`.
 const INVENTORY_PAGES: u32 = 64;
 
 /// The headings the game puts over each object class in an inventory menu.
@@ -40,11 +38,8 @@ const ENGRAVING_CHANGES: [&str; 10] = [
     "The engraving now reads: ",
 ];
 
-/// The empty-inventory answer to an inventory display.
-const EMPTY_INVENTORY: &str = "Not carrying anything.";
-
 /// One message the game wrote, and the turn it appeared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Message {
     pub turn: Option<u32>,
     pub text: String,
@@ -62,7 +57,6 @@ pub enum EntityKind {
     DoorOrObject,
 }
 
-/// One entity in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entity {
     pub pos: Pos,
@@ -95,7 +89,6 @@ struct StairLink {
 #[derive(Default)]
 pub struct Memory {
     levels: Vec<Level>,
-    /// The id of the last level added.
     last_id: u16,
     current: Option<usize>,
     links: Vec<StairLink>,
@@ -121,7 +114,7 @@ pub struct Memory {
     rewritten: bool,
     pets: Vec<String>,
     inventory: Option<Inventory>,
-    reading_inventory: bool,
+    /// The pages of the inventory menu being read, one bit each; none while no menu is being read.
     inventory_pages: u64,
     inventory_total: u32,
     inventory_turn: Option<u32>,
@@ -134,18 +127,14 @@ pub struct Memory {
 
 impl Memory {
     /// Takes in a screen: messages, notes, inventory and end text always; level identity, terrain, underfoot
-    /// notes and visits when the map is shown. A level change is a new status-line location, and it reconnects a
-    /// known level when the hero left from, or arrives on or beside, a stair glyph matching a known stair link.
+    /// notes and visits when the map is shown.
     pub fn ingest(&mut self, view: &View) {
-        if view.status.turn.is_some() {
-            self.turn = view.status.turn;
-        }
-        let phase = view.phase();
+        self.turn = view.status.turn.or(self.turn);
         self.remember_message(view);
         self.collect_notes(view);
-        self.read_inventory(view, phase);
+        self.read_inventory(view);
         self.read_end(view);
-        if phase == Phase::Play {
+        if view.phase() == Phase::Play {
             self.observe_map(view);
         }
     }
@@ -154,16 +143,10 @@ impl Memory {
     /// of what a look underfoot reads.
     pub fn begin(&mut self, view: &View) {
         self.reading.clear();
-        if view.phase() != Phase::Play || view.engulfed {
-            return;
-        }
-        if let (Some(index), Some(hero)) = (self.current, view.hero)
-            && self.levels.get(index).is_some_and(|level| {
-                view.status
-                    .location
-                    .as_deref()
-                    .is_none_or(|location| level.label == location)
-            })
+        if view.phase() == Phase::Play
+            && !view.engulfed
+            && let (Some(index), Some(hero)) = (self.current, view.hero)
+            && self.on_current(view.status.location.as_deref())
         {
             self.origin = Some((index, hero));
         }
@@ -178,7 +161,6 @@ impl Memory {
         self.aside = on;
     }
 
-    /// The level the hero is on.
     pub fn current(&self) -> Option<&Level> {
         self.current.and_then(|i| self.levels.get(i))
     }
@@ -194,36 +176,25 @@ impl Memory {
 
     /// The remembered messages after the first `since` of all time, oldest first, at most `MESSAGES`.
     pub fn messages_since(&self, since: u64) -> impl Iterator<Item = &Message> {
-        let wanted = self
-            .message_total
-            .saturating_sub(since)
-            .min(MESSAGES as u64) as usize;
-        let start = (self.message_total as usize).wrapping_sub(wanted);
-        (0..wanted).filter_map(move |k| self.messages[(start + k) % MESSAGES].as_ref())
+        let oldest = self.message_total.saturating_sub(MESSAGES as u64);
+        (oldest.max(since)..self.message_total)
+            .filter_map(move |n| self.messages[(n % MESSAGES as u64) as usize].as_ref())
     }
 
     /// Whether every sentence of `message` is about a pet the game has named as tame.
     pub fn about_pet(&self, message: &str) -> bool {
         let mut any = false;
         let mut all = true;
-        let mut count = 0;
         for sentence in sentences(strip_more(message)) {
-            count += 1;
-            let about = self
-                .pets
-                .iter()
-                .any(|name| sentence.contains(name.as_str()));
+            let about = self.pets.iter().any(|name| sentence.contains(name));
             any |= about;
             all &= about || sentence == "You stop.";
         }
-        count > 0 && any && all
+        any && all
     }
 
     /// Records the game's description of `target` from a farlook or `:` answered on `after`, with `before` the
     /// screen it was asked from; a statue or a tame name is remembered too.
-    ///
-    /// A `:` describes the whole square, so the notes it produced (those placed at the square since the last
-    /// `begin` or `set_aside(true)`, and any still pending) replace what was remembered there.
     pub fn remember_look(&mut self, target: Pos, before: &View, after: &View, source: LookSource) {
         if !matches!(after.phase(), Phase::Play | Phase::More)
             || after.getpos
@@ -232,36 +203,39 @@ impl Memory {
         {
             return;
         }
-        let Some(index) = self.current else {
+        let Some(level) = self.current.and_then(|i| self.levels.get_mut(i)) else {
             return;
         };
         let turn = before.status.turn;
         if source == LookSource::Here {
-            self.replace_underfoot(index, target, turn);
+            // A `:` describes the whole square: its notes, pending and placed, replace what was remembered there.
+            place_notes(&mut self.notes, &mut self.reading);
+            self.rewritten = false;
+            level.underfoot.remove(&target);
+            level.note_underfoot(target, &self.reading, turn);
+            if self.reading.iter().any(|note| is_engraving_text(note)) {
+                level.engravings.insert(target);
+            } else {
+                level.engravings.remove(target);
+            }
         }
         let message = strip_more(&after.msg).trim();
         let text = match source {
-            LookSource::Farlook => last_parenthesised(message).unwrap_or(message),
+            LookSource::Farlook => last_parenthesised(message).unwrap_or(message).trim(),
             LookSource::Here => message,
-        }
-        .trim();
+        };
         if text.is_empty() {
             return;
         }
         let glyph = before.ch(target);
         let shade = before.shade(target);
-        let Some(level) = self.levels.get_mut(index) else {
-            return;
+        let inspection = Inspection {
+            description: text.to_owned(),
+            turn,
+            glyph,
+            shade,
         };
-        level.inspections.insert(
-            target,
-            Inspection {
-                description: text.to_owned(),
-                turn,
-                glyph,
-                shade,
-            },
-        );
+        level.inspections.insert(target, inspection);
         if source != LookSource::Farlook {
             return;
         }
@@ -269,13 +243,9 @@ impl Memory {
             level.statues.insert(target, (glyph, shade));
         }
         if let Some(tame) = text.strip_prefix("tame ") {
-            match tame.split_once(" called ") {
-                Some((kind, name)) => {
-                    self.remember_pet(kind);
-                    self.remember_pet(name);
-                }
-                None => self.remember_pet(tame),
-            }
+            let (kind, name) = tame.split_once(" called ").unwrap_or((tame, ""));
+            self.remember_pet(kind);
+            self.remember_pet(name);
         }
     }
 
@@ -286,48 +256,36 @@ impl Memory {
             return;
         }
         let level = self.current();
-        for y in MAP_TOP..=MAP_BOTTOM {
-            for x in 0..COLS as u8 {
-                let pos = Pos::new(y, x);
-                if Some(pos) == view.hero {
-                    continue;
-                }
-                let glyph = view.ch(pos);
-                if !(glyph == '+'
-                    || glyph == 'I'
-                    || glyph == '0'
-                    || glyph == '`'
-                    || is_monster(glyph)
-                    || ('1'..='5').contains(&glyph)
-                    || is_item(glyph))
-                {
-                    continue;
-                }
-                let shade = view.shade(pos);
-                let plus = (glyph == '+').then(|| plus_kind(view, level, pos));
-                let statue = level
-                    .and_then(|l| l.statues.get(&pos))
-                    .is_some_and(|&seen| seen == (glyph, shade));
-                let kind = match plus {
-                    Some(Plus::Object) => EntityKind::Object,
-                    Some(Plus::DoorOrObject) => EntityKind::DoorOrObject,
-                    Some(Plus::Door) => continue,
-                    None if statue => EntityKind::Object,
-                    None if is_monster(glyph) => EntityKind::Monster,
-                    None if glyph == 'I' || is_warning(glyph, shade) => EntityKind::Unseen,
-                    None if is_item(glyph) || glyph == '0' => EntityKind::Object,
-                    None if glyph == '`' && !is_floor_engraving(glyph, shade) => EntityKind::Object,
-                    None => continue,
-                };
-                out.push(Entity {
-                    pos,
-                    glyph,
-                    shade,
-                    kind,
-                    pet: view.pet(pos),
-                    statue,
-                });
+        for pos in (0..MAP_SQUARES).map(Pos::from_index) {
+            let glyph = view.ch(pos);
+            // Only these glyphs can be entities; the rest are skipped before the costlier checks below.
+            let candidate =
+                matches!(glyph, '+' | 'I' | '`' | '0'..='5') || is_monster(glyph) || is_item(glyph);
+            if !candidate || Some(pos) == view.hero {
+                continue;
             }
+            let shade = view.shade(pos);
+            let plus = (glyph == '+').then(|| plus_kind(view, level, pos));
+            let statue = level.and_then(|l| l.statues.get(&pos)) == Some(&(glyph, shade));
+            let kind = match plus {
+                Some(Plus::Object) => EntityKind::Object,
+                Some(Plus::DoorOrObject) => EntityKind::DoorOrObject,
+                Some(Plus::Door) => continue,
+                None if statue => EntityKind::Object,
+                None if is_monster(glyph) => EntityKind::Monster,
+                None if glyph == 'I' || is_warning(glyph, shade) => EntityKind::Unseen,
+                None if is_item(glyph) || glyph == '0' => EntityKind::Object,
+                None if glyph == '`' && !is_floor_engraving(glyph, shade) => EntityKind::Object,
+                None => continue,
+            };
+            out.push(Entity {
+                pos,
+                glyph,
+                shade,
+                kind,
+                pet: view.pet(pos),
+                statue,
+            });
         }
     }
 
@@ -339,20 +297,22 @@ impl Memory {
         self.end.as_ref()
     }
 
+    /// Whether the status-line `location`, when shown, names the current level.
+    fn on_current(&self, location: Option<&str>) -> bool {
+        self.current()
+            .is_some_and(|level| location.is_none_or(|label| level.label == label))
+    }
+
     /// Keeps a new message, unless it is the answer to an information command made aside.
     fn remember_message(&mut self, view: &View) {
         let msg = view.msg.as_str();
         if !self.aside && self.aside_message.as_deref() != Some(msg) {
             self.aside_message = None;
         }
-        let last = self
-            .message_total
-            .checked_sub(1)
-            .and_then(|n| self.messages[(n % MESSAGES as u64) as usize].as_ref());
         let new = !msg.is_empty()
             && !view.counting()
             && self.aside_message.as_deref() != Some(msg)
-            && last.is_none_or(|m| m.text != msg);
+            && self.messages_since(0).last().is_none_or(|m| m.text != msg);
         if !new {
             return;
         }
@@ -361,19 +321,10 @@ impl Memory {
             return;
         }
         let slot = &mut self.messages[(self.message_total % MESSAGES as u64) as usize];
-        match slot {
-            Some(message) => {
-                message.turn = view.status.turn;
-                message.text.clear();
-                message.text.push_str(msg);
-            }
-            None => {
-                *slot = Some(Message {
-                    turn: view.status.turn,
-                    text: msg.to_owned(),
-                })
-            }
-        }
+        let message = slot.get_or_insert_with(Message::default);
+        message.turn = view.status.turn;
+        message.text.clear();
+        message.text.push_str(msg);
         self.message_total += 1;
     }
 
@@ -388,7 +339,7 @@ impl Memory {
             }
             std::mem::swap(&mut self.noted, &mut self.window);
         } else {
-            if self.noted.len() == 1 && self.noted[0] == view.msg {
+            if self.noted == [view.msg.as_str()] {
                 return;
             }
             self.noted.clear();
@@ -417,31 +368,29 @@ impl Memory {
     }
 
     /// Captures an inventory menu, page by page; it is kept once every page has been shown.
-    fn read_inventory(&mut self, view: &View, phase: Phase) {
-        if strip_more(&view.msg).trim() == EMPTY_INVENTORY {
-            self.reading_inventory = false;
+    fn read_inventory(&mut self, view: &View) {
+        if strip_more(&view.msg).trim() == "Not carrying anything." {
+            self.inventory_pages = 0;
             self.inventory = Some(Inventory {
                 turn: self.turn,
                 lines: Vec::new(),
             });
             return;
         }
-        if phase != Phase::Menu {
-            self.reading_inventory = false;
+        if view.phase() != Phase::Menu {
+            self.inventory_pages = 0;
             return;
         }
         let (page, pages) = view.menu_page().unwrap_or((1, 1));
         if page == 0 || page > pages || pages > INVENTORY_PAGES {
-            self.reading_inventory = false;
+            self.inventory_pages = 0;
             return;
         }
-        if !self.reading_inventory || pages != self.inventory_total {
+        if self.inventory_pages == 0 || pages != self.inventory_total {
+            self.inventory_pages = 0;
             if page != 1 || !inventory_menu(view) {
-                self.reading_inventory = false;
                 return;
             }
-            self.reading_inventory = true;
-            self.inventory_pages = 0;
             self.inventory_total = pages;
             self.inventory_turn = self.turn;
             self.inventory_lines.clear();
@@ -453,67 +402,48 @@ impl Memory {
         self.inventory_pages |= bit;
         self.entries.clear();
         view.menu_entries(&mut self.entries);
-        for entry in &self.entries {
-            if self.inventory_lines.len() < INVENTORY_LINES {
-                self.inventory_lines
-                    .push((page, format!("{} - {}", entry.key, entry.text)));
-            }
+        let room = INVENTORY_LINES.saturating_sub(self.inventory_lines.len());
+        for entry in self.entries.iter().take(room) {
+            let line = format!("{} - {}", entry.key, entry.text);
+            self.inventory_lines.push((page, line));
         }
         if self.inventory_pages == u64::MAX >> (64 - pages) {
             self.inventory_lines.sort_by_key(|&(page, _)| page);
-            let lines = self
-                .inventory_lines
-                .drain(..)
-                .map(|(_, line)| line)
-                .collect();
+            let lines = self.inventory_lines.drain(..).map(|(_, line)| line);
             self.inventory = Some(Inventory {
                 turn: self.inventory_turn,
-                lines,
+                lines: lines.collect(),
             });
-            self.reading_inventory = false;
+            self.inventory_pages = 0;
         }
     }
 
     /// Captures end-of-game text: the messages of the final turn, later messages, the tombstone's death line and
     /// the farewell window.
     fn read_end(&mut self, view: &View) {
-        if self.end.is_none() {
-            if !view.ended {
-                return;
-            }
+        if self.end.is_none() && view.ended {
             let mut end = End::default();
-            for message in self.messages_since(0) {
-                let text = strip_more(&message.text).trim();
-                if message.turn == self.turn && !text.is_empty() && !question(text) {
-                    push_line(&mut end.lines, text);
-                }
+            for message in self.messages_since(0).filter(|m| m.turn == self.turn) {
+                push_message(&mut end.lines, &message.text);
             }
             self.end = Some(end);
         }
+        let Some(end) = self.end.as_mut() else {
+            return;
+        };
         let print = view.fingerprint();
         if self.end_screen == Some(print) {
             return;
         }
         self.end_screen = Some(print);
-        let Some(end) = self.end.as_mut() else {
-            return;
-        };
         match view.end {
             Some(EndKind::Disclosure) => {}
             Some(EndKind::Tombstone | EndKind::Farewell) => {
                 self.end_window = true;
                 end_window(view, end);
             }
-            Some(EndKind::Ascended) | None => {
-                if self.end_window && view.more {
-                    end_window(view, end);
-                } else {
-                    let text = strip_more(&view.msg).trim();
-                    if !text.is_empty() && !question(text) {
-                        push_line(&mut end.lines, text);
-                    }
-                }
-            }
+            Some(EndKind::Ascended) | None if self.end_window && view.more => end_window(view, end),
+            Some(EndKind::Ascended) | None => push_message(&mut end.lines, &view.msg),
         }
     }
 
@@ -523,17 +453,8 @@ impl Memory {
             return;
         };
         let location = view.status.location.as_deref();
-        let changed = match (self.current, location) {
-            (None, _) => true,
-            (Some(i), Some(label)) => self.levels.get(i).is_none_or(|l| l.label != label),
-            (Some(_), None) => false,
-        };
-        if changed {
+        if !self.on_current(location) {
             self.enter(view, hero, location.unwrap_or(""));
-        } else if let (Some(label), Some(level)) = (location, self.current_mut())
-            && level.label.is_empty()
-        {
-            level.label.push_str(label);
         }
         if view.engulfed {
             return;
@@ -545,34 +466,24 @@ impl Memory {
             self.reading.clear();
         }
         self.origin = Some((index, hero));
-        let turn = view.status.turn;
         let Some(level) = self.levels.get_mut(index) else {
             return;
         };
         level.observe(view);
-        if self.rewritten {
-            self.rewritten = false;
-            if let Some(underfoot) = level.underfoot.get_mut(&hero) {
-                underfoot.notes.retain(|note| !is_engraving_text(note));
-                underfoot.turn = None;
-            }
+        // A written or wiped engraving leaves the read-out remembered underfoot stale.
+        let rewritten = std::mem::take(&mut self.rewritten);
+        if rewritten && let Some(underfoot) = level.underfoot.get_mut(&hero) {
+            underfoot.notes.retain(|note| !is_engraving_text(note));
+            underfoot.turn = None;
+        }
+        if rewritten || self.notes.iter().any(|note| is_engraving_text(note)) {
             level.engravings.insert(hero);
         }
         if !self.notes.is_empty() {
-            if self.notes.iter().any(|note| is_engraving_text(note)) {
-                if let Some(underfoot) = level.underfoot.get_mut(&hero) {
-                    underfoot.notes.retain(|note| !is_engraving_text(note));
-                }
-                level.engravings.insert(hero);
-            }
-            level.note_underfoot(hero, &self.notes, turn);
-            for note in self.notes.drain(..) {
-                if self.reading.len() < NOTES {
-                    self.reading.push(note);
-                }
-            }
+            level.note_underfoot(hero, &self.notes, view.status.turn);
+            place_notes(&mut self.notes, &mut self.reading);
         }
-        let visit = (level.id, hero, turn);
+        let visit = (level.id, hero, view.status.turn);
         if self.visit != Some(visit) {
             *level.visits.entry(hero).or_insert(0) += 1;
             self.visit = Some(visit);
@@ -584,41 +495,38 @@ impl Memory {
         if let Some(level) = self.current_mut() {
             level.clear_refused();
         }
-        let from = self.origin.filter(|&(i, _)| Some(i) == self.current);
-        let mut found = None;
-        let mut stairs = false;
-        if let Some((old, at)) = from {
-            let departure = self
-                .levels
-                .get(old)
-                .and_then(|l| l.terrain(at))
-                .filter(|&c| c == '<' || c == '>');
-            found = self.connected(old, at, hero, label, departure);
-            stairs = departure.is_some()
-                || found.is_some()
-                || hero
-                    .neighbours()
-                    .any(|(_, p)| matches!(view.ch(p), '<' | '>'));
-        }
-        let index = match found {
-            Some(index) => index,
-            None => self.add_level(label),
+        let Some((old, at)) = self.origin.filter(|&(i, _)| Some(i) == self.current) else {
+            self.current = Some(self.add_level(label));
+            return;
         };
+        let departure = self
+            .levels
+            .get(old)
+            .and_then(|l| l.terrain(at))
+            .filter(|&c| c == '<' || c == '>');
+        let found = self.connected(old, at, hero, label, departure);
+        let stairs = departure.is_some()
+            || found.is_some()
+            || hero
+                .neighbours()
+                .any(|(_, p)| matches!(view.ch(p), '<' | '>'));
+        let index = found.unwrap_or_else(|| self.add_level(label));
         self.current = Some(index);
-        if let (Some((old, at)), true) = (from, stairs) {
-            match self
-                .links
-                .iter_mut()
-                .find(|l| l.from == old && l.at == at && l.to == index)
-            {
-                Some(link) => link.arrival = hero,
-                None => self.links.push(StairLink {
-                    from: old,
-                    at,
-                    to: index,
-                    arrival: hero,
-                }),
-            }
+        if !stairs {
+            return;
+        }
+        match self
+            .links
+            .iter_mut()
+            .find(|l| l.from == old && l.at == at && l.to == index)
+        {
+            Some(link) => link.arrival = hero,
+            None => self.links.push(StairLink {
+                from: old,
+                at,
+                to: index,
+                arrival: hero,
+            }),
         }
     }
 
@@ -626,27 +534,21 @@ impl Memory {
     /// the oldest that is not the current level is replaced, with the stair links that lead to or from it.
     fn add_level(&mut self, label: &str) -> usize {
         self.last_id = self.last_id.saturating_add(1);
-        let id = self.last_id;
+        let new = Level::new(self.last_id, label);
         let mut same = self
             .levels
             .iter()
             .enumerate()
             .filter(|&(i, level)| level.label == label && Some(i) != self.current);
-        let oldest = same
-            .clone()
-            .min_by_key(|(_, level)| level.id)
-            .map(|(i, _)| i);
-        match oldest {
-            Some(index) if same.nth(LEVELS_PER_LABEL - 1).is_some() => {
+        match same.clone().min_by_key(|(_, level)| level.id) {
+            Some((index, _)) if same.nth(LEVELS_PER_LABEL - 1).is_some() => {
                 self.links.retain(|l| l.from != index && l.to != index);
-                if self.origin.is_some_and(|(i, _)| i == index) {
-                    self.origin = None;
-                }
-                self.levels[index] = Level::new(id, label);
+                self.origin = self.origin.filter(|&(i, _)| i != index);
+                self.levels[index] = new;
                 index
             }
             _ => {
-                self.levels.push(Level::new(id, label));
+                self.levels.push(new);
                 self.levels.len() - 1
             }
         }
@@ -679,10 +581,7 @@ impl Memory {
         }) {
             return Some(link.from);
         }
-        let opposite = match departure? {
-            '<' => '>',
-            _ => '<',
-        };
+        let opposite = if departure? == '<' { '>' } else { '<' };
         self.levels.iter().enumerate().position(|(i, level)| {
             i != old
                 && level.label == label
@@ -691,37 +590,6 @@ impl Memory {
                         .neighbours()
                         .any(|(_, p)| level.terrain(p) == Some(opposite)))
         })
-    }
-
-    /// Makes the notes of a look underfoot the whole of what is remembered about `target`.
-    fn replace_underfoot(&mut self, index: usize, target: Pos, turn: Option<u32>) {
-        for note in self.notes.drain(..) {
-            if self.reading.len() < NOTES {
-                self.reading.push(note);
-            }
-        }
-        self.rewritten = false;
-        let Some(level) = self.levels.get_mut(index) else {
-            return;
-        };
-        level.underfoot.remove(&target);
-        if self.reading.is_empty() {
-            level.underfoot.insert(
-                target,
-                Underfoot {
-                    notes: Vec::new(),
-                    turn,
-                },
-            );
-        } else {
-            level.note_underfoot(target, &self.reading, turn);
-            level.underfoot.entry(target).or_default().turn = turn;
-        }
-        if self.reading.iter().any(|note| is_engraving_text(note)) {
-            level.engravings.insert(target);
-        } else {
-            level.engravings.remove(target);
-        }
     }
 
     fn remember_pet(&mut self, name: &str) {
@@ -743,18 +611,14 @@ pub fn underfoot_sentence(sentence: &str) -> bool {
     let bare = sentence.strip_suffix('.').unwrap_or(sentence);
     ((sentence.starts_with("There is ") || sentence.starts_with("There are "))
         && bare.ends_with(" here"))
-        || sentence
-            .strip_prefix("You see here ")
-            .is_some_and(|rest| !rest.is_empty())
+        || sentence.starts_with("You see here ")
         || is_engraving_text(sentence)
         || trap_kind(sentence).is_some()
 }
 
 /// Whether a sentence reports the engraving under the hero being written, added to or wiped out.
 fn engraving_change(sentence: &str) -> bool {
-    ENGRAVING_CHANGES
-        .iter()
-        .any(|change| sentence.starts_with(change))
+    ENGRAVING_CHANGES.iter().any(|c| sentence.starts_with(c))
         || (sentence.starts_with("The engraving on the ") && sentence.contains(" vanishes"))
 }
 
@@ -765,13 +629,11 @@ fn inventory_menu(view: &View) -> bool {
     if view.rows[0][..byte_at(&view.rows[0], left)].contains("?*]") {
         return false;
     }
-    let first = view.rows[..rows.min(ROWS)]
+    let first = view.rows[..rows]
         .iter()
         .map(|row| row[byte_at(row, left)..].trim())
-        .find(|line| !line.is_empty());
-    let Some(first) = first else {
-        return false;
-    };
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
     let heading = first.strip_prefix("Unpaid ").unwrap_or(first);
     HEADINGS.iter().any(|name| {
         heading
@@ -788,30 +650,22 @@ fn end_window(view: &View, end: &mut End) {
     {
         let mut death = String::new();
         for row in view.rows.iter().skip(r + 4).take(4) {
-            let face = row
-                .find('|')
-                .zip(row.rfind('|'))
-                .filter(|(a, b)| a < b)
-                .map(|(a, b)| row[a + 1..b].trim())
-                .unwrap_or("");
-            if !face.is_empty() {
-                if !death.is_empty() {
-                    death.push(' ');
-                }
-                death.push_str(face);
+            let face = match (row.find('|'), row.rfind('|')) {
+                (Some(a), Some(b)) if a < b => row[a + 1..b].trim(),
+                _ => "",
+            };
+            if !death.is_empty() && !face.is_empty() {
+                death.push(' ');
             }
+            death.push_str(face);
         }
-        if !death.is_empty() {
-            end.death = Some(death);
-        }
+        end.death = (!death.is_empty()).then_some(death);
     }
     let stone = peace.map(|r| r.saturating_sub(4)..=r + 10);
     for (r, row) in view.rows.iter().enumerate() {
-        if stone.as_ref().is_some_and(|s| s.contains(&r)) {
-            continue;
-        }
         let text = strip_more(row).trim();
-        if text.is_empty() || end.lines.iter().any(|line| line == text) {
+        let on_stone = stone.as_ref().is_some_and(|s| s.contains(&r));
+        if on_stone || text.is_empty() || end.lines.iter().any(|line| line == text) {
             continue;
         }
         if end.death.is_none()
@@ -825,9 +679,12 @@ fn end_window(view: &View, end: &mut End) {
     }
 }
 
-/// Whether a message is a question awaiting a bracketed answer.
-fn question(text: &str) -> bool {
-    text.contains("? [")
+/// Keeps a message among the end-of-game lines, unless it is empty or a question awaiting a bracketed answer.
+fn push_message(lines: &mut Vec<String>, message: &str) {
+    let text = strip_more(message).trim();
+    if !text.is_empty() && !text.contains("? [") {
+        push_line(lines, text);
+    }
 }
 
 fn push_line(lines: &mut Vec<String>, text: &str) {
@@ -840,6 +697,12 @@ fn push_bounded(notes: &mut Vec<String>, note: &str) {
     if notes.len() < NOTES {
         notes.push(note.to_owned());
     }
+}
+
+/// Moves the pending `notes` to the end of `reading`, keeping at most `NOTES` there.
+fn place_notes(notes: &mut Vec<String>, reading: &mut Vec<String>) {
+    let room = NOTES.saturating_sub(reading.len());
+    reading.extend(notes.drain(..).take(room));
 }
 
 /// The text inside the last pair of parentheses holding no others: a farlook's `(floating eye)`.
@@ -863,14 +726,12 @@ fn sentences(text: &str) -> impl Iterator<Item = &str> {
     std::iter::from_fn(move || {
         let rest = text.get(at..)?.trim_start();
         if rest.is_empty() {
-            at = text.len();
             return None;
         }
         let start = text.len() - rest.len();
         let bytes = text.as_bytes();
         let mut quoted = false;
-        for i in start..bytes.len() {
-            let b = bytes[i];
+        for (i, &b) in bytes.iter().enumerate().skip(start) {
             if b == b'"' {
                 quoted = !quoted;
             }
@@ -892,7 +753,7 @@ mod tests {
     use super::*;
     use crate::screen::PromptContext;
     use crate::testkit::{STATUS1, STATUS2, grid, screen, view};
-    use crate::types::{Colour, Grid};
+    use crate::types::{Colour, Grid, ROWS};
 
     const ROOM: [&str; 3] = [" ---- ", " |.@.| ", " ---- "];
     const HERO: Pos = Pos::new(2, 3);
