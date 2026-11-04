@@ -569,10 +569,18 @@ const PRAYING: Death = Death {
     ],
 };
 
+/// What the game answers a search with while a hostile monster stands next to the hero, taking no time.
+const ALREADY_FOUND: &str = "You already found a monster.  Use 'm' prefix to force another search.";
+
 /// A small game behind the fake terminal: one lit room, a hero that moves and searches, a jackal that turns up
 /// after a set number of searches, farlook, look-here, and a death with its end-of-game pages, after which the game
 /// prints the score list and exits. A room may hold water and down stairs: a step into water is taken only after
 /// the `m` prefix, as the game takes a deliberate move into known water, and never when the water refuses the hero.
+///
+/// Searches take no time in two ways. A hero that acts twice in some turns (`acts_twice`, every Nth search)
+/// searches with the turn counter left where it was while the jackal paces a square. With the jackal next to the
+/// hero, a search is refused with `ALREADY_FOUND`, which the game does not repeat while it is still its last
+/// message: a repeat clears the message line and shows nothing.
 struct MiniGame {
     hero: (u8, u8),
     turn: u32,
@@ -588,6 +596,10 @@ struct MiniGame {
     refuses_water: bool,
     prefixed: bool,
     death: Death,
+    acts_twice: Option<u32>,
+    paces: bool,
+    /// The last message the game printed.
+    said: String,
 }
 
 impl MiniGame {
@@ -612,7 +624,26 @@ impl MiniGame {
             refuses_water: false,
             prefixed: false,
             death: JACKAL,
+            acts_twice: None,
+            paces: false,
+            said: String::new(),
         }
+    }
+
+    /// The jackal pacing between 26,4 and 27,4, and a hero that acts twice in a turn every `every`th search.
+    fn quick(every: u32) -> MiniGame {
+        let mut game = MiniGame::new(None);
+        game.jackal = Some((27, 4));
+        game.paces = true;
+        game.acts_twice = Some(every);
+        game
+    }
+
+    /// The jackal next to the hero, at 23,4.
+    fn cornered() -> MiniGame {
+        let mut game = MiniGame::new(None);
+        game.jackal = Some((23, 4));
+        game
     }
 
     /// Water filling columns 24 and 25 of the room, between the hero and down stairs at 27,4.
@@ -634,6 +665,9 @@ impl MiniGame {
                 let closing = self.stage == Stage::Closing;
                 for &key in input {
                     self.key(key);
+                    if !self.message.is_empty() {
+                        self.said.clone_from(&self.message);
+                    }
                 }
                 if closing {
                     return Step::Exit(self.scores());
@@ -713,11 +747,29 @@ impl MiniGame {
         let prefixed = std::mem::replace(&mut self.prefixed, key == b'm');
         match key {
             b'm' | 0x12 | 0x1b => {}
+            b's' if self.jackal.is_some_and(|(x, y)| {
+                x.abs_diff(self.hero.0) <= 1 && y.abs_diff(self.hero.1) <= 1
+            }) =>
+            {
+                if self.said != ALREADY_FOUND {
+                    self.message = ALREADY_FOUND.to_owned();
+                }
+            }
             b's' => {
-                self.turn += 1;
                 self.searches += 1;
+                if self
+                    .acts_twice
+                    .is_none_or(|n| !self.searches.is_multiple_of(n))
+                {
+                    self.turn += 1;
+                }
                 if Some(self.searches) == self.arrives_after {
                     self.jackal = Some(self.arrives_at);
+                }
+                if self.paces
+                    && let Some((x, _)) = &mut self.jackal
+                {
+                    *x = if *x == 27 { 26 } else { 27 };
                 }
             }
             b':' => self.message = "You see no objects here.".to_owned(),
@@ -1002,6 +1054,80 @@ fn rest_searches_and_stops_short_when_a_monster_arrives() {
     assert_eq!(facts["monsters"][0]["name"], "jackal");
     let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
     assert_eq!(searches, 3);
+}
+
+#[test]
+fn a_rest_says_which_searches_took_no_time_and_what_the_screen_showed() {
+    // Every fourth search leaves the turn counter where it was while the jackal paces.
+    let dir = scratch("e2e-rest-quick");
+    let server = serve_game(&dir, MiniGame::quick(4));
+    let session = Session::new(&dir, server.path());
+    // The first search shows the floor the jackal stood on.
+    assert_eq!(code(&session.run(&["send", "s"])), 0);
+    let rested = session.run(&["--json", "rest", "8"]);
+    assert_eq!(code(&rested), 0, "{}{}", stdout(&rested), stderr(&rested));
+    let reply: serde_json::Value = serde_json::from_slice(&rested.stdout).unwrap();
+    assert_eq!(
+        reply["text"].as_str().and_then(|text| text.lines().next()),
+        Some(
+            "rest 8: 8 searches, 6 turns, 2 took no time (turn counter unchanged, no message or prompt); \
+             done"
+        )
+    );
+    let report = &reply["facts"]["report"];
+    assert_eq!(report["no_time"], 2);
+    assert_eq!(
+        report["no_time_why"],
+        serde_json::json!([{"searches": 2, "why": "turn counter unchanged"}])
+    );
+    drop(session);
+    drop(server);
+
+    // With the jackal next to the hero the game refuses the search, then shows nothing for a repeat.
+    let dir = scratch("e2e-rest-refused");
+    let server = serve_game(&dir, MiniGame::cornered());
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    let looked = server.inputs().len();
+    let refused = session.run(&["rest", "5"]);
+    assert_eq!(
+        code(&refused),
+        1,
+        "{}{}",
+        stdout(&refused),
+        stderr(&refused)
+    );
+    let text = stdout(&refused);
+    assert_eq!(
+        text.lines().next(),
+        Some(
+            "rest 5: 1 search, 0 turns, 1 took no time (the game said \"You already found a monster.  Use \
+             'm' prefix to force another search.\"); stopped: no time passed"
+        ),
+        "{text}"
+    );
+    let again = session.run(&["--json", "rest", "5"]);
+    assert_eq!(code(&again), 1, "{}{}", stdout(&again), stderr(&again));
+    let reply: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(
+        reply["text"].as_str().and_then(|text| text.lines().next()),
+        Some(
+            "rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; \
+             3 screen unchanged); stopped: no time passed"
+        )
+    );
+    let report = &reply["facts"]["report"];
+    assert_eq!(report["no_time"], 4);
+    assert_eq!(
+        report["no_time_why"],
+        serde_json::json!([
+            {"searches": 1, "why": "turn counter unchanged"},
+            {"searches": 3, "why": "screen unchanged"}
+        ])
+    );
+    assert_eq!(reply["facts"]["msgs"], serde_json::json!([]));
+    // The two rests sent five searches and nothing else.
+    assert_eq!(server.inputs()[looked..], vec![b"s".to_vec(); 5]);
 }
 
 #[test]

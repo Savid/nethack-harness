@@ -12,8 +12,8 @@ use crate::level::{Ground, Level, Near, Paths, door_sides};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, View, strip_more};
 use crate::types::{
-    Answered, COLS, Facts, Frontier, MAP_BOTTOM, MAP_TOP, Monster, Place, Pos, ROWS, Report,
-    SquareSet,
+    Answered, COLS, Facts, Frontier, MAP_BOTTOM, MAP_TOP, Monster, NoTime, NoTimeWhy, Place, Pos,
+    ROWS, Report, SquareSet,
 };
 
 /// Most monsters named by farlook in one look.
@@ -574,7 +574,9 @@ fn tail(scene: &Scene, map: bool, text: &mut String, facts: &mut Facts) {
 }
 
 /// The report line, such as `go >: 5 steps, 5 turns, now at 40,7; done` or
-/// `rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the hero (d 41,8)`.
+/// `rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the hero (d 41,8)`. A rest says
+/// when the turn counter was not shown, and how many searches took no time with what the screen showed for them:
+/// `rest 20: 20 searches, 15 turns, 5 took no time (turn counter unchanged, no message or prompt); done`.
 pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
     line(out, format_args!("{}: ", report.verb));
     if let Some(error) = &report.error {
@@ -590,6 +592,11 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
     if let Some(turns) = report.turns {
         out.push_str(", ");
         plural(turns, "turn", out);
+    } else if rest {
+        out.push_str(", turn counter not shown");
+    }
+    if let Some(searches) = report.no_time.filter(|&n| n > 0) {
+        no_time(searches, &report.no_time_why, out);
     }
     if let Some(hero) = hero.filter(|_| !rest) {
         let _ = write!(out, ", now at {hero}");
@@ -600,6 +607,31 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
         out.push_str("; stopped: ");
         join(out, ", ", &report.stopped, |out, why| out.push_str(why));
     }
+}
+
+/// `, N took no time (…)`: what the screen showed with the searches that took no time, each distinct answer after
+/// its count unless one answer covers them all, and the searches beyond the listed answers as `N more`.
+fn no_time(searches: u32, answers: &[NoTime], out: &mut String) {
+    let _ = write!(out, ", {searches} took no time (");
+    let whole = matches!(answers, [answer] if answer.searches == searches);
+    let listed: u32 = answers.iter().map(|answer| answer.searches).sum();
+    join(out, "; ", answers, |out, answer| {
+        if !whole {
+            let _ = write!(out, "{} ", answer.searches);
+        }
+        let text = answer.text.as_deref().unwrap_or_default();
+        let _ = match answer.why {
+            NoTimeWhy::Message => write!(out, "the game said \"{text}\""),
+            NoTimeWhy::Prompt => write!(out, "prompt \"{text}\""),
+            NoTimeWhy::Screen => write!(out, "screen unchanged"),
+            NoTimeWhy::Turn => write!(out, "turn counter unchanged, no message or prompt"),
+        };
+    });
+    if listed < searches {
+        let sep = if answers.is_empty() { "" } else { "; " };
+        let _ = write!(out, "{sep}{} more", searches - listed);
+    }
+    out.push(')');
 }
 
 /// The `keys:` hint for a prompt, if any: the answers the screen itself offers.
@@ -855,6 +887,90 @@ mod tests {
         };
         report_line(&closed, None, &mut out);
         assert_eq!(out, "go frontier: the terminal is closed");
+    }
+
+    #[test]
+    fn a_rest_says_which_searches_took_no_time_and_what_the_screen_showed() {
+        let answer = |searches, why, text: Option<&str>| NoTime {
+            searches,
+            why,
+            text: text.map(str::to_owned),
+        };
+        let mut out = String::new();
+        let fast = Report {
+            verb: "rest 20".to_owned(),
+            done: true,
+            steps: 20,
+            turns: Some(15),
+            no_time: Some(5),
+            no_time_why: vec![answer(5, NoTimeWhy::Turn, None)],
+            ..Report::default()
+        };
+        report_line(&fast, None, &mut out);
+        assert_eq!(
+            out,
+            "rest 20: 20 searches, 15 turns, 5 took no time (turn counter unchanged, no message or prompt); done"
+        );
+        let json = serde_json::to_value(&fast).unwrap();
+        assert_eq!(json["no_time"], 5);
+        assert_eq!(
+            json["no_time_why"],
+            serde_json::json!([{"searches": 5, "why": "turn counter unchanged"}])
+        );
+        out.clear();
+        let timed = Report {
+            no_time: Some(0),
+            no_time_why: Vec::new(),
+            turns: Some(20),
+            ..fast
+        };
+        report_line(&timed, None, &mut out);
+        assert_eq!(out, "rest 20: 20 searches, 20 turns; done");
+        let json = serde_json::to_value(&timed).unwrap();
+        assert_eq!(json["no_time"], 0);
+        assert!(json.get("no_time_why").is_none(), "{json}");
+        out.clear();
+        let mixed = Report {
+            verb: "rest 9".to_owned(),
+            stopped: vec!["a prompt opened".to_owned()],
+            steps: 9,
+            turns: Some(2),
+            no_time: Some(7),
+            no_time_why: vec![
+                answer(3, NoTimeWhy::Screen, None),
+                answer(1, NoTimeWhy::Message, Some("You hear a door open.")),
+                answer(
+                    1,
+                    NoTimeWhy::Prompt,
+                    Some("Really attack the gnome? [yn] (n)"),
+                ),
+            ],
+            ..Report::default()
+        };
+        report_line(&mixed, None, &mut out);
+        assert_eq!(
+            out,
+            "rest 9: 9 searches, 2 turns, 7 took no time (3 screen unchanged; 1 the game said \"You hear a door \
+             open.\"; 1 prompt \"Really attack the gnome? [yn] (n)\"; 2 more); stopped: a prompt opened"
+        );
+        out.clear();
+        let unshown = Report {
+            verb: "rest 3".to_owned(),
+            done: true,
+            steps: 3,
+            ..Report::default()
+        };
+        report_line(&unshown, None, &mut out);
+        assert_eq!(out, "rest 3: 3 searches, turn counter not shown; done");
+        out.clear();
+        let walk = Report {
+            verb: "go >".to_owned(),
+            done: true,
+            steps: 2,
+            ..Report::default()
+        };
+        report_line(&walk, Some(Pos::new(7, 40)), &mut out);
+        assert_eq!(out, "go >: 2 steps, now at 40,7; done");
     }
 
     #[test]

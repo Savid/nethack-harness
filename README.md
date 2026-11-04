@@ -77,6 +77,14 @@ changed`), and checks its last search too; searches that pass no game time and c
 were refused by the game (`no time passed`, exit code 1). A `frontier` walk that follows a corridor stops where
 the corridor branches or ends.
 
+A rest reads the turn counter before and after each search. A search after which it reads the same took no time,
+and the report counts those searches and says what the screen showed with them: the message the game wrote (`the
+game said "…"`), the prompt that opened (`prompt "…"`), `screen unchanged` when nothing on screen changed, or
+`turn counter unchanged, no message or prompt` when only other parts of the screen changed. It reports what the
+screen showed, not why: a game that refuses a search with a message may show nothing at all for the same search
+again, and a hero that acts twice in a turn leaves the counter where it was. A rest that did not see the turn
+counter at its start or end says `turn counter not shown` and counts nothing.
+
 `go --wet TARGET` is for a caller whose hero can cross water (flying, levitating, swimming): its route may also
 step into remembered water (a blue `}`), never lava or a `}` of another colour, and of routes equally short it takes
 the one with fewest steps into water. Each step into water is sent after the `m` prefix, which the game takes as a
@@ -177,6 +185,8 @@ Other commands add a report line at the top and, when they apply, lines such as:
 
 ```
 rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the hero (d 41,8)
+rest 20: 20 searches, 15 turns, 5 took no time (turn counter unchanged, no message or prompt); done
+rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; 3 screen unchanged); stopped: no time passed
 go --wet <: 4 steps, 1 wet, 4 turns, now at 16,3; done
 inventory: (T:4) a - a +0 scalpel (weapon in hand); b - an uncursed stethoscope
 answered: "Do you want your possessions identified? [ynq] (n)" ← n
@@ -186,8 +196,9 @@ end: killed by a jackal
 The parts, in order:
 
 - **Report line**, after `send`, `go` and `rest`: the command with its options (`go --wet --near 3 >`), steps or
-  searches, for `go --wet` the steps into water (`N wet`), turns passed, where the hero is, and `done` or
-  `stopped:` with each reason.
+  searches, for `go --wet` the steps into water (`N wet`), turns passed, for `rest` the searches that took no time
+  (`N took no time (…)`, each distinct answer on screen after its count unless one covers them all, at most eight
+  listed and any others as `N more`), where the hero is, and `done` or `stopped:` with each reason.
 - **Status**: the game's two status lines, spaces squashed.
 - **`msg:`**: each complete message written during the command, joined across wrapped rows. Text already on a
   screen printed in full is not repeated. A command reports its last 32 lines, after `(N earlier lines left out)`.
@@ -244,7 +255,7 @@ underfoot that describe it.
 | `frontier` | object[] | `{x, y, steps}`. |
 | `stairs_up`, `stairs_down` | `[x, y]`? | Remembered stairs on this level. |
 | `inventory` | object? | `{turn?, lines[]}`, lines such as `a - a +0 scalpel (weapon in hand)`. |
-| `report` | object? | `{verb, done, stopped[], steps, wet?, turns?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water. |
+| `report` | object? | `{verb, done, stopped[], steps, wet?, turns?, no_time?, no_time_why?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water. For a `rest` that saw the turn counter at its start and end, `no_time` counts the searches after which it read as before, and `no_time_why` lists what the screen showed with them, one `{searches, why, text?}` per distinct answer in the order first seen, at most eight: `why` is `message` or `prompt` with its `text`, `screen unchanged`, or `turn counter unchanged`. |
 | `answered` | object[] | `{prompt, key, text_entry?}`; `key` in escape syntax. |
 | `end` | object? | `{death?, lines[]}` once the game is over; `death` is the death line, verbatim. |
 

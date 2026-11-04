@@ -283,6 +283,10 @@ impl<T: Terminal> Play<T> {
         if self.last.as_ref().is_some_and(|last| last.wet) {
             report.wet = Some(outcome.wet);
         }
+        if kind == Kind::Search && outcome.turns.is_some() {
+            report.no_time = Some(outcome.no_time);
+            report.no_time_why.clone_from(&outcome.no_time_why);
+        }
         let walked = matches!(kind, Kind::Travel | Kind::Explore);
         let near = self.last.as_ref().and_then(|last| last.near);
         let stopped = &mut report.stopped;
@@ -613,7 +617,7 @@ mod tests {
     use crate::level::Inspection;
     use crate::screen::View;
     use crate::testkit::{STATUS1, STATUS2, ScriptedTerm, map, screen, view};
-    use crate::types::{COLS, Cell, Colour, Grid, ROWS};
+    use crate::types::{COLS, Cell, Colour, Grid, NoTime, NoTimeWhy, ROWS};
     use serde::Deserialize;
 
     /// A recorded screen, editable before it is parsed.
@@ -1177,25 +1181,13 @@ mod tests {
     }
 
     #[test]
-    fn rest_refuses_at_a_prompt_and_reports_a_search_the_game_refused() {
+    fn rest_refuses_at_a_prompt() {
         let prompt = map("What do you want to eat? [k or ?*]", &[], 0, 35);
         let mut play = play(vec![prompt]);
         let reply = play.rest(3, None);
         assert_eq!(reply.code, ExitCode::Failed);
         assert!(reply.text.contains("prompt is open"));
         assert!(play.term().sent.is_empty());
-        let room = [" ---- ", " |.@d| ", " ---- "];
-        let refused = map(
-            "You already found a monster.  Use 'm' prefix to force another search.",
-            &room,
-            2,
-            3,
-        );
-        let mut play = Play::new(ScriptedTerm::new(vec![map("", &room, 2, 3), refused]), 8);
-        play.show();
-        let reply = play.rest(3, None);
-        assert_eq!(reply.code, ExitCode::Failed);
-        assert_eq!(reply.facts.report.and_then(|report| report.turns), Some(0));
     }
 
     #[test]
@@ -1475,7 +1467,8 @@ mod tests {
         assert_eq!(reply.code, ExitCode::Short, "{}", reply.text);
         assert!(
             reply.text.starts_with(
-                "rest 5: 1 search, 0 turns; stopped: the status line changed, a message appeared"
+                "rest 5: 1 search, 0 turns, 1 took no time (the game said \"The jackal bites!\"); \
+                 stopped: the status line changed, a message appeared"
             ),
             "{}",
             reply.text
@@ -1512,12 +1505,77 @@ mod tests {
         let reply = play.rest(5, None);
         assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
         assert!(
-            reply
-                .text
-                .starts_with("rest 5: 3 searches, 0 turns; stopped: no time passed"),
+            reply.text.starts_with(
+                "rest 5: 3 searches, 0 turns, 3 took no time (screen unchanged); stopped: no time passed"
+            ),
             "{}",
             reply.text
         );
+        let report = reply.facts.report.unwrap();
+        assert_eq!(report.no_time, Some(3));
+        assert_eq!(
+            report.no_time_why,
+            [NoTime {
+                searches: 3,
+                why: NoTimeWhy::Screen,
+                text: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_refused_search_says_what_the_game_said_and_a_repeat_that_it_showed_nothing() {
+        // The game answers the first search with its refusal and the next ones with nothing, the message line
+        // cleared, the turn counter where it was.
+        let said = "You already found a monster.  Use 'm' prefix to force another search.";
+        let room = [" ------- ", " |..@d.| ", " ------- "];
+        let mut play = play(vec![map("", &room, 2, 4), map(said, &room, 2, 4)]);
+        let reply = play.rest(5, None);
+        assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some(
+                "rest 5: 1 search, 0 turns, 1 took no time (the game said \"You already found a monster.  \
+                 Use 'm' prefix to force another search.\"); stopped: no time passed"
+            )
+        );
+        play.term_mut().views.push(map("", &room, 2, 4));
+        let reply = play.rest(5, None);
+        assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some(
+                "rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; \
+                 3 screen unchanged); stopped: no time passed"
+            )
+        );
+        let report = reply.facts.report.unwrap();
+        assert_eq!(report.no_time, Some(4));
+        assert_eq!(
+            report
+                .no_time_why
+                .iter()
+                .map(|a| (a.searches, a.why))
+                .collect::<Vec<_>>(),
+            [(1, NoTimeWhy::Turn), (3, NoTimeWhy::Screen)]
+        );
+    }
+
+    #[test]
+    fn a_rest_where_the_turn_counter_is_not_shown_claims_no_time_either_way() {
+        let room = [" ------- ", " |..@..| ", " ------- "];
+        let untimed = "Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2";
+        let mut play = play(vec![view(&screen("", &room, STATUS1, untimed), 2, 4)]);
+        let reply = play.rest(5, None);
+        assert!(
+            reply.text.starts_with(
+                "rest 5: 3 searches, turn counter not shown; stopped: nothing changed"
+            ),
+            "{}",
+            reply.text
+        );
+        let report = reply.facts.report.unwrap();
+        assert_eq!((report.turns, report.no_time), (None, None));
     }
 
     #[test]
