@@ -24,6 +24,6 @@ msg: You kill the large kobold!
 20                   -------       -----
 you: 50,16  here: unknown
 monsters: f pet 51,17 adjacent n
-seen: | open door 66,11 (30); > down stairs 68,12 (33); < up stairs 34,5 (no route); + door or object 21,12 (no route); - open door 27,14 (no route); + door or object 17,15 (no route); +2 more
+seen: > down stairs 68,12 (33); < up stairs 34,5 (no route); | open door 66,11 (30), 33,16 (no route); + door or object 21,12 (no route), 17,15 (no route); - open door 27,14 (no route), 50,18 (no route)
 items: $ 62,3 (24); ? 63,9 (26); [ 64,16 (35); $ 71,12 (36); ( 34,6 (no route); + 34,7 (no route); +52 more
 frontier: 51,16 (1); 49,4 (12); 66,10 (29)

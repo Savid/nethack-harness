@@ -21,6 +21,6 @@ msg: You kill the large kobold!
 19   |.............|      -----       --------
 20   ---------------
 you: 36,15  here: unknown
-seen: - open door 37,18 (4); < up stairs 38,17 (6); | open door 44,16 (12); | open door 42,9 (20); | open door 45,5 (25); | open door 47,5 (27); +2 more
+seen: - open door 37,18 (4); < up stairs 38,17 (6); | open door 44,16 (12), 42,9 (20), 45,5 (25), +3 more
 items: ? 36,14 (adjacent k); % 46,7 (25); % 46,8 (25); $ 60,15 (45); ` 38,7 (no route)
 frontier: 36,14 (1); 36,18 (3); 42,10 (19); 39,7 (24); 45,4 (26); 47,4 (28); +5 more

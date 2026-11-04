@@ -8,4 +8,5 @@ names and no look underfoot. A reply whose code is not 0 starts with an `exit <c
 compares the text with its golden, ignoring trailing whitespace.
 
 To add a fixture or change the view, record the screen into `tests/fixtures/screens/`, run
-`GOLDENS_WRITE=1 cargo test --test goldens` to rewrite the goldens, and review the diff.
+`GOLDENS_WRITE=1 cargo test --test goldens` to rewrite the goldens, and review the diff. `DIFFERENCES.md` lists the
+goldens an intentional view change rewrote, and why.

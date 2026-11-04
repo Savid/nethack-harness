@@ -23,6 +23,6 @@ msg: The grid bug pulls free of the web.
 19                   |...>.|       |.`.....|
 20                   -------       ---------
 you: 42,6  here: unknown
-seen: + door 46,14 (13); > down stairs 33,19 (15); - open door 51,18 (18); > down stairs 58,15 (26); + door 61,15 (28); - open door 19,7 (34); +4 more
+seen: | open door 18,8 (36); _ altar 15,6 (38); < up stairs 70,17 (62); + door 46,14 (13), 61,15 (28); > down stairs 33,19 (15), 58,15 (26); - open door 51,18 (18), 19,7 (34), 66,3 (47)
 items: % 28,14 (21); % 63,3 (44); $ 73,14 (64); % 74,17 (65)
 frontier: 43,6 (1); 36,18 (13); 28,11 (24); 56,15 (25); 59,12 (28); 37,6 (42); +3 more

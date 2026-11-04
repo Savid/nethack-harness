@@ -21,6 +21,6 @@ Player the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
 20 ---------------
 you: 47,8  here: unknown
 monsters: F 46,8 adjacent h
-seen: | open door 45,5 (3); | open door 47,5 (3); | open door 42,9 (6); | open door 44,16 (14); < up stairs 38,17 (21); + door 37,18 (21); +2 more
+seen: < up stairs 38,17 (21); + door 37,18 (21); | open door 45,5 (3), 47,5 (3), 42,9 (6), +3 more
 items: $ 60,15 (19); ` 38,7 (no route)
 frontier: 57,17 (16); 45,4 (4); 47,4 (4); 44,15 (13); 39,7 (8); 69,16 (28); +3 more

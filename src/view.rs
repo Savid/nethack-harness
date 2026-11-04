@@ -8,7 +8,7 @@
 use std::fmt::{Arguments, Write};
 
 use crate::glyphs::{Shade, feature_name};
-use crate::level::{Level, Near, Paths, door_sides};
+use crate::level::{Ground, Level, Near, Paths, door_sides};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, View, strip_more};
 use crate::types::{
@@ -18,8 +18,10 @@ use crate::types::{
 
 /// Most monsters named by farlook in one look.
 pub const FARLOOKS: usize = 8;
-/// Most entries listed under `seen:`, `items:` and `frontier:` before `+N more`.
+/// Most entries listed under `items:` and `frontier:` before `+N more`.
 pub const LISTED: usize = 6;
+/// Most squares of one kind listed under `seen:` before `+N more` of that kind.
+pub const PER_KIND: usize = 3;
 /// The refusal for a map drawn with non-ASCII symbols.
 pub const ASCII: &str = "the map holds non-ASCII symbols: the harness reads the default ASCII symbol set, so turn \
                          off DECgraphics, IBMgraphics and other symsets";
@@ -148,27 +150,36 @@ pub struct Scene<'a> {
     pub answered: &'a [Answered],
 }
 
-/// One `seen:` or `items:` entry while it is sorted: unreachable last, then by route length and square.
+/// One `seen:` or `items:` entry while it is sorted: unreachable last, then by route length and square. `at` is its
+/// square and route, such as `32,7 (adjacent j)` or `40,4 (8)`.
 struct Listed {
     place: Place,
-    text: String,
+    at: String,
 }
 
-/// Routes from the hero: the entities in view, the squares monsters and unseen things other than the pet hold,
-/// the routes around them, and the routes over terrain alone, searched only when asked for.
+impl Listed {
+    /// Whether `other` is the same kind: the same glyph and label.
+    fn same_kind(&self, other: &Listed) -> bool {
+        self.place.glyph == other.place.glyph && self.place.label == other.place.label
+    }
+}
+
+/// Routes from the hero over `ground`: the entities in view, the squares monsters and unseen things other than the
+/// pet hold, the routes around them, and the routes over terrain alone, searched only when asked for.
 #[derive(Default)]
 pub struct Routes {
     pub entities: Vec<Entity>,
     pub occupied: SquareSet,
     pub paths: Paths,
+    ground: Ground,
     terrain: Paths,
-    terrain_from: Option<(u16, Pos)>,
+    terrain_from: Option<(u16, Pos, Ground)>,
 }
 
 impl Routes {
-    /// Takes the entities of `view` and routes from its hero around them. A route step into the highlighted pet
-    /// swaps places with it, so the pet blocks nothing.
-    pub fn from_hero(&mut self, memory: &Memory, view: &View) {
+    /// Takes the entities of `view` and routes from its hero around them over `ground`. A route step into the
+    /// highlighted pet swaps places with it, so the pet blocks nothing.
+    pub fn from_hero(&mut self, memory: &Memory, view: &View, ground: Ground) {
         memory.entities(view, &mut self.entities);
         self.occupied.clear();
         for entity in &self.entities {
@@ -177,16 +188,19 @@ impl Routes {
             }
         }
         self.terrain_from = None;
+        self.ground = ground;
         if let (Some(level), Some(hero)) = (memory.current(), view.hero) {
-            level.paths(hero, &self.occupied, &mut self.paths);
+            level.paths(hero, &self.occupied, ground, &mut self.paths);
         }
     }
 
-    /// Routes from `hero` over `level`'s terrain as if no monster stood anywhere, searched once per hero square.
+    /// Routes from `hero` over `level`'s terrain, on the ground of the last search from the hero, as if no monster
+    /// stood anywhere; searched once per hero square.
     pub fn terrain(&mut self, level: &Level, hero: Pos) -> &Paths {
-        if self.terrain_from != Some((level.id, hero)) {
-            level.paths(hero, &SquareSet::new(), &mut self.terrain);
-            self.terrain_from = Some((level.id, hero));
+        let from = Some((level.id, hero, self.ground));
+        if self.terrain_from != from {
+            level.paths(hero, &SquareSet::new(), self.ground, &mut self.terrain);
+            self.terrain_from = from;
         }
         &self.terrain
     }
@@ -201,6 +215,8 @@ pub struct Renderer {
     landmarks: Vec<Landmark>,
     seen: Vec<Listed>,
     items: Vec<Listed>,
+    /// The kinds under `seen:` while they are listed: the index of each kind's first entry and its count.
+    kinds: Vec<(usize, usize)>,
     edges: Vec<(Pos, u32)>,
     listed_items: SquareSet,
     listed_level: Option<u16>,
@@ -345,7 +361,7 @@ impl Renderer {
         let (Some(level), Some(hero)) = (scene.memory.current(), scene.view.hero) else {
             return;
         };
-        self.routes.from_hero(scene.memory, scene.view);
+        self.routes.from_hero(scene.memory, scene.view, Ground::Dry);
         self.line.clear();
         here(level, hero, &mut self.line);
         line(text, format_args!("you: {hero}  here: {}", self.line));
@@ -428,15 +444,12 @@ impl Renderer {
             let glyph = landmark.glyph.unwrap_or(' ');
             let plain = landmark.label == "item";
             let label = if plain { "" } else { landmark.label.as_str() };
-            let mut entry = String::from(glyph);
-            if !plain {
-                let _ = write!(entry, " {label}");
-            }
+            let mut at = String::new();
             let _ = match (hero.direction_to(landmark.pos), steps) {
-                (Some(key), _) => write!(entry, " {} (adjacent {})", landmark.pos, key as char),
-                (None, Some(n)) => write!(entry, " {} ({n})", landmark.pos),
-                (None, None) if blocked => write!(entry, " {} (blocked)", landmark.pos),
-                (None, None) => write!(entry, " {} (no route)", landmark.pos),
+                (Some(key), _) => write!(at, "{} (adjacent {})", landmark.pos, key as char),
+                (None, Some(n)) => write!(at, "{} ({n})", landmark.pos),
+                (None, None) if blocked => write!(at, "{} (blocked)", landmark.pos),
+                (None, None) => write!(at, "{} (no route)", landmark.pos),
             };
             let place = Place {
                 glyph,
@@ -446,7 +459,7 @@ impl Renderer {
                 steps,
                 blocked,
             };
-            let listed = Listed { place, text: entry };
+            let listed = Listed { place, at };
             if item {
                 self.listed_items.insert(landmark.pos);
                 self.items.push(listed);
@@ -454,15 +467,31 @@ impl Renderer {
                 self.seen.push(listed);
             }
         }
-        let order = |e: &Listed| (e.place.steps.is_none(), e.place.steps, e.place.y, e.place.x);
-        for (title, entries, places) in [
-            ("seen", &mut self.seen, &mut facts.seen),
-            ("items", &mut self.items, &mut facts.items),
-        ] {
-            entries.sort_by(|a, b| order(a).cmp(&order(b)).then_with(|| a.text.cmp(&b.text)));
-            listing(text, title, entries, |out, entry| out.push_str(&entry.text));
-            places.extend(entries.drain(..).map(|entry| entry.place));
+        let order = |e: &Listed| {
+            let place = &e.place;
+            (place.steps.is_none(), place.steps, place.y, place.x)
+        };
+        for entries in [&mut self.seen, &mut self.items] {
+            entries.sort_by(|a, b| {
+                order(a).cmp(&order(b)).then_with(|| {
+                    (a.place.glyph, &a.place.label).cmp(&(b.place.glyph, &b.place.label))
+                })
+            });
         }
+        by_kind(text, &self.seen, &mut self.kinds);
+        listing(text, "items", &self.items, |out, entry| {
+            out.push(entry.place.glyph);
+            if !entry.place.label.is_empty() {
+                let _ = write!(out, " {}", entry.place.label);
+            }
+            let _ = write!(out, " {}", entry.at);
+        });
+        facts
+            .seen
+            .extend(self.seen.drain(..).map(|entry| entry.place));
+        facts
+            .items
+            .extend(self.items.drain(..).map(|entry| entry.place));
 
         level.frontier_targets(&self.routes.paths, &mut self.edges);
         listing(text, "frontier", &self.edges, |text, (p, steps)| {
@@ -473,6 +502,39 @@ impl Renderer {
             facts.frontier.push(Frontier { x, y, steps });
         }
     }
+}
+
+/// The `seen:` line for `entries`, sorted nearest by route first: grouped by kind, the kinds with fewest squares
+/// first (as many by their nearest square), each with its nearest `PER_KIND` squares and then `+N more` of that
+/// kind. Every kind is listed, so a kind with few squares never hides behind a kind with many. `kinds` is scratch.
+fn by_kind(out: &mut String, entries: &[Listed], kinds: &mut Vec<(usize, usize)>) {
+    if entries.is_empty() {
+        return;
+    }
+    kinds.clear();
+    for (i, entry) in entries.iter().enumerate() {
+        match kinds
+            .iter_mut()
+            .find(|(first, _)| entries[*first].same_kind(entry))
+        {
+            Some((_, count)) => *count += 1,
+            None => kinds.push((i, 1)),
+        }
+    }
+    kinds.sort_unstable_by_key(|&(first, count)| (count, first));
+    line(out, format_args!("seen: "));
+    join(out, "; ", kinds.iter(), |out, &(first, count)| {
+        let kind = &entries[first];
+        let _ = write!(out, "{} {}", kind.place.glyph, kind.place.label);
+        let squares = entries[first..].iter().filter(|e| kind.same_kind(e));
+        for (n, entry) in squares.take(PER_KIND).enumerate() {
+            out.push_str(if n == 0 { " " } else { ", " });
+            out.push_str(&entry.at);
+        }
+        if count > PER_KIND {
+            let _ = write!(out, ", +{} more", count - PER_KIND);
+        }
+    });
 }
 
 /// The parts after the map: `inventory:` on the map view, then `answered:` and `end:`.
@@ -522,6 +584,9 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
     let rest = report.verb.starts_with("rest");
     let unit = if rest { "search" } else { "step" };
     plural(report.steps.into(), unit, out);
+    if let Some(wet) = report.wet {
+        let _ = write!(out, ", {wet} wet");
+    }
     if let Some(turns) = report.turns {
         out.push_str(", ");
         plural(turns, "turn", out);
@@ -743,6 +808,20 @@ mod tests {
         report_line(&go, Some(Pos::new(7, 40)), &mut out);
         assert_eq!(out, "go >: 5 steps, 5 turns, now at 40,7; done");
         out.clear();
+        let wet = Report {
+            verb: "go --wet >".to_owned(),
+            stopped: vec!["wet step 41,7->42,7 refused".to_owned()],
+            steps: 2,
+            wet: Some(1),
+            turns: Some(1),
+            ..Report::default()
+        };
+        report_line(&wet, Some(Pos::new(7, 41)), &mut out);
+        assert_eq!(
+            out,
+            "go --wet >: 2 steps, 1 wet, 1 turn, now at 41,7; stopped: wet step 41,7->42,7 refused"
+        );
+        out.clear();
         let rest = Report {
             verb: "rest 20".to_owned(),
             stopped: vec!["a monster came into view or next to the hero (d 41,8)".to_owned()],
@@ -831,6 +910,57 @@ mod tests {
         );
         assert_eq!(facts.answered.len(), 2);
         assert!(text.lines().any(|line| line == "you: 3,2  here: unknown"));
+    }
+
+    #[test]
+    fn seen_lists_every_kind_rarest_first_however_many_squares_one_kind_has() {
+        // A lake of 19 rows of 40 water squares beside the hero, two fountains, and down stairs beyond the lake.
+        let mut rows = vec![String::new(); 21];
+        for (y, row) in rows.iter_mut().enumerate().skip(1) {
+            *row = format!("  {}", "}".repeat(40));
+            if y == 10 {
+                row.push_str(" >");
+            }
+        }
+        rows[0] = " {".to_owned();
+        rows[1].replace_range(1..2, "@");
+        rows[20] = " {".to_owned();
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let mut grid = crate::testkit::grid(&screen("", &rows, STATUS1, STATUS2));
+        for cell in grid
+            .cells
+            .iter_mut()
+            .flatten()
+            .filter(|cell| cell.ch == '}')
+        {
+            cell.fg = crate::types::Colour::Blue;
+        }
+        let shown = View::parse(&grid, Pos::new(2, 1));
+        let mut memory = Memory::default();
+        memory.ingest(&shown);
+        let names = Names::default();
+        let scene = Scene {
+            view: &shown,
+            memory: &memory,
+            names: &names,
+            fresh: &[],
+            report: None,
+            answered: &[],
+        };
+        let (text, facts) = Renderer::default().render(&scene).unwrap();
+        let seen = text.lines().find(|l| l.starts_with("seen: ")).unwrap();
+        assert_eq!(
+            seen,
+            "seen: > down stairs 43,11 (no route); { fountain 1,1 (adjacent k), 1,21 (no route); \
+             } water 2,2 (adjacent l), 3,2 (no route), 4,2 (no route), +757 more"
+        );
+        // The machine form keeps every square, nearest by route first.
+        assert_eq!(facts.seen.len(), 763);
+        assert_eq!(
+            facts.seen.iter().filter(|p| p.label == "water").count(),
+            760
+        );
+        assert_eq!(facts.seen[0].label, "fountain");
     }
 
     #[test]

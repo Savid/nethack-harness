@@ -506,7 +506,10 @@ fn the_socket_api_answers_one_line_per_connection() {
     assert!(reply.contains("\"code\":64"), "{reply}");
     let bad = ask("{\"cmd\":\"look\",\"keys\":\"x\"}\n");
     assert_eq!(bad["code"], 64);
-    assert_eq!(bad["text"], "look takes no keys, target or count");
+    assert_eq!(
+        bad["text"],
+        "look takes no keys, target, wet, count or near"
+    );
     assert_eq!(ask("not json\n")["code"], 64);
     let look = ask("{\"cmd\":\"look\"}\n");
     assert_eq!(look["code"], 0);
@@ -537,16 +540,23 @@ enum Stage {
 }
 
 /// A small game behind the fake terminal: one lit room, a hero that moves and searches, a jackal that turns up
-/// after a set number of searches, farlook, look-here, and a death with its end-of-game pages.
+/// after a set number of searches, farlook, look-here, and a death with its end-of-game pages. A room may hold
+/// water and down stairs: a step into water is taken only after the `m` prefix, as the game takes a deliberate
+/// move into known water, and never when the water refuses the hero.
 struct MiniGame {
     hero: (u8, u8),
     turn: u32,
     searches: u32,
     arrives_after: Option<u32>,
+    arrives_at: (u8, u8),
     jackal: Option<(u8, u8)>,
     stage: Stage,
     pick: (u8, u8),
     message: String,
+    water: Vec<(u8, u8)>,
+    stairs: Option<(u8, u8)>,
+    refuses_water: bool,
+    prefixed: bool,
 }
 
 impl MiniGame {
@@ -561,11 +571,27 @@ impl MiniGame {
             turn: 10,
             searches: 0,
             arrives_after,
+            arrives_at: (27, 4),
             jackal: None,
             stage: Stage::Map,
             pick: (22, 4),
             message: String::new(),
+            water: Vec::new(),
+            stairs: None,
+            refuses_water: false,
+            prefixed: false,
         }
+    }
+
+    /// Water filling columns 24 and 25 of the room, between the hero and down stairs at 27,4.
+    fn moat(refuses_water: bool) -> MiniGame {
+        let mut game = MiniGame::new(None);
+        game.water = (24..=25)
+            .flat_map(|x| (Self::TOP + 1..Self::BOTTOM).map(move |y| (x, y)))
+            .collect();
+        game.stairs = Some((27, 4));
+        game.refuses_water = refuses_water;
+        game
     }
 
     fn responder(mut self) -> (Vec<u8>, Responder) {
@@ -647,13 +673,14 @@ impl MiniGame {
 
     fn command(&mut self, key: u8) {
         self.message.clear();
+        let prefixed = std::mem::replace(&mut self.prefixed, key == b'm');
         match key {
             b'm' | 0x12 | 0x1b => {}
             b's' => {
                 self.turn += 1;
                 self.searches += 1;
                 if Some(self.searches) == self.arrives_after {
-                    self.jackal = Some((27, 4));
+                    self.jackal = Some(self.arrives_at);
                 }
             }
             b':' => self.message = "You see no objects here.".to_owned(),
@@ -666,7 +693,9 @@ impl MiniGame {
             other => match Self::delta(other) {
                 Some(delta) => {
                     let to = Self::shifted(self.hero, delta);
-                    if Self::floor(to) && Some(to) != self.jackal {
+                    if self.water.contains(&to) && (!prefixed || self.refuses_water) {
+                        self.message = "You avoid stepping into the water.".to_owned();
+                    } else if Self::floor(to) && Some(to) != self.jackal {
                         self.hero = to;
                         self.turn += 1;
                     } else {
@@ -722,6 +751,14 @@ impl MiniGame {
                 });
             }
         }
+        for &(x, y) in &self.water {
+            at(&mut out, x, y);
+            out.push_str("\x1b[34m}\x1b[0m");
+        }
+        if let Some((x, y)) = self.stairs {
+            at(&mut out, x, y);
+            out.push('>');
+        }
         if let Some((x, y)) = self.jackal {
             at(&mut out, x, y);
             out.push_str("\x1b[33md\x1b[0m");
@@ -760,6 +797,10 @@ fn serve_game(dir: &Path, game: MiniGame) -> FakeTerminalServer {
     server
 }
 
+fn facts_of(output: &Output) -> serde_json::Value {
+    facts(output)
+}
+
 fn facts(output: &Output) -> serde_json::Value {
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).expect("a JSON reply");
     reply["facts"].clone()
@@ -790,6 +831,97 @@ fn go_walks_to_a_square_and_reports_it() {
     assert!(text.contains("you: 27,4"), "{text}");
 }
 
+/// The movement keys among `inputs`, as text.
+fn moves(inputs: &[Vec<u8>]) -> Vec<String> {
+    inputs
+        .iter()
+        .filter(|keys| keys.last().is_some_and(|k| b"hjklyubn".contains(k)))
+        .map(|keys| String::from_utf8_lossy(keys).into_owned())
+        .collect()
+}
+
+#[test]
+fn go_wet_crosses_water_that_a_dry_go_has_no_route_over() {
+    let dir = scratch("e2e-go-wet");
+    let server = serve_game(&dir, MiniGame::moat(false));
+    let session = Session::new(&dir, server.path());
+    let look = stdout(&session.run(&["look"]));
+    assert!(
+        look.lines().any(|line| line
+            == "seen: > down stairs 27,4 (no route); } water 24,3 (no route), 25,3 (no route), \
+                24,4 (no route), +3 more"),
+        "{look}"
+    );
+    let dry = session.run(&["go", ">"]);
+    assert_eq!(code(&dry), 1, "{}{}", stdout(&dry), stderr(&dry));
+    assert_eq!(stdout(&dry), "no known route to >\n");
+    assert!(moves(&server.inputs()).is_empty());
+
+    let wet = session.run(&["go", "--wet", ">"]);
+    assert_eq!(code(&wet), 0, "{}{}", stdout(&wet), stderr(&wet));
+    assert_eq!(
+        stdout(&wet).lines().next(),
+        Some("go --wet >: 5 steps, 2 wet, 5 turns, now at 27,4; done")
+    );
+    // Every step went after the `m` prefix, the two into water too, and none was refused.
+    assert_eq!(moves(&server.inputs()), ["ml"; 5]);
+    let back = session.run(&["--json", "go", "--wet", "22,4"]);
+    let facts = facts(&back);
+    assert_eq!(facts["pos"], serde_json::json!([22, 4]));
+    assert_eq!(facts["report"]["verb"], "go --wet 22,4");
+    assert_eq!(facts["report"]["wet"], 2);
+    assert_eq!(facts["report"]["steps"], 5);
+    // A dry go reports no wet steps at all.
+    let dry = facts_of(&session.run(&["--json", "go", "23,4"]));
+    assert_eq!(dry["report"]["done"], true);
+    assert!(dry["report"].get("wet").is_none(), "{dry}");
+}
+
+#[test]
+fn a_wet_step_the_game_refuses_stops_short_with_its_message_and_square() {
+    let dir = scratch("e2e-go-wet-refused");
+    let server = serve_game(&dir, MiniGame::moat(true));
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    let mut stream = UnixStream::connect(session.socket()).expect("connect to the daemon");
+    stream
+        .write_all(b"{\"cmd\":\"go\",\"target\":\">\",\"wet\":true}\n")
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["code"], 2, "{line}");
+    let text = reply["text"].as_str().unwrap();
+    assert_eq!(
+        text.lines().next(),
+        Some(
+            "go --wet >: 2 steps, 1 wet, 1 turn, now at 23,4; stopped: wet step 23,4->24,4 refused"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l == "msg: You avoid stepping into the water."),
+        "{text}"
+    );
+    let report = &reply["facts"]["report"];
+    assert_eq!(
+        (report["done"].as_bool(), report["wet"].as_u64()),
+        (Some(false), Some(1))
+    );
+    assert_eq!(reply["facts"]["pos"], serde_json::json!([23, 4]));
+    // The refused step was sent once and not tried again.
+    assert_eq!(moves(&server.inputs()), ["ml", "ml"]);
+    // `wet` belongs to go alone.
+    let mut stream = UnixStream::connect(session.socket()).expect("connect to the daemon");
+    stream
+        .write_all(b"{\"cmd\":\"rest\",\"count\":1,\"wet\":true}\n")
+        .unwrap();
+    line.clear();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    assert!(line.contains("\"code\":64"), "{line}");
+}
+
 #[test]
 fn rest_searches_and_stops_short_when_a_monster_arrives() {
     let dir = scratch("e2e-rest");
@@ -815,6 +947,43 @@ fn rest_searches_and_stops_short_when_a_monster_arrives() {
     assert!(stopped.contains("27,4"), "{stopped}");
     assert_eq!(facts["monsters"][0]["glyph"], "d");
     assert_eq!(facts["monsters"][0]["name"], "jackal");
+    let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
+    assert_eq!(searches, 3);
+}
+
+#[test]
+fn a_rest_with_a_near_radius_stops_only_for_a_monster_within_it() {
+    // The jackal turns up 5 squares from the hero after the third search: outside a radius of 3.
+    let dir = scratch("e2e-rest-near-far");
+    let server = serve_game(&dir, MiniGame::new(Some(3)));
+    let session = Session::new(&dir, server.path());
+    let rested = session.run(&["--json", "rest", "20", "--near", "3"]);
+    assert_eq!(code(&rested), 0, "{}{}", stdout(&rested), stderr(&rested));
+    let facts = facts(&rested);
+    assert_eq!(facts["report"]["verb"], "rest --near 3 20");
+    assert_eq!(facts["report"]["done"], true);
+    assert_eq!(facts["report"]["steps"], 20);
+    assert_eq!(facts["monsters"][0]["dist"], 5);
+    let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
+    assert_eq!(searches, 20);
+    drop(session);
+    drop(server);
+
+    // The jackal turns up 2 squares away: inside the radius, so the rest stops there.
+    let dir = scratch("e2e-rest-near-close");
+    let mut game = MiniGame::new(Some(3));
+    game.arrives_at = (24, 4);
+    let server = serve_game(&dir, game);
+    let session = Session::new(&dir, server.path());
+    let rested = session.run(&["rest", "--near", "3", "20"]);
+    assert_eq!(code(&rested), 2, "{}{}", stdout(&rested), stderr(&rested));
+    assert_eq!(
+        stdout(&rested).lines().next(),
+        Some(
+            "rest --near 3 20: 3 searches, 3 turns; stopped: a monster came within 3 squares of the hero \
+             (d 24,4, 2 away)"
+        )
+    );
     let searches = server.inputs().iter().filter(|keys| *keys == b"s").count();
     assert_eq!(searches, 3);
 }

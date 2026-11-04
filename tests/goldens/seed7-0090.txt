@@ -23,6 +23,6 @@ msg: You kill the grid bug!
 19 |.`.....|
 20 --------
 you: 51,18  here: unknown
-seen: + door 46,14 (5); > down stairs 58,15 (8); + door 61,15 (10); - open door 66,3 (29); < up stairs 70,17 (44)
+seen: > down stairs 58,15 (8); - open door 66,3 (29); < up stairs 70,17 (44); + door 46,14 (5), 61,15 (10)
 items: % 63,3 (26); $ 73,14 (46); % 74,17 (47)
 frontier: 49,15 (3); 56,15 (7); 44,14 (7); 59,12 (10); 61,3 (25); 67,14 (41)

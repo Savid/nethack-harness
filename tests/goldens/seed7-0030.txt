@@ -14,6 +14,6 @@ Player the Stripling St:18/03 Dx:12 Co:17 In:8 Wi:9 Ch:8 Lawful
 12 ---.--------                      ------------                   -----
 you: 14,8  here: unknown
 monsters: f pet 13,8 adjacent h
-seen: + door 27,7 (13); < up stairs 69,8 (55); + door 13,11 (no route)
+seen: < up stairs 69,8 (55); + door 27,7 (13), 13,11 (no route)
 items: $ 69,6 (55); ) 4,7 (no route)
 frontier: 23,6 (9); 14,9 (1); 66,6 (52); 36,8 (50); 36,10 (50)

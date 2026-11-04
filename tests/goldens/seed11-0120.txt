@@ -23,6 +23,6 @@ msg: You miss the giant rat.  The giant rat bites!
 20 ---------
 you: 40,16  here: unknown
 monsters: r 41,16 adjacent l
-seen: + door 40,15 (adjacent k); { fountain 53,15 (13); < up stairs 57,16 (17); - open door 61,6 (24); - open door 67,7 (30)
+seen: + door 40,15 (adjacent k); { fountain 53,15 (13); < up stairs 57,16 (17); - open door 61,6 (24), 67,7 (30)
 items: $ 40,19 (3); $ 54,6 (21); [ 53,5 (22); ! 69,6 (32); ! 69,7 (32); ! 69,5 (33); +20 more
 frontier: 50,15 (10); 35,14 (6); 56,9 (18); 64,8 (28); 66,7 (29)

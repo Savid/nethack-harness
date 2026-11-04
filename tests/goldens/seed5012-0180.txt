@@ -22,6 +22,6 @@ Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
 19 -----------                                 ----------
 you: 42,12  here: unknown
 monsters: f pet 42,13 adjacent j
-seen: + door 55,13 (13); + door 28,2 (15); + door 23,4 (19); < up stairs 46,15 (22); { fountain 72,14 (30)
+seen: < up stairs 46,15 (22); { fountain 72,14 (30); + door 55,13 (13), 28,2 (15), 23,4 (19)
 items: * 31,3 (12); $ 56,16 (14); $ 46,14 (22); ( 30,17 (23); $ 30,18 (24); ? 73,15 (31)
 frontier: 53,12 (11); 34,5 (10); 30,11 (17); 48,14 (20); 66,15 (24); 42,14 (34)

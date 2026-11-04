@@ -23,6 +23,6 @@ msg: The door opens.
 19 -----------                                 ----------
 you: 28,3  here: unknown
 monsters: f pet 31,3 3 away
-seen: | open door 28,2 (adjacent k); + door 23,4 (4); + door 55,13 (28); - open door 61,6 (36); < up stairs 46,15 (37); > down stairs 63,7 (38); +2 more
+seen: | open door 28,2 (adjacent k); < up stairs 46,15 (37); > down stairs 63,7 (38); { fountain 72,14 (45); + door 23,4 (4), 55,13 (28); - open door 61,6 (36), 65,7 (40)
 items: ( 30,17 (14); $ 30,18 (15); $ 56,16 (29); $ 46,14 (37); $ 63,6 (38); % 64,7 (39); +1 more
 frontier: 28,2 (1); 30,11 (8); 53,12 (26); 48,14 (35); 66,15 (39); 60,6 (35); +1 more

@@ -10,6 +10,6 @@ msg: This is a seeded game (seed "1001", generator version 1).
  7 --+--------
 you: 32,6  here: unknown
 monsters: d pet 32,5 adjacent k; d 36,6 4 away
-seen: + door 32,7 (adjacent j); + door 30,5 (1)
+seen: + door 32,7 (adjacent j), 30,5 (1)
 items: / 33,4 (2)
 frontier: 40,4 (8)

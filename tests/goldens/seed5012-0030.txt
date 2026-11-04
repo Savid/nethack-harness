@@ -12,5 +12,5 @@ Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
 20   ----------------
 you: 28,14  here: unknown
 monsters: f pet 30,14 2 away; r 40,16 12 away
-seen: + door 29,18 (5); _ altar 35,16 (7); < up stairs 40,17 (12); + door 41,15 (13)
+seen: _ altar 35,16 (7); < up stairs 40,17 (12); + door 29,18 (5), 41,15 (13)
 frontier: 29,13 (1); 28,15 (1); 31,13 (4); 46,18 (18)

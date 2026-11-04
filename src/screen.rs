@@ -235,7 +235,7 @@ impl View {
         self.direction = asking
             && DIRECTION_PROMPTS
                 .iter()
-                .any(|p| contains_ignore_case(msg, p, false));
+                .any(|p| contains_ignore_case(msg, p));
         self.getpos = POSITION_PROMPTS.iter().any(|p| msg.contains(p));
         set_str(&mut self.yn, yn);
         set_str(&mut self.obj, obj);
