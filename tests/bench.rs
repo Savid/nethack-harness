@@ -30,27 +30,12 @@ const RING: usize = 64 * 1024;
 /// Client invocations timed.
 const CLIENTS: usize = 200;
 
-/// The SGR parameter for a colour.
-fn sgr(colour: Colour) -> u8 {
-    match colour {
-        Colour::Default => 39,
-        Colour::Black => 30,
-        Colour::Red => 31,
-        Colour::Green => 32,
-        Colour::Brown => 33,
-        Colour::Blue => 34,
-        Colour::Magenta => 35,
-        Colour::Cyan => 36,
-        Colour::White => 37,
-        Colour::BrightBlack => 90,
-        Colour::BrightRed => 91,
-        Colour::BrightGreen => 92,
-        Colour::BrightBrown => 93,
-        Colour::BrightBlue => 94,
-        Colour::BrightMagenta => 95,
-        Colour::BrightCyan => 96,
-        Colour::BrightWhite => 97,
-    }
+/// The SGR parameter for a colour: the code `Colour::from_sgr` reads back as it, or 39 for the default.
+fn sgr(colour: Colour) -> u16 {
+    (30..=37)
+        .chain(90..=97)
+        .find(|&n| Colour::from_sgr(n) == Some(colour))
+        .unwrap_or(39)
 }
 
 /// The terminal output that draws `fixture` on a cleared screen.

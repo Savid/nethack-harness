@@ -2,7 +2,7 @@
 
 mod support;
 
-use nethack_harness::glyphs::{Conditions, Shade, is_floor_engraving, shade};
+use nethack_harness::glyphs::{Shade, is_floor_engraving, shade};
 use nethack_harness::level::{Level, Paths, Plus, plus_kind};
 use nethack_harness::screen::{Status, View};
 use nethack_harness::types::{Grid, MAP_SQUARES, Pos, SquareSet};
@@ -21,28 +21,14 @@ fn view_of(fixture: &Fixture) -> View {
         }),
         grid,
         cursor,
-        msg: String::new(),
         message_rows: 1,
-        more: false,
-        menu: false,
-        asking: false,
-        yn: None,
-        obj: None,
-        spell: None,
-        text: false,
-        direction: false,
-        getpos: false,
-        ended: false,
-        end: None,
         status: Status {
             turn: Some(1),
             ..Status::default()
         },
-        cond: Conditions::default(),
-        prompt: false,
         hero,
-        engulfed: false,
         normal: true,
+        ..View::default()
     }
 }
 
