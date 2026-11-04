@@ -199,13 +199,15 @@ fn searches(turn: u32) -> Responder {
     let mut turn = turn;
     Box::new(move |input: &[u8]| {
         if input != b"s" {
-            return Vec::new();
+            return Step::Output(Vec::new());
         }
         turn += 1;
-        format!(
-            "\x1b[H\x1b[K\x1b[24;1HDlvl:1 $:0 HP:12(16) Pw:2(2) AC:6 Xp:1 T:{turn}\x1b[K\x1b[4;22H"
+        Step::Output(
+            format!(
+                "\x1b[H\x1b[K\x1b[24;1HDlvl:1 $:0 HP:12(16) Pw:2(2) AC:6 Xp:1 T:{turn}\x1b[K\x1b[4;22H"
+            )
+            .into_bytes(),
         )
-        .into_bytes()
     })
 }
 
@@ -420,7 +422,7 @@ fn a_reply_stays_small_however_many_pages_the_keys_pass() {
             );
         }
         out.extend_from_slice(b"\x1b[23;1H--More--");
-        out
+        Step::Output(out)
     }));
     let session = Session::new(&dir, server.path());
     assert_eq!(code(&session.run(&["look"])), 0);
@@ -537,12 +539,40 @@ enum Stage {
     Disclose,
     /// The tombstone.
     Tomb,
+    /// The `--More--` page after the end-of-game window.
+    Closing,
 }
 
+/// How the mini game's hero dies: the reason as the tombstone carves it on two lines, and the game's entry in the
+/// score list, two rows, the second ending with the hit point column.
+#[derive(Clone, Copy)]
+struct Death {
+    carved: [&'static str; 2],
+    entry: [&'static str; 2],
+}
+
+const JACKAL: Death = Death {
+    carved: ["killed by a", "jackal"],
+    entry: [
+        "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on",
+        "                level 1.  Killed by a jackal.                           -  [16]",
+    ],
+};
+
+/// A death while helpless: the tombstone carves the reason without `, while praying`, the score list prints it
+/// whole.
+const PRAYING: Death = Death {
+    carved: ["killed by a gray", "unicorn"],
+    entry: [
+        "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on",
+        "                level 1.  Killed by a gray unicorn, while praying.      -  [16]",
+    ],
+};
+
 /// A small game behind the fake terminal: one lit room, a hero that moves and searches, a jackal that turns up
-/// after a set number of searches, farlook, look-here, and a death with its end-of-game pages. A room may hold
-/// water and down stairs: a step into water is taken only after the `m` prefix, as the game takes a deliberate
-/// move into known water, and never when the water refuses the hero.
+/// after a set number of searches, farlook, look-here, and a death with its end-of-game pages, after which the game
+/// prints the score list and exits. A room may hold water and down stairs: a step into water is taken only after
+/// the `m` prefix, as the game takes a deliberate move into known water, and never when the water refuses the hero.
 struct MiniGame {
     hero: (u8, u8),
     turn: u32,
@@ -557,6 +587,7 @@ struct MiniGame {
     stairs: Option<(u8, u8)>,
     refuses_water: bool,
     prefixed: bool,
+    death: Death,
 }
 
 impl MiniGame {
@@ -580,6 +611,7 @@ impl MiniGame {
             stairs: None,
             refuses_water: false,
             prefixed: false,
+            death: JACKAL,
         }
     }
 
@@ -599,10 +631,14 @@ impl MiniGame {
         (
             first,
             Box::new(move |input: &[u8]| {
+                let closing = self.stage == Stage::Closing;
                 for &key in input {
                     self.key(key);
                 }
-                self.screen()
+                if closing {
+                    return Step::Exit(self.scores());
+                }
+                Step::Output(self.screen())
             }),
         )
     }
@@ -667,7 +703,8 @@ impl MiniGame {
             }
             Stage::Dying => self.stage = Stage::Disclose,
             Stage::Disclose => self.stage = Stage::Tomb,
-            Stage::Tomb => {}
+            Stage::Tomb => self.stage = Stage::Closing,
+            Stage::Closing => {}
         }
     }
 
@@ -722,8 +759,8 @@ impl MiniGame {
                 "                  /                  \\",
                 "                  |       Hero       |",
                 "                  |      0 Au        |",
-                "                  |   killed by a    |",
-                "                  |      jackal      |",
+                &format!("                  |{:^18}|", self.death.carved[0]),
+                &format!("                  |{:^18}|", self.death.carved[1]),
                 "                  |                  |",
                 "                  |                  |",
                 "                  |       2026       |",
@@ -738,6 +775,9 @@ impl MiniGame {
             out.push_str("--More--");
             at(&mut out, 8, 17);
             return out.into_bytes();
+        }
+        if self.stage == Stage::Closing {
+            return b"\x1b[H\x1b[2J\x1b[24;1H--More--".to_vec();
         }
         for y in Self::TOP..=Self::BOTTOM {
             at(&mut out, Self::LEFT, y);
@@ -784,6 +824,19 @@ impl MiniGame {
             Stage::Dying | Stage::Disclose => at(&mut out, message.len() as u8 + 1, 0),
             Stage::Pick => at(&mut out, self.pick.0, self.pick.1),
             _ => at(&mut out, self.hero.0, self.hero.1),
+        }
+        out.into_bytes()
+    }
+
+    /// The score list the game prints as it exits, after leaving the alternate screen: its own entry in standout,
+    /// padded to the last column but one.
+    fn scores(&self) -> Vec<u8> {
+        let mut out = String::from("\x1b[H\x1b[2J\x1b[H\x1b[?1049l\r\n\r\n");
+        out.push_str(
+            " No  Points     Name                                                   Hp [max]\r\n",
+        );
+        for row in self.death.entry {
+            out.push_str(&format!("\x1b[7m{row:79}\x1b[0m\r\n"));
         }
         out.into_bytes()
     }
@@ -989,7 +1042,7 @@ fn a_rest_with_a_near_radius_stops_only_for_a_monster_within_it() {
 }
 
 #[test]
-fn a_death_is_paged_to_the_tombstone_and_reported_as_code_3() {
+fn a_death_is_paged_to_the_score_list_and_reported_as_code_3() {
     let dir = scratch("e2e-death");
     let server = serve_game(&dir, MiniGame::new(None));
     let session = Session::new(&dir, server.path());
@@ -1000,7 +1053,10 @@ fn a_death_is_paged_to_the_tombstone_and_reported_as_code_3() {
     assert_eq!(facts["end"]["death"], "killed by a jackal");
     let answered = facts["answered"].to_string();
     assert!(answered.contains("possessions identified"), "{answered}");
+    // What the end-of-game window shows is end text, not messages.
+    assert_eq!(facts["msgs"], serde_json::json!(["You die..."]), "{facts}");
     let sent = server.inputs().len();
+    assert_eq!(server.inputs().last().map(Vec::as_slice), Some(&b" "[..]));
 
     let over = session.run(&["send", "s"]);
     assert_eq!(code(&over), 3);
@@ -1014,8 +1070,48 @@ fn a_death_is_paged_to_the_tombstone_and_reported_as_code_3() {
         "{}",
         stdout(&over)
     );
-    assert_eq!(code(&session.run(&["look"])), 3);
+    let look = session.run(&["look"]);
+    assert_eq!(code(&look), 3);
+    assert!(
+        stdout(&look).contains("screen (game over):\n No  Points     Name"),
+        "{}",
+        stdout(&look)
+    );
     assert_eq!(server.inputs().len(), sent);
+}
+
+#[test]
+fn a_death_while_helpless_is_reported_whole_from_the_score_list() {
+    let dir = scratch("e2e-death-helpless");
+    let mut game = MiniGame::new(None);
+    game.death = PRAYING;
+    let server = serve_game(&dir, game);
+    let session = Session::new(&dir, server.path());
+    assert_eq!(code(&session.run(&["look"])), 0);
+    let died = session.run(&["--json", "send", "Fl"]);
+    assert_eq!(code(&died), 3, "{}{}", stdout(&died), stderr(&died));
+    let reply: serde_json::Value = serde_json::from_slice(&died.stdout).expect("a JSON reply");
+    let death = "killed by a gray unicorn, while praying";
+    assert_eq!(reply["facts"]["end"]["death"], death);
+    let text = reply["text"].as_str().unwrap_or_default();
+    assert!(
+        text.lines().any(|line| line == format!("end: {death}")),
+        "{text}"
+    );
+    let over = session.run(&["send", "s"]);
+    assert_eq!(code(&over), 3);
+    assert!(
+        stdout(&over).contains("nothing was sent"),
+        "{}",
+        stdout(&over)
+    );
+    assert!(
+        stdout(&over)
+            .lines()
+            .any(|line| line == format!("end: {death}")),
+        "{}",
+        stdout(&over)
+    );
 }
 
 #[test]

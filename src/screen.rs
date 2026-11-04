@@ -47,13 +47,15 @@ impl Phase {
 }
 
 /// The kind of end-of-game screen shown: the disclosure questions (`Do you want your possessions identified?`),
-/// the tombstone (`REST IN PEACE`), the farewell line (`Goodbye …`, `Be seeing you…`) or the ascension line.
+/// the tombstone (`REST IN PEACE`), the farewell line (`Goodbye …`, `Be seeing you…`), the ascension line, or the
+/// score list the game prints as it exits (headed ` No  Points     Name … Hp [max]`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndKind {
     Disclosure,
     Tombstone,
     Farewell,
     Ascended,
+    Scores,
 }
 
 /// The fields of the two status lines.
@@ -266,6 +268,8 @@ impl View {
             Some(EndKind::Tombstone)
         } else if farewells().any(names_role) || rows().any(|r| r.starts_with("Be seeing you...")) {
             Some(EndKind::Farewell)
+        } else if self.scores_header().is_some() {
+            Some(EndKind::Scores)
         } else if DISCLOSURE_QUESTIONS.iter().any(|q| msg.contains(q))
             || (msg.contains("Do you want a list of") && msg.contains("species"))
         {
@@ -415,6 +419,14 @@ impl View {
         for row in &self.rows[..rows] {
             out.extend(menu_entry(&row[byte_at(row, left)..]));
         }
+    }
+
+    /// The row of the score list's column header, ` No  Points     Name` with `Hp [max]` at its end.
+    pub fn scores_header(&self) -> Option<usize> {
+        self.rows.iter().position(|row| {
+            row.trim_start().starts_with("No  Points     Name")
+                && row.trim_end().ends_with("Hp [max]")
+        })
     }
 
     /// The lines of a text window that ends in `--More--`, appended to `out`; false when `--More--` follows a
@@ -1211,6 +1223,22 @@ mod tests {
         assert_eq!(v.phase(), Phase::Ended);
         assert!(!view(&scr("You read: \"REST IN PEACE\"", &[])).ended);
         assert!(!view(&scr("Take a REST", &["IN the", "PEACE"])).ended);
+    }
+
+    #[test]
+    fn the_score_list_is_recognised() {
+        let mut list = vec![String::new(); ROWS];
+        list[2] = " No  Points     Name                                                   Hp [max]"
+            .to_owned();
+        list[3] = "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on level 1."
+            .to_owned();
+        list[4] = "                Killed by a jackal.                                    -  [16]"
+            .to_owned();
+        let v = testkit::view(&list, 5, 0);
+        assert_eq!(v.end, Some(EndKind::Scores));
+        assert_eq!(v.scores_header(), Some(2));
+        assert_eq!(v.phase(), Phase::Ended);
+        assert!(!view(&scr("No  Points     Name", &[])).ended);
     }
 
     #[test]

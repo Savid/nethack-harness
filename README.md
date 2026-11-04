@@ -99,8 +99,9 @@ a known engraving last read on an earlier turn. Both take no game time and run o
 command.
 
 When the game ends during a command, the daemon pages through the end-of-game screens, answering `n` to the
-disclosure questions and dismissing `--More--`, until the tombstone or the final lines are on screen. It reports
-them under `end:` and in `facts.end`. Afterwards every command answers with exit code 3 and sends nothing.
+disclosure questions and dismissing `--More--`, past the tombstone and the farewell to the score list the game
+prints as it exits. It reports what they say under `end:` and in `facts.end`. Afterwards every command answers with
+exit code 3 and sends nothing; the terminal closing once the game has exited is not an error.
 
 The client connects to `<dir>/sock`. When nothing answers it takes `flock(<dir>/lock)`, checks again, starts
 `serve` in its own process group with standard error to `<dir>/log`, and waits up to 10 s for it to listen. The
@@ -212,7 +213,11 @@ The parts, in order:
 - **`answered:`**: each prompt the sent keys passed and the key that answered it, marked
   `(typed into a text prompt)` when the keys went into a free-text prompt; the last 32, after
   `(N earlier prompts left out)`.
-- **`end:`**: the death line, then every end-of-game message line.
+- **`end:`**: the death line, then every end-of-game message line. The death line is the game's own words for the
+  death, whole: the tombstone's text, continued from the game's entry in the score list, which prints the reason in
+  full where the tombstone leaves out the circumstances and cuts off what its lines cannot hold (the score list's
+  `Killed by a gray unicorn, while praying.` completes the carved `killed by a gray unicorn`). Without a tombstone
+  it is the final summary line.
 
 An engraving on room floor (a bright blue `` ` ``) is passable floor; any other `` ` `` is a boulder. A bright
 white `0` is warning level 0, a monster sensed but not seen; any other `0` is a boulder. Traps are remembered
@@ -241,7 +246,7 @@ underfoot that describe it.
 | `inventory` | object? | `{turn?, lines[]}`, lines such as `a - a +0 scalpel (weapon in hand)`. |
 | `report` | object? | `{verb, done, stopped[], steps, wet?, turns?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water. |
 | `answered` | object[] | `{prompt, key, text_entry?}`; `key` in escape syntax. |
-| `end` | object? | `{death?, lines[]}` once the game is over; `death` is the tombstone text or final line, verbatim. |
+| `end` | object? | `{death?, lines[]}` once the game is over; `death` is the death line, verbatim. |
 
 ## Terminal protocol
 

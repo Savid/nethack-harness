@@ -355,13 +355,15 @@ impl<T: Terminal> Play<T> {
     }
 
     /// Reads the screen into memory, paging through the end of a game that has just ended. A link failure is
-    /// answered here; once the game has ended, with the last screen and the end text.
+    /// answered here; once the game has ended, with the last screen and the end text. A game that has ended exits
+    /// after its last screen, so its terminal closing then leaves nothing to report.
     fn read(&mut self, verb: &str) -> Option<Reply> {
         if let Err(error) = self.term.poll() {
-            return Some(match self.over() {
-                Some(code) => self.reply(code, Some(failed(verb, &error.to_string()))),
-                None => Reply::message(error.code(), format!("{verb}: {error}")),
-            });
+            return match self.over() {
+                Some(_) if matches!(error, LinkError::Closed(_)) => None,
+                Some(code) => Some(self.reply(code, Some(failed(verb, &error.to_string())))),
+                None => Some(Reply::message(error.code(), format!("{verb}: {error}"))),
+            };
         }
         self.memory.ingest(self.term.view());
         if self.term.view().ended {
@@ -1288,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn a_death_pages_to_the_tombstone_and_reports_the_end() {
+    fn a_death_pages_to_the_score_list_and_reports_the_end() {
         let room = [" ------ ", " |.@d.| ", " ------ "];
         let tombstone: Vec<String> = [
             "",
@@ -1313,6 +1315,20 @@ mod tests {
         .iter()
         .map(|row| (*row).to_owned())
         .collect();
+        let mut closing = vec![String::new(); ROWS];
+        closing[23] = "--More--".to_owned();
+        let mut list = vec![String::new(); ROWS];
+        list[2] = " No  Points     Name                                                   Hp [max]"
+            .to_owned();
+        list[3] = "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on".to_owned();
+        list[4] = "                level 1.  Killed by a jackal, while sleeping.           -  [16]"
+            .to_owned();
+        let mut scores = crate::testkit::grid(&list);
+        for row in &mut scores.cells[3..5] {
+            for cell in row.iter_mut().take(79) {
+                cell.rev = true;
+            }
+        }
         let mut play = play(vec![
             map("", &room, 2, 3),
             map("You die...--More--", &room, 0, 18),
@@ -1323,13 +1339,17 @@ mod tests {
                 51,
             ),
             view(&tombstone, 17, 8),
+            view(&closing, 23, 8),
+            View::parse(&scores, Pos::new(5, 0)),
         ]);
         let reply = play.send(b"F");
         assert_eq!(reply.code, ExitCode::Over, "{}", reply.text);
+        assert_eq!(sent(&play), ["F", " ", "n", " ", " "]);
+        let death = "killed by a jackal, while sleeping";
         let end = reply.facts.end.as_ref().unwrap();
-        assert_eq!(end.death.as_deref(), Some("killed by a jackal"));
+        assert_eq!(end.death.as_deref(), Some(death));
         assert!(
-            has_line(&reply.text, "end: killed by a jackal"),
+            has_line(&reply.text, &format!("end: {death}")),
             "{}",
             reply.text
         );
@@ -1345,7 +1365,8 @@ mod tests {
                 .text
                 .starts_with("go >: the game is over; nothing was sent")
         );
-        assert!(has_line(&reply.text, "end: killed by a jackal"));
+        assert!(has_line(&reply.text, &format!("end: {death}")));
+        assert_eq!(play.term().sent.len(), 5);
     }
 
     #[test]

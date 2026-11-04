@@ -7,7 +7,7 @@ use crate::glyphs::{Base, is_monster};
 use crate::level::Paths;
 use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, LookSource, Memory};
-use crate::screen::{EndKind, MenuEntry, Phase, Status, View, strip_more};
+use crate::screen::{MenuEntry, Phase, Status, View, strip_more};
 use crate::types::{Answered, MAP_BOTTOM, MAP_SQUARES, MAP_TOP, Pos, SquareSet, escape_key};
 
 /// Most `--More--` pages or text windows dismissed in one go.
@@ -226,9 +226,6 @@ impl Executor {
         }
         if io.outcome.stop == Stop::GameOver && !ended_before {
             let end = self.finish_game(io.term, io.memory);
-            for text in end.messages {
-                io.outcome.message(text);
-            }
             for answered in end.answered {
                 io.outcome.answer(answered);
             }
@@ -237,9 +234,9 @@ impl Executor {
         io.outcome
     }
 
-    /// Pages through the end of the game, declining the disclosure questions and dismissing `--More--`, until the
-    /// tombstone or the farewell is captured into `memory`. Each question answered is recorded. A game that goes
-    /// on (life saving) completes.
+    /// Pages through the end of the game, declining the disclosure questions and dismissing `--More--`, past the
+    /// tombstone and the farewell to the score list, capturing each screen into `memory`; what the end shows is
+    /// end text, not messages. Each question answered is recorded. A game that goes on (life saving) completes.
     pub fn finish_game(&mut self, term: &mut dyn Terminal, memory: &mut Memory) -> Outcome {
         let mut io = Io {
             term,
@@ -651,25 +648,26 @@ impl Executor {
     fn finish(&mut self, io: &mut Io) -> Stop {
         for _ in 0..PAGES {
             let view = io.term.view();
-            if view.end.is_some_and(|end| end != EndKind::Disclosure) {
-                return Stop::GameOver;
-            }
             let phase = view.phase();
             let key = match phase {
                 Phase::Play => return Stop::Completed,
                 Phase::Choice => b'n',
                 Phase::Ended if question(view) => b'n',
                 Phase::Menu => ESCAPE,
-                _ => b' ',
+                Phase::Ended | Phase::More if view.more => b' ',
+                // Nothing is left to dismiss: this is the last screen, such as the score list.
+                _ => return Stop::GameOver,
             };
             if key != b' ' {
                 record(view, phase, None, &[key], &mut io.outcome);
             }
-            match self.send(io, &[key]) {
-                Ok(_) => io.outcome.steps += 1,
-                // The game exits after its last screen; what was captured stands.
+            let sent = io.term.send(&[key]);
+            // The game exits after its last screen, which arrives with the reply the link then fails on.
+            io.memory.ingest(io.term.view());
+            match sent {
+                Ok(()) => io.outcome.steps += 1,
                 Err(_) if io.memory.end().is_some() => return Stop::GameOver,
-                Err(stop) => return stop,
+                Err(error) => return Stop::Link(error),
             }
         }
         if io.term.view().ended {
@@ -1538,14 +1536,24 @@ mod tests {
     #[test]
     fn a_prompt_or_the_end_of_the_game_ends_a_rest() {
         let cases = [
-            (asking("Really attack the gnome? [yn] (n)"), Stop::Prompt),
-            (asking("Goodbye Hero the Wizard...--More--"), Stop::GameOver),
+            (
+                vec![asking("Really attack the gnome? [yn] (n)")],
+                Stop::Prompt,
+                &["s"][..],
+            ),
+            (
+                vec![asking("Goodbye Hero the Wizard...--More--"), score_list()],
+                Stop::GameOver,
+                &["s", " "][..],
+            ),
         ];
-        for (frame, stop) in cases {
-            let (mut term, mut memory) = start(vec![at(3, 400), frame]);
+        for (frames, stop, keys) in cases {
+            let mut views = vec![at(3, 400)];
+            views.extend(frames);
+            let (mut term, mut memory) = start(views);
             let outcome = Executor::default().run(&mut term, &mut memory, &search(8));
             assert_eq!(outcome.stop, stop);
-            assert_eq!(sent(&term), ["s"]);
+            assert_eq!(sent(&term), keys);
         }
     }
 
@@ -1800,17 +1808,38 @@ mod tests {
         view(&rows, 20, 8)
     }
 
+    /// The page after the end-of-game window: only `--More--`.
+    fn blank_page() -> View {
+        let mut rows = vec![String::new(); 24];
+        rows[23] = "--More--".to_owned();
+        view(&rows, 23, 8)
+    }
+
+    /// The score list the game prints as it exits.
+    fn score_list() -> View {
+        let mut rows = vec![String::new(); 24];
+        rows[2] = " No  Points     Name                                                   Hp [max]"
+            .to_owned();
+        rows[3] = "             0  Hero-Val-Hum-Fem-Law died in The Dungeons of Doom on level 3."
+            .to_owned();
+        rows[4] = "                Killed by a jackal.                                    -  [16]"
+            .to_owned();
+        view(&rows, 6, 0)
+    }
+
     #[test]
-    fn the_end_of_the_game_is_paged_to_the_tombstone_declining_disclosure() {
+    fn the_end_of_the_game_is_paged_to_the_score_list_declining_disclosure() {
         let (mut term, mut memory) = start(vec![
             at(3, 400),
             asking("You die...--More--"),
             asking("Do you want your possessions identified? [ynq] (n)"),
             asking("Do you want to see your attributes? [ynq] (n)"),
             tombstone(),
+            blank_page(),
+            score_list(),
         ]);
         let outcome = Executor::default().run(&mut term, &mut memory, &search(5));
-        assert_eq!(sent(&term), ["s", " ", "n", "n"]);
+        assert_eq!(sent(&term), ["s", " ", "n", "n", " ", " "]);
         assert_eq!(outcome.stop, Stop::GameOver);
         assert_eq!(
             outcome.answered,
@@ -1827,10 +1856,13 @@ mod tests {
             outcome.messages.first().map(String::as_str),
             Some("You die...")
         );
-        assert!(memory.end().is_some());
-        // Once captured, paging again sends nothing.
+        assert_eq!(
+            memory.end().and_then(|end| end.death.as_deref()),
+            Some("killed by a jackal")
+        );
+        // On the last screen, paging again sends nothing.
         let again = Executor::default().finish_game(&mut term, &mut memory);
-        assert_eq!((again.stop, term.sent.len()), (Stop::GameOver, 4));
+        assert_eq!((again.stop, term.sent.len()), (Stop::GameOver, 6));
     }
 
     #[test]

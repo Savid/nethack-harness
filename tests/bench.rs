@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use nethack_harness::play::Play;
 use nethack_harness::types::{COLS, Colour, ROWS};
-use support::server::FakeTerminalServer;
+use support::server::{FakeTerminalServer, Step};
 use support::{Fixture, FixtureTerm, scratch};
 
 const BIN: &str = env!("CARGO_BIN_EXE_nethack-harness");
@@ -146,12 +146,14 @@ fn responder(screen: Vec<u8>) -> support::server::Responder {
         match input {
             b"s" => turn += 1,
             b"<" => deeper = !deeper,
-            _ => return Vec::new(),
+            _ => return Step::Output(Vec::new()),
         }
-        String::from_utf8_lossy(&screen)
-            .replace("T:438", &format!("T:{turn}"))
-            .replace("Dlvl:2", if deeper { "Dlvl:3" } else { "Dlvl:2" })
-            .into_bytes()
+        Step::Output(
+            String::from_utf8_lossy(&screen)
+                .replace("T:438", &format!("T:{turn}"))
+                .replace("Dlvl:2", if deeper { "Dlvl:3" } else { "Dlvl:2" })
+                .into_bytes(),
+        )
     })
 }
 
