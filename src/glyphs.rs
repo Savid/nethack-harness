@@ -64,10 +64,7 @@ pub fn shade(fg: Colour, bold: bool) -> Shade {
 
 /// Whether the symbol is an object class symbol.
 pub fn is_item(ch: char) -> bool {
-    matches!(
-        ch,
-        ')' | '[' | '%' | '?' | '/' | '=' | '!' | '(' | '*' | '"' | '$'
-    )
+    ")[%?/=!(*\"$".contains(ch)
 }
 
 /// Whether the symbol is a monster class symbol, the hero's `@` included.
@@ -129,8 +126,6 @@ const CONDITIONS: [&[&str]; 30] = [
 ];
 /// The index of `Blind` in `CONDITIONS`.
 pub const BLIND: usize = 10;
-/// The hunger states, `Hungry` to `Satiated`, in `CONDITIONS`.
-const HUNGER: std::ops::Range<usize> = 0..5;
 
 /// A set of status-line conditions, by their index in `CONDITIONS`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,12 +136,9 @@ impl Conditions {
         self.0 & (1 << index) != 0
     }
 
-    /// The hunger state shown, if any.
+    /// The hunger state shown, if any: the first five conditions are `Hungry` to `Satiated`.
     pub fn hunger(self) -> Option<&'static str> {
-        HUNGER
-            .clone()
-            .find(|&i| self.contains(i))
-            .map(|i| CONDITIONS[i][0])
+        (0..5).find(|&i| self.contains(i)).map(|i| CONDITIONS[i][0])
     }
 }
 
@@ -162,15 +154,8 @@ pub fn conditions(text: &str) -> Conditions {
 }
 
 /// What the game calls the trap a `There is a … here` sentence names, by its last word or words.
-const TRAP_NOUNS: [&str; 7] = [
-    "trap",
-    "trap door",
-    "hole",
-    "web",
-    "pit",
-    "squeaky board",
-    "magic portal",
-];
+#[rustfmt::skip]
+const TRAP_NOUNS: [&str; 7] = ["trap", "trap door", "hole", "web", "pit", "squeaky board", "magic portal"];
 
 /// The game's announcements of traps that leave the hero where they triggered, matched without regard to case at
 /// the start of a word, with the trap each one names.
@@ -193,17 +178,21 @@ const TRAP_EVENTS: [(&[&str], &str); 11] = [
 /// The trap a message reports at the hero's square: the game's `There is a … trap here` description, or the
 /// announcement of a trap that leaves the hero where it triggered (`A dart shoots out at you!` is `dart trap`).
 pub fn trap_kind(message: &str) -> Option<&str> {
-    if let Some(kind) = trap_here(message) {
-        return Some(kind);
-    }
-    TRAP_EVENTS
-        .iter()
-        .find(|(phrases, _)| {
-            phrases
-                .iter()
-                .any(|p| contains_ignore_case(message, p, true))
-        })
-        .map(|&(_, kind)| kind)
+    // The first `There is a(n) <words> <trap noun> here`.
+    let described = message.match_indices("There is a").find_map(|(at, lead)| {
+        let rest = &message[at + lead.len()..];
+        trap_phrase(rest.strip_prefix("n ").or_else(|| rest.strip_prefix(' '))?)
+    });
+    described.or_else(|| {
+        TRAP_EVENTS
+            .iter()
+            .find(|(phrases, _)| {
+                phrases
+                    .iter()
+                    .any(|p| contains_ignore_case(message, p, true))
+            })
+            .map(|&(_, kind)| kind)
+    })
 }
 
 /// Whether a sentence is one of the game's engraving read-outs: `Something is written here in the dust.`, `You
@@ -244,39 +233,14 @@ pub fn contains_ignore_case(hay: &str, needle: &str, word_start: bool) -> bool {
         })
 }
 
-/// The trap named by the first `There is a(n) <words> <trap noun> here` in `message`, taking the fewest words.
-fn trap_here(message: &str) -> Option<&str> {
-    const LEAD: &str = "There is a";
-    let mut from = 0;
-    while let Some(at) = message[from..].find(LEAD) {
-        let after = from + at + LEAD.len();
-        from = after;
-        let rest = &message[after..];
-        let start = if rest.starts_with("n ") {
-            after + 2
-        } else if rest.starts_with(' ') {
-            after + 1
-        } else {
-            continue;
-        };
-        if let Some(end) = trap_phrase(&message[start..]) {
-            return Some(&message[start..start + end]);
-        }
-    }
-    None
-}
-
-/// The length of the shortest run of `[\w-]+ ` words then a trap noun followed by ` here` at the start of `text`.
-fn trap_phrase(text: &str) -> Option<usize> {
+/// The shortest run of `[\w-]+ ` words then a trap noun that starts `text` and is followed by ` here`.
+fn trap_phrase(text: &str) -> Option<&str> {
     let mut pos = 0;
     loop {
         let rest = &text[pos..];
         for noun in TRAP_NOUNS {
-            if rest
-                .strip_prefix(noun)
-                .is_some_and(|tail| tail.starts_with(" here"))
-            {
-                return Some(pos + noun.len());
+            if rest.starts_with(noun) && rest[noun.len()..].starts_with(" here") {
+                return Some(&text[..pos + noun.len()]);
             }
         }
         let word = rest
