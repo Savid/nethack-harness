@@ -841,7 +841,7 @@ pub fn needs_redraw(keys: &[u8], after_run: bool, view: &View) -> bool {
 mod tests {
     use super::*;
     use crate::level::Paths;
-    use crate::testkit::{STATUS1, ScriptedTerm, grid, screen};
+    use crate::testkit::{STATUS1, ScriptedTerm, grid, screen, view};
     use crate::types::{Cell, Colour, Grid};
 
     fn status2(hp: i32, turn: u32) -> String {
@@ -864,10 +864,6 @@ mod tests {
         View::parse(grid, Pos::new(cursor.0, cursor.1))
     }
 
-    fn shown(rows: &[String], cursor: (u8, u8)) -> View {
-        parse(&grid(rows), cursor)
-    }
-
     /// A room on rows 1 to 3 with the hero at column `col` of row 2 and maybe a `d` at column `monster`.
     fn room_lines(col: u8, hp: i32, turn: u32, message: &str, monster: Option<u8>) -> Vec<String> {
         let map = [" ----------- ", " |.........| ", " ----------- "].map(str::to_owned);
@@ -880,7 +876,7 @@ mod tests {
     }
 
     fn room(col: u8, hp: i32, turn: u32, message: &str, monster: Option<u8>) -> View {
-        shown(&room_lines(col, hp, turn, message, monster), (2, col))
+        view(&room_lines(col, hp, turn, message, monster), 2, col)
     }
 
     fn at(col: u8, turn: u32) -> View {
@@ -902,7 +898,7 @@ mod tests {
     }
 
     fn corridor(hero: (u8, u8), tiles: &[((u8, u8), char)], turn: u32) -> View {
-        shown(&corridor_lines(hero, tiles, turn, 12), hero)
+        view(&corridor_lines(hero, tiles, turn, 12), hero.0, hero.1)
     }
 
     fn hall(hero: (u8, u8), turn: u32, message: &str, monster: Option<(u8, u8)>) -> View {
@@ -912,13 +908,13 @@ mod tests {
         if let Some(m) = monster {
             put(&mut rows, m, 'd');
         }
-        shown(&rows, hero)
+        view(&rows, hero.0, hero.1)
     }
 
     /// A screen with only `message` on its top row and the cursor after it.
     fn asking(message: &str) -> View {
         let x = message.len().min(79) as u8;
-        shown(&lines(message, &[], 12, 400), (0, x))
+        view(&lines(message, &[], 12, 400), 0, x)
     }
 
     fn start(views: Vec<View>) -> (ScriptedTerm, Memory) {
@@ -994,7 +990,7 @@ mod tests {
         let tiles = [((2, 4), '#'), ((2, 5), '^'), ((2, 6), '#')];
         let mut confirm = corridor_lines((2, 4), &tiles, 401, 12);
         confirm[0] = "Really step onto that bear trap? [yn] (n)".to_owned();
-        let confirm = shown(&confirm, (0, 41));
+        let confirm = view(&confirm, 0, 41);
         let (mut term, mut memory) = start(vec![
             corridor((2, 3), &tiles, 400),
             corridor((2, 4), &tiles, 401),
@@ -1161,8 +1157,8 @@ mod tests {
         put(&mut warned, (2, 9), '3');
         let views = vec![
             at(3, 400),
-            shown(&sensed, (2, 4)),
-            shown(&warned, (2, 5)),
+            view(&sensed, 2, 4),
+            view(&warned, 2, 5),
             at(6, 403),
         ];
         let (mut term, mut memory) = start(views);
@@ -1193,8 +1189,7 @@ mod tests {
         ] {
             let mut revealed = room_lines(4, 12, 401, "", None);
             revealed[4] = format!("   -{glyph}-");
-            let (mut term, mut memory) =
-                start(vec![at(3, 400), shown(&revealed, (2, 4)), at(5, 402)]);
+            let (mut term, mut memory) = start(vec![at(3, 400), view(&revealed, 2, 4), at(5, 402)]);
             let outcome = Executor::default().run(&mut term, &mut memory, &east(2));
             assert_eq!(outcome.stop, stop, "{glyph}");
             assert_eq!(sent(&term), keys, "{glyph}");
@@ -1303,7 +1298,7 @@ mod tests {
             if glyph == '+' {
                 revealed.extend([((1, 5), '|'), ((3, 5), '|')]);
             }
-            let after = shown(&corridor_lines((2, 4), &revealed, 401, hp), (2, 4));
+            let after = view(&corridor_lines((2, 4), &revealed, 401, hp), 2, 4);
             let (mut term, mut memory) = start(vec![corridor((2, 3), &tiles, 400), after]);
             let action = walk(Kind::Explore, 8, (2, 4), &[(2, 4)]);
             let outcome = Executor::default().run(&mut term, &mut memory, &action);
@@ -1533,7 +1528,7 @@ mod tests {
         );
         let (mut term, mut memory) = start(vec![
             before.clone(),
-            shown(&tip, (3, 7)),
+            view(&tip, 3, 7),
             room(
                 3,
                 12,
@@ -1628,7 +1623,7 @@ mod tests {
         let mut rows: Vec<String> = vec![String::new(); 4];
         rows.extend(art.iter().map(|r| (*r).to_owned()));
         rows.resize(24, String::new());
-        shown(&rows, (20, 8))
+        view(&rows, 20, 8)
     }
 
     #[test]
@@ -1698,7 +1693,7 @@ mod tests {
         window[2] = "Things that are here:".to_owned();
         window[3] = "7 apples".to_owned();
         window[4] = "--More--".to_owned();
-        let (mut term, mut memory) = start(vec![at(3, 400), shown(&window, (4, 8)), at(3, 400)]);
+        let (mut term, mut memory) = start(vec![at(3, 400), view(&window, 4, 8), at(3, 400)]);
         let outcome = Executor::default().run(&mut term, &mut memory, &look_here());
         assert_eq!(sent(&term), [":", " "]);
         assert_eq!(

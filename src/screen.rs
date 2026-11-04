@@ -672,20 +672,16 @@ fn menu_entry(row: &str) -> Option<MenuEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{STATUS1, STATUS2, grid, screen};
+    use crate::testkit::{self, STATUS1, STATUS2, grid, screen};
     use crate::types::Colour;
 
     fn scr(top: &str, rows: &[&str]) -> Vec<String> {
         screen(top, rows, STATUS1, STATUS2)
     }
 
-    fn view_at(lines: &[String], y: u8, x: u8) -> View {
-        View::parse(&grid(lines), Pos::new(y, x))
-    }
-
     /// A view with the cursor where the default room's hero stands.
     fn view(lines: &[String]) -> View {
-        view_at(lines, 2, 3)
+        testkit::view(lines, 2, 3)
     }
 
     fn room() -> Vec<String> {
@@ -698,10 +694,10 @@ mod tests {
 
     #[test]
     fn a_count_echo_is_no_prompt() {
-        let counting = view_at(&scr("Count: 20", &[" ---- ", " |.@.| ", " ---- "]), 0, 9);
+        let counting = testkit::view(&scr("Count: 20", &[" ---- ", " |.@.| ", " ---- "]), 0, 9);
         assert!(counting.counting());
         assert_eq!(counting.phase(), Phase::Unknown);
-        let named = view_at(
+        let named = testkit::view(
             &scr("Count: what?", &[" ---- ", " |.@.| ", " ---- "]),
             0,
             12,
@@ -801,11 +797,11 @@ mod tests {
 
     #[test]
     fn prompts() {
-        assert!(view_at(&scr("You hit the jackal.--More--", &[]), 0, 30).more);
-        let v = view_at(&scr("Really attack the gnome? [yn] (n)", &[]), 0, 30);
+        assert!(testkit::view(&scr("You hit the jackal.--More--", &[]), 0, 30).more);
+        let v = testkit::view(&scr("Really attack the gnome? [yn] (n)", &[]), 0, 30);
         assert_eq!(v.yn.as_deref(), Some("yn"));
         assert_eq!(v.phase(), Phase::Choice);
-        let v = view_at(&scr("What do you want to eat? [fg or ?*]", &[]), 0, 30);
+        let v = testkit::view(&scr("What do you want to eat? [fg or ?*]", &[]), 0, 30);
         assert_eq!((v.obj.as_deref(), v.yn.as_deref()), (Some("fg"), None));
         assert_eq!(v.phase(), Phase::Item);
         assert!(!v.normal);
@@ -867,7 +863,7 @@ mod tests {
 
     #[test]
     fn spell_and_custom_direction_prompts() {
-        let v = view_at(&scr("Cast which spell? [a-c *?]", &[]), 0, 28);
+        let v = testkit::view(&scr("Cast which spell? [a-c *?]", &[]), 0, 28);
         assert_eq!(
             (v.phase(), v.spell.as_deref()),
             (Phase::Spell, Some("a-c *?"))
@@ -878,7 +874,7 @@ mod tests {
             "Open where? [.>]",
             "In What Direction?",
         ] {
-            let v = view_at(&scr(message, &[]), 0, message.len() as u8);
+            let v = testkit::view(&scr(message, &[]), 0, message.len() as u8);
             assert_eq!(v.phase(), Phase::Direction, "{message}");
         }
     }
@@ -889,7 +885,7 @@ mod tests {
             &format!("What do you want to engrave? {}", "x".repeat(52)),
             &["xxx"],
         );
-        let v = view_at(&lines, 1, 3);
+        let v = testkit::view(&lines, 1, 3);
         assert_eq!(v.message_rows, 2);
         assert_eq!(v.phase(), Phase::Text);
         assert!(v.text);
@@ -899,7 +895,7 @@ mod tests {
     #[test]
     fn message_split_at_a_space_continues_on_the_next_row() {
         let first = "(The seed chose your character; your role, rank, gender and alignment options";
-        let v = view_at(
+        let v = testkit::view(
             &scr(first, &["were ignored.)--More--", "", " ---- ", " |.@.| "]),
             1,
             22,
@@ -907,7 +903,7 @@ mod tests {
         assert_eq!(v.msg, format!("{first} were ignored.)--More--"));
         assert_eq!(v.phase(), Phase::More);
         let pad = " ".repeat(31);
-        let corner = view_at(
+        let corner = testkit::view(
             &scr(
                 &format!("{pad}There is a staircase up out of the dungeon here."),
                 &[
@@ -938,7 +934,7 @@ mod tests {
                 "piece.--More--",
             ),
         ] {
-            let v = view_at(
+            let v = testkit::view(
                 &scr(first, &[rest, "", " ---- ", " |.@.| "]),
                 1,
                 rest.len() as u8,
@@ -963,7 +959,7 @@ mod tests {
 
     #[test]
     fn menu_search_reads_text_above_existing_menu() {
-        let v = view_at(&scr("Search for:", &[" a - a dagger", " (end)"]), 0, 12);
+        let v = testkit::view(&scr("Search for:", &[" a - a dagger", " (end)"]), 0, 12);
         assert!(v.menu);
         assert_eq!(v.phase(), Phase::Text);
     }
@@ -971,7 +967,7 @@ mod tests {
     #[test]
     fn menu_entries_window_and_page() {
         let pad = " ".repeat(40);
-        let v = view_at(
+        let v = testkit::view(
             &scr(
                 &format!("{pad} Weapons"),
                 &[
@@ -1000,7 +996,7 @@ mod tests {
                 ('c', "some food"),
             ]
         );
-        let end = view_at(&scr("", &[" a - a dagger", " (end)"]), 2, 6);
+        let end = testkit::view(&scr("", &[" a - a dagger", " (end)"]), 2, 6);
         assert_eq!(end.menu_page(), Some((1, 1)));
         assert_eq!(end.menu_window(), (0, 3));
         let plain = view(&room());
@@ -1010,7 +1006,7 @@ mod tests {
     #[test]
     fn more_window_lines() {
         let pad = " ".repeat(30);
-        let v = view_at(
+        let v = testkit::view(
             &scr(
                 "",
                 &[
@@ -1025,7 +1021,7 @@ mod tests {
         let mut lines = Vec::new();
         assert!(v.more_window(&mut lines));
         assert_eq!(lines, ["Things that are here:", "a dagger"]);
-        let message = view_at(&scr("You hit the jackal.--More--", &[]), 0, 27);
+        let message = testkit::view(&scr("You hit the jackal.--More--", &[]), 0, 27);
         lines.clear();
         assert!(!message.more_window(&mut lines));
         assert!(lines.is_empty());
@@ -1034,18 +1030,18 @@ mod tests {
     #[test]
     fn hero_found_by_nearest_at_sign() {
         let lines = scr("", &[" ---- ", " |...| ", " ---- ", "  @     @"]);
-        let v = view_at(&lines, 4, 7);
+        let v = testkit::view(&lines, 4, 7);
         assert_eq!(v.hero, Some(Pos::new(4, 8)));
-        let v = view_at(&lines, 0, 0);
+        let v = testkit::view(&lines, 0, 0);
         assert_eq!(v.hero, Some(Pos::new(4, 2)));
-        let blank = view_at(&scr("", &[]), 0, 0);
+        let blank = testkit::view(&scr("", &[]), 0, 0);
         assert_eq!(blank.hero, None);
         assert_eq!(blank.phase(), Phase::Unknown);
     }
 
     #[test]
     fn engulfed_hero() {
-        let v = view_at(&scr("", &[" /-\\", " |@|", " \\-/"]), 2, 2);
+        let v = testkit::view(&scr("", &[" /-\\", " |@|", " \\-/"]), 2, 2);
         assert_eq!(v.hero, Some(Pos::new(2, 2)));
         assert!(v.engulfed);
         assert!(!view(&room()).engulfed);
@@ -1072,7 +1068,7 @@ mod tests {
         let a = view(&room());
         let b = view(&room());
         assert_eq!(a.fingerprint(), b.fingerprint());
-        let moved = view_at(&room(), 2, 4);
+        let moved = testkit::view(&room(), 2, 4);
         assert_ne!(a.fingerprint(), moved.fingerprint());
         let mut g = grid(&room());
         g.cells[2][3].rev = true;
@@ -1084,7 +1080,7 @@ mod tests {
 
     #[test]
     fn reparse_matches_parse() {
-        let mut v = view_at(&scr("Really attack the gnome? [yn] (n)", &[]), 0, 30);
+        let mut v = testkit::view(&scr("Really attack the gnome? [yn] (n)", &[]), 0, 30);
         let lines = room();
         v.reparse(&grid(&lines), Pos::new(2, 3));
         let fresh = view(&lines);
@@ -1097,7 +1093,7 @@ mod tests {
 
     #[test]
     fn short_condition_forms() {
-        let v = view_at(
+        let v = testkit::view(
             &screen(
                 "",
                 &[],
@@ -1120,10 +1116,10 @@ mod tests {
     #[test]
     fn death_message_allows_life_saving_pagination() {
         assert_eq!(
-            view_at(&scr("You die...--More--", &[]), 0, 20).phase(),
+            testkit::view(&scr("You die...--More--", &[]), 0, 20).phase(),
             Phase::More
         );
-        assert!(!view_at(&scr("You die...", &[]), 0, 10).ended);
+        assert!(!testkit::view(&scr("You die...", &[]), 0, 10).ended);
     }
 
     #[test]
@@ -1146,7 +1142,7 @@ mod tests {
 
     #[test]
     fn engravings_are_not_death() {
-        let v = view_at(
+        let v = testkit::view(
             &scr(
                 "You read: \"They say that you will be killed by an exploding tin.  You die...\"",
                 &[],
@@ -1155,7 +1151,7 @@ mod tests {
             0,
         );
         assert!(!v.ended);
-        let v = view_at(
+        let v = testkit::view(
             &scr("Do you want your possessions identified? [ynq] (n)", &[]),
             0,
             50,
@@ -1174,7 +1170,7 @@ mod tests {
             "Do you want to see your conduct and achievements? [ynq] (n)",
             "Do you want to see the dungeon overview? [ynq] (n)",
         ] {
-            let v = view_at(&scr(question, &[]), 0, question.len() as u8);
+            let v = testkit::view(&scr(question, &[]), 0, question.len() as u8);
             assert_eq!(v.end, Some(EndKind::Disclosure), "{question}");
             assert_eq!(v.phase(), Phase::Ended);
         }
@@ -1210,7 +1206,7 @@ mod tests {
             "",
             "Goodbye Hero the Stripling...",
         ];
-        let v = view_at(&scr("", &stone), 12, 0);
+        let v = testkit::view(&scr("", &stone), 12, 0);
         assert_eq!(v.end, Some(EndKind::Tombstone));
         assert_eq!(v.phase(), Phase::Ended);
         assert!(!view(&scr("You read: \"REST IN PEACE\"", &[])).ended);
@@ -1224,7 +1220,7 @@ mod tests {
         context.observe(&mut v);
         assert!(context.position);
         context.before_input(&v, b"l");
-        let mut described = view_at(&scr("floor of a room [03,05]", &[]), 2, 4);
+        let mut described = testkit::view(&scr("floor of a room [03,05]", &[]), 2, 4);
         context.observe(&mut described);
         assert_eq!(described.phase(), Phase::Position);
         assert!(described.hero.is_none());
@@ -1254,10 +1250,10 @@ mod tests {
             ),
         ] {
             let (mut context, _) = targeting();
-            let mut nested = view_at(&lines, y, x);
+            let mut nested = testkit::view(&lines, y, x);
             context.observe(&mut nested);
             context.before_input(&nested, key);
-            let mut described = view_at(&scr("floor of a room [03,05]", &[]), 2, 4);
+            let mut described = testkit::view(&scr("floor of a room [03,05]", &[]), 2, 4);
             context.observe(&mut described);
             assert_eq!(described.phase(), Phase::Position);
         }
@@ -1269,12 +1265,12 @@ mod tests {
             let (mut context, _) = targeting();
             let mut lines = vec![padded("Targeting instructions"); ROWS - 1];
             lines.push(padded(foot));
-            let mut nested = view_at(&lines, 23, foot.len() as u8);
+            let mut nested = testkit::view(&lines, 23, foot.len() as u8);
             context.observe(&mut nested);
             assert_eq!(nested.status.location, None);
             assert_eq!(nested.status.turn, None);
             context.before_input(&nested, key);
-            let mut restored = view_at(&scr("floor of a room [03,05]", &[]), 2, 4);
+            let mut restored = testkit::view(&scr("floor of a room [03,05]", &[]), 2, 4);
             context.observe(&mut restored);
             assert_eq!(restored.phase(), Phase::Position);
             assert!(restored.hero.is_none());

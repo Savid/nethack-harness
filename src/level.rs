@@ -556,7 +556,6 @@ pub fn door_sides(p: Pos) -> Near {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glyphs::Conditions;
     use crate::screen::Status;
     use crate::testkit::{STATUS1, STATUS2, grid, screen};
     use crate::types::{Colour, Grid};
@@ -571,30 +570,16 @@ mod tests {
                 row
             }),
             cursor: Pos::new(y, x),
-            msg: String::new(),
             message_rows: 1,
-            more: false,
-            menu: false,
-            asking: false,
-            yn: None,
-            obj: None,
-            spell: None,
-            text: false,
-            direction: false,
-            getpos: false,
-            ended: false,
-            end: None,
             status: Status {
                 location: Some("Dlvl:3".to_owned()),
                 dlvl: Some(3),
                 turn: Some(turn),
                 ..Status::default()
             },
-            cond: Conditions::default(),
-            prompt: false,
             hero: Some(Pos::new(y, x)),
-            engulfed: false,
             normal: true,
+            ..View::default()
         }
     }
 

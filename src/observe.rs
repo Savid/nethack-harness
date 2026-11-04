@@ -752,7 +752,7 @@ fn sentences(text: &str) -> impl Iterator<Item = &str> {
 mod tests {
     use super::*;
     use crate::screen::PromptContext;
-    use crate::testkit::{STATUS1, STATUS2, grid, screen, view};
+    use crate::testkit::{STATUS1, STATUS2, grid, map, screen, view};
     use crate::types::{Colour, Grid, ROWS};
 
     const ROOM: [&str; 3] = [" ---- ", " |.@.| ", " ---- "];
@@ -763,10 +763,6 @@ mod tests {
     }
 
     /// A map screen with `top` as the message and the cursor on the hero at (`y`, `x`).
-    fn map(top: &str, rows: &[&str], y: u8, x: u8) -> View {
-        view(&screen(top, rows, STATUS1, STATUS2), y, x)
-    }
-
     /// A map screen on `location` at `turn`.
     fn map_at(top: &str, rows: &[&str], location: &str, turn: u32, y: u8, x: u8) -> View {
         view(&screen(top, rows, STATUS1, &status2(location, turn)), y, x)

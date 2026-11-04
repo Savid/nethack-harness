@@ -37,6 +37,11 @@ pub fn view(rows: &[String], y: u8, x: u8) -> View {
     View::parse(&grid(rows), Pos::new(y, x))
 }
 
+/// A view of `screen(top, rows, STATUS1, STATUS2)` with the cursor at (`y`, `x`).
+pub fn map(top: &str, rows: &[&str], y: u8, x: u8) -> View {
+    view(&screen(top, rows, STATUS1, STATUS2), y, x)
+}
+
 /// A terminal that shows `views[0]`; each `send` records its keys and moves to the next view, keeping the last.
 pub struct ScriptedTerm {
     /// The views still to show, current first.

@@ -575,7 +575,7 @@ mod tests {
     use super::*;
     use crate::level::Inspection;
     use crate::screen::View;
-    use crate::testkit::{STATUS1, STATUS2, ScriptedTerm, screen, view};
+    use crate::testkit::{STATUS1, STATUS2, ScriptedTerm, map, screen, view};
     use crate::types::{COLS, Cell, Colour, Grid, ROWS};
     use serde::Deserialize;
 
@@ -691,10 +691,6 @@ mod tests {
     }
 
     /// A text screen with the default status rows and the cursor at (`y`, `x`).
-    fn text(top: &str, rows: &[&str], y: u8, x: u8) -> View {
-        view(&screen(top, rows, STATUS1, STATUS2), y, x)
-    }
-
     /// A text screen at turn `turn`.
     fn at_turn(top: &str, rows: &[&str], y: u8, x: u8, turn: u32) -> View {
         let status = format!("Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:{turn}");
@@ -863,8 +859,8 @@ mod tests {
     #[test]
     fn a_look_after_a_command_does_not_repeat_its_messages() {
         let room = [" ------ ", " |.@..| ", " ------ "];
-        let quiet = text("", &room, 2, 3);
-        let heard = text("You hear a door open.", &room, 2, 3);
+        let quiet = map("", &room, 2, 3);
+        let heard = map("You hear a door open.", &room, 2, 3);
         let mut play = play(vec![quiet, heard]);
         play.show();
         let reply = play.send(b"s");
@@ -994,8 +990,8 @@ mod tests {
 
     #[test]
     fn go_names_the_monster_blocking_the_only_route() {
-        let mut play = play(vec![text("", &["", " >##F#@"], 2, 6)]);
-        play.memory.ingest(&text("", &["", " >####@"], 2, 6));
+        let mut play = play(vec![map("", &["", " >##F#@"], 2, 6)]);
+        play.memory.ingest(&map("", &["", " >####@"], 2, 6));
         let reply = play.go(">");
         assert!(
             reply.text.contains("blocked by a monster at 4,2"),
@@ -1008,7 +1004,7 @@ mod tests {
     #[test]
     fn a_named_corridor_end_is_the_destination_and_frontier_explores_on() {
         for (target, kind) in [("5,2", Kind::Travel), ("frontier", Kind::Explore)] {
-            let mut play = Play::new(ScriptedTerm::new(vec![text("", &["", "   @##"], 2, 3)]), 4);
+            let mut play = Play::new(ScriptedTerm::new(vec![map("", &["", "   @##"], 2, 3)]), 4);
             play.show();
             play.go(target);
             assert_eq!(
@@ -1021,7 +1017,7 @@ mod tests {
 
     #[test]
     fn frontier_skips_the_rock_beside_a_known_corridor() {
-        let mut play = play(vec![text("", &["", "   @#####"], 2, 3)]);
+        let mut play = play(vec![map("", &["", "   @#####"], 2, 3)]);
         assert!(has_line(&play.show().text, "frontier: 8,2 (5)"));
     }
 
@@ -1122,7 +1118,7 @@ mod tests {
     #[test]
     fn no_frontier_says_so_or_names_the_monster_in_the_way() {
         let rows = [" -----", " |...|", " |.@.+", " |...|", " -----"];
-        let mut play = play(vec![text("", &rows, 3, 3)]);
+        let mut play = play(vec![map("", &rows, 3, 3)]);
         play.show();
         let reply = play.go("frontier");
         assert_eq!(reply.code, ExitCode::Failed);
@@ -1133,8 +1129,8 @@ mod tests {
         // The jackal stands in the doorway the hero saw empty a turn before.
         let empty = [" -----", " |...|", " |.@..####", " |...|", " -----"];
         let rows = [" -----", " |...|", " |.@.d####", " |...|", " -----"];
-        let mut blocked = Play::new(ScriptedTerm::new(vec![text("", &rows, 3, 3)]), 8);
-        blocked.memory.ingest(&text("", &empty, 3, 3));
+        let mut blocked = Play::new(ScriptedTerm::new(vec![map("", &rows, 3, 3)]), 8);
+        blocked.memory.ingest(&map("", &empty, 3, 3));
         blocked.show();
         let reply = blocked.go("frontier");
         assert_eq!(
@@ -1145,20 +1141,20 @@ mod tests {
 
     #[test]
     fn rest_refuses_at_a_prompt_and_reports_a_search_the_game_refused() {
-        let prompt = text("What do you want to eat? [k or ?*]", &[], 0, 35);
+        let prompt = map("What do you want to eat? [k or ?*]", &[], 0, 35);
         let mut play = play(vec![prompt]);
         let reply = play.rest(3);
         assert_eq!(reply.code, ExitCode::Failed);
         assert!(reply.text.contains("prompt is open"));
         assert!(play.term().sent.is_empty());
         let room = [" ---- ", " |.@d| ", " ---- "];
-        let refused = text(
+        let refused = map(
             "You already found a monster.  Use 'm' prefix to force another search.",
             &room,
             2,
             3,
         );
-        let mut play = Play::new(ScriptedTerm::new(vec![text("", &room, 2, 3), refused]), 8);
+        let mut play = Play::new(ScriptedTerm::new(vec![map("", &room, 2, 3), refused]), 8);
         play.show();
         let reply = play.rest(3);
         assert_eq!(reply.code, ExitCode::Failed);
@@ -1185,7 +1181,7 @@ mod tests {
 
     #[test]
     fn non_ascii_map_symbols_are_refused() {
-        let dec = text("", &[" ----", " |\u{b7}@\u{b7}|"], 2, 3);
+        let dec = map("", &[" ----", " |\u{b7}@\u{b7}|"], 2, 3);
         let reply = play(vec![dec]).show();
         assert_eq!(reply.code, ExitCode::Failed);
         assert!(reply.text.contains("ASCII"));
@@ -1283,9 +1279,9 @@ mod tests {
         .map(|row| (*row).to_owned())
         .collect();
         let mut play = play(vec![
-            text("", &room, 2, 3),
-            text("You die...--More--", &room, 0, 18),
-            text(
+            map("", &room, 2, 3),
+            map("You die...--More--", &room, 0, 18),
+            map(
                 "Do you want your possessions identified? [ynq] (n)",
                 &room,
                 0,
@@ -1414,7 +1410,7 @@ mod tests {
         let calm = [" ------- ", " |..@..| ", " |.....| ", " ------- "];
         let arrived = [" ------- ", " |..@..| ", " |....d| ", " ------- "];
         let mut arrival = Play::new(
-            ScriptedTerm::new(vec![text("", &calm, 2, 4), text("", &arrived, 2, 4)]),
+            ScriptedTerm::new(vec![map("", &calm, 2, 4), map("", &arrived, 2, 4)]),
             8,
         );
         assert_eq!(arrival.rest(5).code, ExitCode::Short);
@@ -1439,7 +1435,7 @@ mod tests {
     #[test]
     fn searches_that_pass_no_time_are_refused() {
         let room = [" ------- ", " |..@..| ", " ------- "];
-        let mut play = play(vec![text("", &room, 2, 4)]);
+        let mut play = play(vec![map("", &room, 2, 4)]);
         let reply = play.rest(5);
         assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
         assert!(
