@@ -1,8 +1,8 @@
 //! The terminal link: one persistent HTTP/1.1 keep-alive connection over a Unix socket to `POST /terminal`, and
 //! the screen kept in step with it. A request is `{"input": base64, "after": cursor, "wait": ms}`; a 200 reply is
-//! `{"output": base64 or null, "cursor": n, "truncated": bool, "waiting": bool}`, every field present and base64
-//! padded, where `waiting` means the game is blocked reading a key, has consumed all input sent so far, and all its
-//! output is in `output`. A frozen, stopping or ended game answers at once with `waiting` false.
+//! `{"output": base64, "cursor": n, "truncated": bool, "waiting": bool}`, every field present and base64 padded,
+//! where `waiting` means the game is blocked reading a key, has consumed all input sent so far, and all its output
+//! is in `output`. A frozen, stopping or ended game answers at once with `waiting` false.
 
 use std::io::{ErrorKind, Read, Write};
 use std::ops::Range;
@@ -105,12 +105,10 @@ pub struct Link {
     used: Option<Instant>,
 }
 
-/// The 200 reply body, every field required. `output` is null when the server has no output at all.
+/// The 200 reply body, every field required. `output` is padded base64, empty when there is no output.
 #[derive(Deserialize)]
 struct Answer {
-    // `deserialize_with` makes the field required: serde reads a missing `Option` field as `None`.
-    #[serde(deserialize_with = "Option::deserialize")]
-    output: Option<String>,
+    output: String,
     cursor: u64,
     truncated: bool,
     waiting: bool,
@@ -191,8 +189,7 @@ impl Link {
                 .map_err(|e| answered(format!("malformed JSON: {e}")))?;
             self.output.clear();
             self.output.shrink_to(KEEP);
-            let text = answer.output.as_deref().unwrap_or_default();
-            if !base64_decode(text.as_bytes(), &mut self.output) {
+            if !base64_decode(answer.output.as_bytes(), &mut self.output) {
                 self.output.clear();
                 return Err(answered("malformed base64 output"));
             }

@@ -74,13 +74,20 @@ fn raw_server(path: &Path, handler: Box<Handler>) {
     });
 }
 
-/// Writes a 200 reply with no output at cursor 0.
-fn empty_reply(stream: &mut UnixStream) {
-    let body = "{\"output\":\"\",\"cursor\":0,\"truncated\":false,\"waiting\":true}";
+/// Writes a 200 reply with `body`.
+fn ok_reply(stream: &mut UnixStream, body: &str) {
     let _ = write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
+    );
+}
+
+/// Writes a 200 reply with no output at cursor 0.
+fn empty_reply(stream: &mut UnixStream) {
+    ok_reply(
+        stream,
+        "{\"output\":\"\",\"cursor\":0,\"truncated\":false,\"waiting\":true}",
     );
 }
 
@@ -475,6 +482,40 @@ fn keys_are_never_sent_twice_when_the_connection_drops_before_answering() {
     }
     assert_eq!(*seen.lock().unwrap(), [b"y".to_vec()]);
     link.exchange(&[], 0).unwrap();
+}
+
+#[test]
+fn a_reply_needs_every_field_and_padded_base64_output() {
+    let dir = scratch("link-strict");
+    let path = dir.join("t.sock");
+    let bodies = [
+        "{\"output\":null,\"cursor\":0,\"truncated\":false,\"waiting\":true}",
+        "{\"cursor\":0,\"truncated\":false,\"waiting\":true}",
+        "{\"output\":\"\",\"cursor\":0,\"waiting\":true}",
+        "{\"output\":\"\",\"cursor\":0,\"truncated\":false}",
+        "{\"output\":\"Zm8\",\"cursor\":2,\"truncated\":false,\"waiting\":true}",
+    ];
+    let mut served = 0;
+    raw_server(
+        &path,
+        Box::new(move |_, _, stream| {
+            match bodies.get(served) {
+                Some(body) => ok_reply(stream, body),
+                None => empty_reply(stream),
+            }
+            served += 1;
+            Next::Keep
+        }),
+    );
+    let mut link = Link::new(&path);
+    for what in ["JSON", "JSON", "JSON", "JSON", "base64"] {
+        match link.exchange(&[], 0) {
+            Err(LinkError::Protocol(why)) => assert!(why.contains(what), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    link.exchange(&[], 0).unwrap();
+    assert_eq!(link.output(), b"");
 }
 
 #[test]

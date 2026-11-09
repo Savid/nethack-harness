@@ -267,12 +267,12 @@ needs exactly this protocol:
 POST /terminal
 {"input": "<base64 bytes>", "after": <cursor>, "wait": <ms 0-3000>}
 
-200 {"output": "<base64 bytes>" | null, "cursor": <n>, "truncated": <bool>, "waiting": <bool>}
+200 {"output": "<base64 bytes>", "cursor": <n>, "truncated": <bool>, "waiting": <bool>}
 ```
 
-- Every field of the reply is required, and base64 is padded with `=`. A reply missing a field, or with unpadded
-  base64, fails the command (exit code 1).
-- `output` is the terminal output after `after`, or null when there is none, and `cursor` the position after it. `truncated` says output
+- Every field of the reply is required, `output` is a string, and base64 is padded with `=`. A reply missing a
+  field, with a null `output`, or with unpadded base64 fails the command (exit code 1).
+- `output` is the terminal output after `after`, empty when there is none, and `cursor` the position after it. `truncated` says output
   between `after` and the oldest kept byte was dropped. A cursor that goes backwards means the server restarted;
   the daemon reads from 0 again.
 - `waiting` is true when the game is blocked reading a key, has consumed all input sent so far, and all its output
