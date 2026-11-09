@@ -13,7 +13,7 @@ use crate::view::{Landmark, Names, Renderer, Scene, landmarks};
 pub const KEYS_MAX: usize = 256;
 /// Most searches one `rest` takes.
 pub const REST_MAX: u32 = 200;
-/// Most steps one `go` takes unless configured lower.
+/// Most steps one `go` takes.
 pub const STEPS_MAX: u32 = 64;
 /// The refusal while a prompt is open.
 pub const PROMPT_OPEN: &str = "a prompt is open: answer or cancel it with send first";
@@ -28,7 +28,6 @@ pub struct Play<T: Terminal> {
     fresh: Vec<String>,
     reported: u64,
     last_square: Option<(u16, Pos)>,
-    max_steps: u32,
     unnamed: Vec<Entity>,
     landmarks: Vec<Landmark>,
     edges: Vec<(Pos, u32)>,
@@ -61,8 +60,8 @@ fn coordinates(target: &str) -> Option<(u32, u32)> {
 }
 
 impl<T: Terminal> Play<T> {
-    /// Play over `term`, walking at most `max_steps` steps per `go`.
-    pub fn new(term: T, max_steps: u32) -> Play<T> {
+    /// Play over `term`.
+    pub fn new(term: T) -> Play<T> {
         Play {
             term,
             memory: Memory::default(),
@@ -72,17 +71,12 @@ impl<T: Terminal> Play<T> {
             fresh: Vec::new(),
             reported: 0,
             last_square: None,
-            max_steps: max_steps.clamp(1, STEPS_MAX),
             unnamed: Vec::new(),
             landmarks: Vec::new(),
             edges: Vec::new(),
             answered: Vec::new(),
             last: None,
         }
-    }
-
-    pub fn term(&self) -> &T {
-        &self.term
     }
 
     pub fn term_mut(&mut self) -> &mut T {
@@ -154,7 +148,7 @@ impl<T: Terminal> Play<T> {
                 .current()
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
         let kind = if explore { Kind::Explore } else { Kind::Travel };
-        let mut action = exec::walk(kind, &self.renderer.routes.paths, goal, self.max_steps, wet);
+        let mut action = exec::walk(kind, &self.renderer.routes.paths, goal, STEPS_MAX, wet);
         action.near = near;
         self.execute(&verb, action)
     }
@@ -739,11 +733,11 @@ mod tests {
     }
 
     fn play(views: Vec<View>) -> Play<ScriptedTerm> {
-        Play::new(ScriptedTerm::new(views), 8)
+        Play::new(ScriptedTerm::new(views))
     }
 
     fn sent(play: &Play<ScriptedTerm>) -> Vec<String> {
-        play.term()
+        play.term
             .sent
             .iter()
             .map(|keys| String::from_utf8_lossy(keys).into_owned())
@@ -813,7 +807,7 @@ mod tests {
         );
         assert_eq!(reply.facts.stairs_up, Some(Pos::new(6, 32)));
         play.look();
-        assert_eq!(play.term().sent.len(), 5);
+        assert_eq!(play.term.sent.len(), 5);
     }
 
     #[test]
@@ -851,7 +845,7 @@ mod tests {
         let mut play = play(views);
         play.look();
         let unlooked = start().moved((6, 36), (6, 37), 2).view();
-        play.term_mut().views = vec![unlooked.clone()];
+        play.term.views = vec![unlooked.clone()];
         let reply = play.look();
         assert!(has_line(
             &reply.text,
@@ -870,7 +864,7 @@ mod tests {
             .unwrap()
             .inspections
             .insert(jackal, inspection);
-        play.term_mut().views = vec![unlooked];
+        play.term.views = vec![unlooked];
         assert!(!play.look().text.contains("jackal"));
     }
 
@@ -881,7 +875,7 @@ mod tests {
         for unsure in [cursor, start().cursor(5, 32).view()] {
             let mut play = play(vec![unsure]);
             play.look();
-            assert!(play.term().sent.is_empty());
+            assert!(play.term.sent.is_empty());
         }
     }
 
@@ -889,7 +883,7 @@ mod tests {
     fn show_sends_nothing_and_marks_the_pet() {
         let mut play = play(vec![start().view()]);
         let reply = play.show();
-        assert!(play.term().sent.is_empty());
+        assert!(play.term.sent.is_empty());
         assert!(has_line(
             &reply.text,
             "monsters: d pet 32,5 adjacent k; d 36,6 4 away"
@@ -955,7 +949,7 @@ mod tests {
             assert_eq!(reply.code, ExitCode::Failed, "{target}");
             assert!(reply.text.contains(error), "{target}: {}", reply.text);
         }
-        assert_eq!(play.term().sent.len(), 2);
+        assert_eq!(play.term.sent.len(), 2);
     }
 
     #[test]
@@ -1039,13 +1033,13 @@ mod tests {
             "{}",
             reply.text
         );
-        assert!(play.term().sent.is_empty());
+        assert!(play.term.sent.is_empty());
     }
 
     #[test]
     fn a_named_corridor_end_is_the_destination_and_frontier_explores_on() {
         for (target, kind) in [("5,2", Kind::Travel), ("frontier", Kind::Explore)] {
-            let mut play = Play::new(ScriptedTerm::new(vec![map("", &["", "   @##"], 2, 3)]), 4);
+            let mut play = Play::new(ScriptedTerm::new(vec![map("", &["", "   @##"], 2, 3)]));
             play.show();
             play.go(target, false, None);
             assert_eq!(
@@ -1170,7 +1164,7 @@ mod tests {
         // The jackal stands in the doorway the hero saw empty a turn before.
         let empty = [" -----", " |...|", " |.@..####", " |...|", " -----"];
         let rows = [" -----", " |...|", " |.@.d####", " |...|", " -----"];
-        let mut blocked = Play::new(ScriptedTerm::new(vec![map("", &rows, 3, 3)]), 8);
+        let mut blocked = Play::new(ScriptedTerm::new(vec![map("", &rows, 3, 3)]));
         blocked.memory.ingest(&map("", &empty, 3, 3));
         blocked.show();
         let reply = blocked.go("frontier", false, None);
@@ -1187,7 +1181,7 @@ mod tests {
         let reply = play.rest(3, None);
         assert_eq!(reply.code, ExitCode::Failed);
         assert!(reply.text.contains("prompt is open"));
-        assert!(play.term().sent.is_empty());
+        assert!(play.term.sent.is_empty());
     }
 
     #[test]
@@ -1259,7 +1253,7 @@ mod tests {
     fn an_inventory_the_game_showed_is_part_of_later_views() {
         let mut play = play(vec![Data::load("seed4242-inventory").view()]);
         play.show();
-        play.term_mut().views = vec![Data::load("seed4242-start").view()];
+        play.term.views = vec![Data::load("seed4242-start").view()];
         let reply = play.show();
         let line = reply
             .text
@@ -1358,7 +1352,7 @@ mod tests {
                 .starts_with("go >: the game is over; nothing was sent")
         );
         assert!(has_line(&reply.text, &format!("end: {death}")));
-        assert_eq!(play.term().sent.len(), 5);
+        assert_eq!(play.term.sent.len(), 5);
     }
 
     #[test]
@@ -1399,7 +1393,7 @@ mod tests {
         );
         play.look();
         assert_eq!(sent(&play), [":"]);
-        play.term_mut().views = vec![room(4, 402, ""), room(4, 402, second)];
+        play.term.views = vec![room(4, 402, ""), room(4, 402, second)];
         let reply = play.look();
         assert_eq!(sent(&play), [":", ":"]);
         let here = reply.facts.here.unwrap();
@@ -1475,10 +1469,10 @@ mod tests {
         );
         let calm = [" ------- ", " |..@..| ", " |.....| ", " ------- "];
         let arrived = [" ------- ", " |..@..| ", " |....d| ", " ------- "];
-        let mut arrival = Play::new(
-            ScriptedTerm::new(vec![map("", &calm, 2, 4), map("", &arrived, 2, 4)]),
-            8,
-        );
+        let mut arrival = Play::new(ScriptedTerm::new(vec![
+            map("", &calm, 2, 4),
+            map("", &arrived, 2, 4),
+        ]));
         assert_eq!(arrival.rest(5, None).code, ExitCode::Short);
     }
 
@@ -1539,7 +1533,7 @@ mod tests {
                  Use 'm' prefix to force another search.\"); stopped: no time passed"
             )
         );
-        play.term_mut().views.push(map("", &room, 2, 4));
+        play.term.views.push(map("", &room, 2, 4));
         let reply = play.rest(5, None);
         assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
         assert_eq!(
@@ -1600,11 +1594,11 @@ mod tests {
     #[test]
     fn held_input_is_reported_with_its_own_code() {
         let mut play = play(vec![start().view()]);
-        play.term_mut().failures = vec![Some(LinkError::Held("waiting to start".to_owned()))];
+        play.term.failures = vec![Some(LinkError::Held("waiting to start".to_owned()))];
         let reply = play.send(b"s");
         assert_eq!(reply.code, ExitCode::Held);
         assert!(reply.text.starts_with("send: "), "{}", reply.text);
-        assert!(play.term().sent.is_empty());
+        assert!(play.term.sent.is_empty());
     }
 
     #[test]

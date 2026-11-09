@@ -1,4 +1,4 @@
-//! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND`, where COMMAND is
+//! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] COMMAND`, where COMMAND is
 //! `look`, `send KEYS`, `go [--wet] [--near N] TARGET`, `rest [--near N] COUNT`, `stop` or `serve`.
 //!
 //! A client command connects to `<dir>/sock`, sends one request line, prints the reply's text (or, with `--json`,
@@ -19,7 +19,6 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::daemon::{COMMAND_TIME, Cmd, NEAR_MAX, Request, check, serve, serving};
-use crate::play::STEPS_MAX;
 use crate::types::ExitCode;
 
 /// The session directory when `--dir` is not given.
@@ -31,7 +30,7 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 /// Longest a client waits for its reply: the daemon's own limit on a command, with room for one slow exchange.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
-pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] \
+pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] \
                          look | send KEYS | go [--wet] [--near N] TARGET | rest [--near N] COUNT | stop | serve";
 
 /// A parsed command line: the options, then the request for the daemon or `serve` (`None`).
@@ -40,7 +39,6 @@ pub struct Args {
     pub dir: PathBuf,
     pub json: bool,
     pub socket: PathBuf,
-    pub max_steps: u32,
     pub request: Option<Request>,
 }
 
@@ -58,7 +56,6 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         dir: PathBuf::from(DEFAULT_DIR),
         json: false,
         socket: PathBuf::from(DEFAULT_SOCKET),
-        max_steps: STEPS_MAX,
         request: None,
     };
     let mut rest = args;
@@ -71,24 +68,16 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             parsed.json = true;
             continue;
         }
-        if !matches!(arg.as_str(), "--dir" | "--socket" | "--max-steps") {
-            break (arg.as_str(), rest);
-        }
+        let path = match arg.as_str() {
+            "--dir" => &mut parsed.dir,
+            "--socket" => &mut parsed.socket,
+            _ => break (arg.as_str(), rest),
+        };
         let Some((value, after)) = rest.split_first() else {
             return Err(format!("{arg} takes a value"));
         };
         rest = after;
-        match arg.as_str() {
-            "--dir" => parsed.dir = PathBuf::from(value),
-            "--socket" => parsed.socket = PathBuf::from(value),
-            _ => {
-                parsed.max_steps = value
-                    .parse()
-                    .ok()
-                    .filter(|n| (1..=STEPS_MAX).contains(n))
-                    .ok_or_else(|| format!("--max-steps takes 1 to {STEPS_MAX}"))?;
-            }
-        }
+        *path = PathBuf::from(value);
     };
     let operand = operands.first().cloned();
     let request = |cmd| Request {
@@ -153,7 +142,7 @@ pub fn run(args: &Args) -> i32 {
             let (socket, _, _) = paths(&args.dir);
             let started = private_dir(&args.dir).and_then(|()| {
                 let mut stdout = std::io::stdout().lock();
-                serve(&socket, &args.socket, args.max_steps, &mut stdout)
+                serve(&socket, &args.socket, &mut stdout)
             });
             match started {
                 Ok(()) => ExitCode::Done.code(),
@@ -294,8 +283,6 @@ pub fn start(args: &Args) -> std::io::Result<()> {
         .arg(&args.dir)
         .arg("--socket")
         .arg(&args.socket)
-        .arg("--max-steps")
-        .arg(args.max_steps.to_string())
         .arg("serve")
         .stdin(Stdio::null())
         .stdout(OwnedFd::from(output))
@@ -362,27 +349,15 @@ mod tests {
 
     #[test]
     fn global_options_come_before_the_command() {
-        let parsed = args(&[
-            "--dir",
-            "d",
-            "--json",
-            "--socket",
-            "t.sock",
-            "--max-steps",
-            "8",
-            "look",
-        ])
-        .unwrap();
+        let parsed = args(&["--dir", "d", "--json", "--socket", "t.sock", "look"]).unwrap();
         assert_eq!(parsed.dir, PathBuf::from("d"));
         assert!(parsed.json);
         assert_eq!(parsed.socket, PathBuf::from("t.sock"));
-        assert_eq!(parsed.max_steps, 8);
         assert_eq!(request(&["look"]).cmd, Cmd::Look);
         let defaults = args(&["serve"]).unwrap();
         assert_eq!(defaults.request, None);
         assert_eq!(defaults.dir, PathBuf::from(DEFAULT_DIR));
         assert_eq!(defaults.socket, PathBuf::from(DEFAULT_SOCKET));
-        assert_eq!(defaults.max_steps, STEPS_MAX);
     }
 
     #[test]
@@ -436,8 +411,6 @@ mod tests {
             &["rest", "0"],
             &["rest", "201"],
             &["rest", "x"],
-            &["--max-steps", "0", "look"],
-            &["--max-steps", "65", "look"],
             &["--dir"],
             &["serve", "--socket", "x"],
         ] {

@@ -74,13 +74,20 @@ fn raw_server(path: &Path, handler: Box<Handler>) {
     });
 }
 
-/// Writes a 200 reply with no output at cursor 0.
-fn empty_reply(stream: &mut UnixStream) {
-    let body = "{\"output\":\"\",\"cursor\":0,\"waiting\":true}";
+/// Writes a 200 reply with `body`.
+fn ok_reply(stream: &mut UnixStream, body: &str) {
     let _ = write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
+    );
+}
+
+/// Writes a 200 reply with no output at cursor 0.
+fn empty_reply(stream: &mut UnixStream) {
+    ok_reply(
+        stream,
+        "{\"output\":\"\",\"cursor\":0,\"truncated\":false,\"waiting\":true}",
     );
 }
 
@@ -114,21 +121,20 @@ fn reads_output_after_the_cursor_on_one_connection() {
         }
     );
     assert_eq!(link.output(), b"hello");
-    assert_eq!(link.cursor(), 5);
     link.exchange(b"k", WAIT_MS).unwrap();
     assert_eq!(link.output(), b" world");
     link.exchange(&[], 0).unwrap();
     assert_eq!(link.output(), b"");
     link.exchange(b"j", 250).unwrap();
     assert_eq!(link.output(), b"!");
-    assert_eq!(link.cursor(), 12);
+    link.exchange(&[], 0).unwrap();
     let received = server.received();
     assert_eq!(
         received
             .iter()
             .map(|r| (r.after, r.wait))
             .collect::<Vec<_>>(),
-        [(0, 0), (5, WAIT_MS), (11, 0), (11, 250)]
+        [(0, 0), (5, WAIT_MS), (11, 0), (11, 250), (12, 0)]
     );
     assert_eq!(server.inputs(), [b"k".to_vec(), b"j".to_vec()]);
     assert_eq!(server.connections(), 1);
@@ -174,7 +180,11 @@ fn output_older_than_the_buffer_resets() {
     let exchange = link.exchange(b"x", WAIT_MS).unwrap();
     assert!(exchange.reset);
     assert_eq!(link.output().len(), 64 * 1024);
-    assert_eq!(link.cursor(), 5 + 70 * 1024);
+    link.exchange(&[], 0).unwrap();
+    assert_eq!(
+        server.received().last().map(|r| r.after),
+        Some(5 + 70 * 1024)
+    );
 }
 
 #[test]
@@ -190,8 +200,9 @@ fn a_restarted_server_is_read_from_its_start() {
     let exchange = link.exchange(b"x", WAIT_MS).unwrap();
     assert!(exchange.reset);
     assert_eq!(link.output(), b"new");
-    assert_eq!(link.cursor(), 3);
     assert_eq!(server.received().last().map(|r| r.after), Some(0));
+    link.exchange(&[], 0).unwrap();
+    assert_eq!(server.received().last().map(|r| r.after), Some(3));
 }
 
 #[test]
@@ -344,7 +355,7 @@ fn term_refusals_leave_the_prompt_state_alone() {
     };
     let server = FakeTerminalServer::start(
         &dir,
-        &pick(b"Pick an object.", b"\x1b[3;4H"),
+        &pick(b"Pick a monster, object or location.", b"\x1b[3;4H"),
         vec![
             Step::Output(pick(b"a closed door", b"\x1b[3;5H")),
             Step::Refuse(400, "refused".to_owned()),
@@ -471,6 +482,40 @@ fn keys_are_never_sent_twice_when_the_connection_drops_before_answering() {
     }
     assert_eq!(*seen.lock().unwrap(), [b"y".to_vec()]);
     link.exchange(&[], 0).unwrap();
+}
+
+#[test]
+fn a_reply_needs_every_field_and_padded_base64_output() {
+    let dir = scratch("link-strict");
+    let path = dir.join("t.sock");
+    let bodies = [
+        "{\"output\":null,\"cursor\":0,\"truncated\":false,\"waiting\":true}",
+        "{\"cursor\":0,\"truncated\":false,\"waiting\":true}",
+        "{\"output\":\"\",\"cursor\":0,\"waiting\":true}",
+        "{\"output\":\"\",\"cursor\":0,\"truncated\":false}",
+        "{\"output\":\"Zm8\",\"cursor\":2,\"truncated\":false,\"waiting\":true}",
+    ];
+    let mut served = 0;
+    raw_server(
+        &path,
+        Box::new(move |_, _, stream| {
+            match bodies.get(served) {
+                Some(body) => ok_reply(stream, body),
+                None => empty_reply(stream),
+            }
+            served += 1;
+            Next::Keep
+        }),
+    );
+    let mut link = Link::new(&path);
+    for what in ["JSON", "JSON", "JSON", "JSON", "base64"] {
+        match link.exchange(&[], 0) {
+            Err(LinkError::Protocol(why)) => assert!(why.contains(what), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    link.exchange(&[], 0).unwrap();
+    assert_eq!(link.output(), b"");
 }
 
 #[test]

@@ -1,10 +1,9 @@
 //! The terminal link: one persistent HTTP/1.1 keep-alive connection over a Unix socket to `POST /terminal`, and
 //! the screen kept in step with it. A request is `{"input": base64, "after": cursor, "wait": ms}`; a 200 reply is
-//! `{"output": base64, "cursor": n, "truncated": bool, "waiting": bool}`, where `waiting` means the game is blocked
-//! reading a key, has consumed all input sent so far, and all its output is in `output`. A frozen, stopping or
-//! ended game answers at once with `waiting` false.
+//! `{"output": base64, "cursor": n, "truncated": bool, "waiting": bool}`, every field present and base64 padded,
+//! where `waiting` means the game is blocked reading a key, has consumed all input sent so far, and all its output
+//! is in `output`. A frozen, stopping or ended game answers at once with `waiting` false.
 
-use std::borrow::Cow;
 use std::io::{ErrorKind, Read, Write};
 use std::ops::Range;
 use std::os::unix::net::UnixStream;
@@ -106,15 +105,12 @@ pub struct Link {
     used: Option<Instant>,
 }
 
-/// The 200 reply body. `output` is null when the server has no output at all.
+/// The 200 reply body, every field required. `output` is padded base64, empty when there is no output.
 #[derive(Deserialize)]
-struct Answer<'a> {
-    #[serde(borrow, default)]
-    output: Option<Cow<'a, str>>,
+struct Answer {
+    output: String,
     cursor: u64,
-    #[serde(default)]
     truncated: bool,
-    #[serde(default)]
     waiting: bool,
 }
 
@@ -193,8 +189,7 @@ impl Link {
                 .map_err(|e| answered(format!("malformed JSON: {e}")))?;
             self.output.clear();
             self.output.shrink_to(KEEP);
-            let text = answer.output.as_deref().unwrap_or_default();
-            if !base64_decode(text.as_bytes(), &mut self.output) {
+            if !base64_decode(answer.output.as_bytes(), &mut self.output) {
                 self.output.clear();
                 return Err(answered("malformed base64 output"));
             }
@@ -218,11 +213,6 @@ impl Link {
     /// The output bytes of the last exchange.
     pub fn output(&self) -> &[u8] {
         &self.output
-    }
-
-    /// The server's output cursor after the last exchange.
-    pub fn cursor(&self) -> u64 {
-        self.cursor
     }
 
     /// The body of the last response as text, trimmed and cut short for a message.
@@ -538,13 +528,13 @@ fn sextet(c: u8) -> Option<u32> {
     Some(u32::from(v))
 }
 
-/// Standard base64 decoding of `text`, appended to `out`; false on malformed input. Padding may be left off.
+/// Standard padded base64 decoding of `text`, appended to `out`; false on malformed input.
 pub fn base64_decode(text: &[u8], out: &mut Vec<u8>) -> bool {
-    let pad = text.iter().rev().take_while(|&&c| c == b'=').count().min(2);
-    let data = &text[..text.len() - pad];
-    if (pad > 0 && !text.len().is_multiple_of(4)) || data.len() % 4 == 1 {
+    let pad = text.iter().rev().take_while(|&&c| c == b'=').count();
+    if !text.len().is_multiple_of(4) || pad > 2 {
         return false;
     }
+    let data = &text[..text.len() - pad];
     out.reserve(data.len() / 4 * 3 + 2);
     for group in data.chunks(4) {
         let Some(n) = group.iter().try_fold(0, |n, &c| Some(n << 6 | sextet(c)?)) else {
@@ -707,7 +697,6 @@ mod tests {
             assert_eq!(decode(coded).unwrap(), plain.as_bytes());
         }
         assert_eq!(encode(&[0xfb, 0xff, 0xf0]), "+//w");
-        assert_eq!(decode("Zm8").unwrap(), b"fo");
     }
 
     #[test]
@@ -720,7 +709,9 @@ mod tests {
 
     #[test]
     fn base64_rejects_malformed_input() {
-        for bad in ["Z", "Zm9v!", "Zg=", "Zg===", "Z===", "Zm9v\n"] {
+        for bad in [
+            "Z", "Zg", "Zm8", "Zm9vYg", "Zm9v!", "Zg=", "Zg===", "Z===", "Zm9v\n", "Zm=v",
+        ] {
             assert!(decode(bad).is_none(), "{bad}");
         }
     }

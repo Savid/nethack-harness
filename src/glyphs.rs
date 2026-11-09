@@ -114,39 +114,48 @@ pub fn liquid_name(base: Base) -> Option<&'static str> {
     }
 }
 
-/// The status-line conditions in status-line order, each as the words the status line may show for it, full name
-/// first. A condition's bit in `Conditions` is its index here.
+/// The status-line conditions: hunger, then encumbrance, then the rest. Each is the words the status line shows for
+/// it, widest first; it shrinks encumbrance and the other conditions to narrower words when they do not fit. A
+/// condition's bit in `Conditions` is its index here.
 #[rustfmt::skip]
-const CONDITIONS: [&[&str]; 30] = [
-    &["Hungry", "Hngry"], &["Weak", "Wk"], &["Fainting", "Fnt"], &["Fainted"], &["Satiated", "Sat"],
-    &["Burdened", "Brd"], &["Stressed", "Ssd"], &["Strained", "Snd"], &["Overtaxed", "Otd"],
-    &["Overloaded", "Old"], &["Blind", "Blnd"], &["Conf", "Cnf"], &["Stun", "Stn"], &["Hallu", "Hal"],
-    &["FoodPois", "Fpois"], &["TermIll", "Ill"], &["Stone", "Ston"], &["Slime", "Slim"],
-    &["Strngl", "Stngl"], &["Lev"], &["Fly"], &["Ride"], &["Deaf"], &["Held", "Hld", "Grab"],
-    &["Trapped", "Trap"], &["Parlyz"], &["Zzz"], &["InLava"], &["Sliding"], &["Unconsc"],
+const CONDITIONS: [&[&str]; 41] = [
+    &["Satiated"], &["Hungry"], &["Weak"], &["Fainting"], &["Fainted"], &["Starved"],
+    &["Burdened", "Burden", "Brd"], &["Stressed", "Stress", "Strs"], &["Strained", "Strain", "Strn"],
+    &["Overtaxed", "Overtax", "Ovtx"], &["Overloaded", "Overload", "Ovld"],
+    &["Bare", "Bar", "Bh"], &["Blind", "Blnd", "Bl"], &["Busy", "Bsy", "By"], &["Conf", "Cnf", "Cf"],
+    &["Deaf", "Def", "Df"], &["Iron", "Irn", "Fe"], &["Fly", "Fl"], &["FoodPois", "Fpois", "Poi"],
+    &["Glow", "Glo", "Gl"], &["Grab", "Grb", "Gr"], &["Hallu", "Hal", "Hl"], &["Held", "Hld", "Hd"], &["Icy", "Ic"],
+    &["InLava", "Lav", "La"], &["Lev", "Lv"], &["Parlyz", "Para", "Par"], &["Ride", "Rid", "Rd"], &["Zzz", "Zz"],
+    &["Slime", "Slim", "Slm"], &["Slip", "Slp", "Sl"], &["Stone", "Ston", "Sto"], &["Strngl", "Stngl", "Str"],
+    &["Stun", "St"], &["Submrg", "Subm", "Sm"], &["TermIll", "Ill"], &["Teth", "Tth", "Te"], &["Trap", "Trp", "Tr"],
+    &["Out", "KO"], &["WLegs", "Leg", "Lg"], &["UHold", "UHld", "UHd"],
 ];
+/// How many hunger states lead `CONDITIONS`.
+const HUNGER: usize = 6;
 /// The index of `Blind` in `CONDITIONS`.
-pub const BLIND: usize = 10;
+pub const BLIND: usize = 12;
 
 /// A set of status-line conditions, by their index in `CONDITIONS`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Conditions(pub u32);
+pub struct Conditions(pub u64);
 
 impl Conditions {
     pub fn contains(self, index: usize) -> bool {
         self.0 & (1 << index) != 0
     }
 
-    /// The hunger state shown, if any: the first five conditions are `Hungry` to `Satiated`.
+    /// The hunger state shown, if any.
     pub fn hunger(self) -> Option<&'static str> {
-        (0..5).find(|&i| self.contains(i)).map(|i| CONDITIONS[i][0])
+        (0..HUNGER)
+            .find(|&i| self.contains(i))
+            .map(|i| CONDITIONS[i][0])
     }
 }
 
-/// The conditions named as whole words in `text`.
+/// The conditions named in `text`, each a whole space-separated word, so a field such as `St:16` names none.
 pub fn conditions(text: &str) -> Conditions {
     let mut found = Conditions::default();
-    for word in text.split(|c: char| !is_word(c)).filter(|w| !w.is_empty()) {
+    for word in text.split_whitespace() {
         if let Some(i) = CONDITIONS.iter().position(|forms| forms.contains(&word)) {
             found.0 |= 1 << i;
         }
@@ -292,16 +301,53 @@ mod tests {
     }
 
     #[test]
-    fn conditions_match_whole_words_only() {
-        let found = conditions("Dlvl:3 $:0 HP:12(16) T:400 Hngry Blind Conf");
+    fn conditions_are_whole_words_between_spaces() {
+        let found = conditions("Dlvl:3 $:0 HP:12(16) T:400 Hungry Blnd Cf");
         assert_eq!(found, conditions("Hungry Blind Conf"));
         assert!(found.contains(BLIND));
         assert_eq!(found.hunger(), Some("Hungry"));
         assert_eq!(
-            conditions("Confused Blindfold Trapdoor"),
+            conditions("Confused Blindfold Trapdoor St:16 (Str)"),
             Conditions::default()
         );
-        assert_eq!(conditions("Lev Trap"), conditions("Trapped Lev"));
+        assert_eq!(conditions("Lev Trp"), conditions("Trap Lv"));
+    }
+
+    #[test]
+    fn conditions_are_the_words_the_status_line_shows() {
+        // Hunger; then encumbrance and the other conditions at each width the status line shrinks them to.
+        let hunger = ["Satiated Hungry Weak Fainting Fainted Starved"];
+        let burden = [
+            "Burdened Stressed Strained Overtaxed Overloaded",
+            "Burden Stress Strain Overtax Overload",
+            "Brd Strs Strn Ovtx Ovld",
+        ];
+        let others = [
+            "Bare Blind Busy Conf Deaf Iron Fly FoodPois Glow Grab Hallu Held Icy InLava Lev Parlyz Ride Zzz Slime \
+             Slip Stone Strngl Stun Submrg TermIll Teth Trap Out WLegs UHold",
+            "Bar Blnd Bsy Cnf Def Irn Fly Fpois Glo Grb Hal Hld Icy Lav Lev Para Rid Zzz Slim Slp Ston Stngl Stun \
+             Subm Ill Tth Trp Out Leg UHld",
+            "Bh Bl By Cf Df Fe Fl Poi Gl Gr Hl Hd Ic La Lv Par Rd Zz Slm Sl Sto Str St Sm Ill Te Tr KO Lg UHd",
+        ];
+        let mut expected: Vec<Vec<&str>> = Vec::new();
+        for widths in [&hunger[..], &burden, &others] {
+            let words: Vec<Vec<&str>> = widths.iter().map(|w| w.split(' ').collect()).collect();
+            assert!(words.iter().all(|w| w.len() == words[0].len()));
+            for i in 0..words[0].len() {
+                let mut forms: Vec<&str> = words.iter().map(|w| w[i]).collect();
+                forms.dedup();
+                expected.push(forms);
+            }
+        }
+        let table: Vec<Vec<&str>> = CONDITIONS.iter().map(|forms| forms.to_vec()).collect();
+        assert_eq!(table, expected);
+        for (i, forms) in CONDITIONS.iter().enumerate() {
+            for form in *forms {
+                assert_eq!(conditions(form), Conditions(1 << i), "{form}");
+            }
+        }
+        assert_eq!(CONDITIONS[BLIND][0], "Blind");
+        assert_eq!(CONDITIONS[HUNGER - 1][0], "Starved");
     }
 
     #[test]
