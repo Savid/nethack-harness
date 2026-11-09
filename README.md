@@ -38,7 +38,7 @@ recommended, so walking does not pick things up.
 ## Command line
 
 ```
-nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND
+nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 ```
 
 | Option | Meaning |
@@ -46,13 +46,12 @@ nethack-harness [--dir D] [--json] [--socket PATH] [--max-steps N] COMMAND
 | `--dir D` | Session directory holding `sock`, `sock.lock`, `lock` and `log` (default `.nethack-harness`). It is created readable by its owner only, and the socket is mode 0600. |
 | `--json` | Print the reply object instead of its text. |
 | `--socket PATH` | Terminal socket a newly started daemon connects to (default `/run/nethack/terminal.sock`). |
-| `--max-steps N` | Most steps one `go` takes, 1 to 64 (default 64); fixed when the daemon starts. |
 
 | Command | Effect |
 | --- | --- |
 | `look` | Print the view. Names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
 | `send KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. |
-| `go [--wet] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most `--max-steps` steps, then print the view. `--wet` lets the route step into remembered water. |
+| `go [--wet] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water. |
 | `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
 | `stop` | Stop the session's daemon. With none running it prints `no daemon is running` and exits 0. |
 | `serve` | Run the daemon in the foreground (the client starts it on demand). |
@@ -268,10 +267,12 @@ needs exactly this protocol:
 POST /terminal
 {"input": "<base64 bytes>", "after": <cursor>, "wait": <ms 0-3000>}
 
-200 {"output": "<base64 bytes>", "cursor": <n>, "truncated": <bool>, "waiting": <bool>}
+200 {"output": "<base64 bytes>" | null, "cursor": <n>, "truncated": <bool>, "waiting": <bool>}
 ```
 
-- `output` is the terminal output after `after`, and `cursor` the position after it. `truncated` says output
+- Every field of the reply is required, and base64 is padded with `=`. A reply missing a field, or with unpadded
+  base64, fails the command (exit code 1).
+- `output` is the terminal output after `after`, or null when there is none, and `cursor` the position after it. `truncated` says output
   between `after` and the oldest kept byte was dropped. A cursor that goes backwards means the server restarted;
   the daemon reads from 0 again.
 - `waiting` is true when the game is blocked reading a key, has consumed all input sent so far, and all its output

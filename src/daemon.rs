@@ -121,14 +121,9 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
 
 /// Serves requests on the socket at `socket` for the game behind the terminal socket `terminal`, until a `stop`
 /// or a closed terminal. Writes `ready` and a newline to `ready` once listening.
-pub fn serve(
-    socket: &Path,
-    terminal: &Path,
-    max_steps: u32,
-    ready: &mut dyn Write,
-) -> std::io::Result<()> {
+pub fn serve(socket: &Path, terminal: &Path, ready: &mut dyn Write) -> std::io::Result<()> {
     let (listener, _held) = bind(socket)?;
-    let mut play = Play::new(Term::new(terminal), max_steps);
+    let mut play = Play::new(Term::new(terminal));
     if let Err(e) = ready.write_all(b"ready\n").and_then(|()| ready.flush()) {
         let _ = std::fs::remove_file(socket);
         return Err(e);

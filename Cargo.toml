@@ -1,6 +1,6 @@
 [package]
 name = "nethack-harness"
-version = "1.0.3"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.99.1"
 description = "A NetHack observation and execution adapter for a caller driving one game over a terminal socket"

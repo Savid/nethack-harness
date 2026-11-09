@@ -9,7 +9,7 @@ use support::{Fixture, FixtureTerm, fixture_names, goldens_dir};
 
 /// The text a fresh game shows for fixture `name`, headed by `exit <code>` when the reply's code is not 0.
 fn render(name: &str) -> String {
-    let mut play = Play::new(FixtureTerm::new(Fixture::load(name).view()), 64);
+    let mut play = Play::new(FixtureTerm::new(Fixture::load(name).view()));
     let reply = play.show();
     match reply.code.code() {
         0 => reply.text,

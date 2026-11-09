@@ -125,12 +125,13 @@ pub struct View {
     pub normal: bool,
 }
 
-/// Messages that open a free-text prompt.
+/// Messages that open a free-text prompt: naming, engraving, the vault guard's question, wishing and genocide.
 #[rustfmt::skip]
-const TEXT_PROMPTS: [&str; 13] = [
-    "What do you want to write", "What do you want to name", "What do you want to call", "What do you want to add",
-    "Call a ", "Call an ", "Name it", "What monster", "write in the", "What do you want to engrave",
-    "who are you?", "What do you want to wish", "What do you want to genocide",
+const TEXT_PROMPTS: [&str; 14] = [
+    "What do you want to name", "What do you want to call", "Call a ", "Call an ", "What do you want to write",
+    "What do you want to add", "What do you want to engrave", "What do you want to burn", "What do you want to melt",
+    "What do you want to scribble", "What do you want to scrawl", "who are you?", "For what do you wish",
+    "do you want to genocide?",
 ];
 
 /// Messages, matched without regard to ASCII case, that ask for a direction.
@@ -138,9 +139,9 @@ const DIRECTION_PROMPTS: [&str; 3] = ["in what direction", "which direction", "o
 
 /// Messages that open a cursor-positioning prompt.
 #[rustfmt::skip]
-const POSITION_PROMPTS: [&str; 8] = [
-    "Where do you want to travel", "Where do you want to cast the spell", "For instructions type a ?",
-    "For instructions type a '?", "For instructions type a \"?", "Pick a ", "Pick an ", "Move cursor to ",
+const POSITION_PROMPTS: [&str; 5] = [
+    "Where do you want to travel", "Where do you want to cast the spell", "For instructions type a '?", "Pick a ",
+    "Move cursor to ",
 ];
 
 /// The questions the game asks after the hero's death or departure, before the tombstone.
@@ -154,21 +155,13 @@ const DISCLOSURE_QUESTIONS: [&str; 6] = [
 /// The words each role's farewell starts with.
 const FAREWELLS: [&str; 5] = ["Goodbye", "Fare thee well", "Sayonara", "Aloha", "Farvel"];
 
-/// Location words of the second status line, tried in order at each word start.
+/// Location words of the second status line, tried in order at each word start, and whether a level number
+/// follows. The elemental planes show their element alone.
 #[rustfmt::skip]
-const LOCATIONS: [(&str, Tail); 11] = [
-    ("Dlvl:", Tail::Digits), ("Home ", Tail::Digits), ("Tutorial:", Tail::Digits), ("Fort Ludios", Tail::Nothing),
-    ("Astral Plane", Tail::Nothing), ("Earth", Tail::Nothing), ("Air", Tail::Nothing), ("Fire", Tail::Nothing),
-    ("Water", Tail::Nothing), ("Plane of ", Tail::Word), ("End Game", Tail::Nothing),
+const LOCATIONS: [(&str, bool); 9] = [
+    ("Dlvl:", true), ("Home ", true), ("Tutorial:", true), ("Fort Ludios", false), ("Astral Plane", false),
+    ("Earth", false), ("Air", false), ("Fire", false), ("Water", false),
 ];
-
-/// What follows a location word's fixed text.
-#[derive(Clone, Copy)]
-enum Tail {
-    Nothing,
-    Digits,
-    Word,
-}
 
 /// Alignment words of the first status line.
 const ALIGNMENTS: [&str; 4] = ["Lawful", "Neutral", "Chaotic", "Unaligned"];
@@ -290,10 +283,10 @@ impl View {
         set_str(&mut status.location, location(second));
         status.dlvl = number("Dlvl:", false);
         status.gold = number("$:", false);
-        (status.hp, status.hpmax) = pair("HP:", true).unzip();
+        (status.hp, status.hpmax) = pair("HP:", false).unzip();
         (status.pw, status.pwmax) = pair("Pw:", false).unzip();
         status.ac = number("AC:", true);
-        status.xl = lines.into_iter().find_map(experience);
+        status.xl = number("Xp:", false);
         status.turn = number("T:", false).map(|n| n as u32);
         status.dex = number("Dx:", false);
         status.con = number("Co:", false);
@@ -569,17 +562,6 @@ fn pair_after(text: &str, prefix: &str, signed: bool) -> Option<(i32, i32)> {
     })
 }
 
-/// The experience level shown as `Xp:N`, `XL:N` or `Exp:N`, whichever comes first.
-fn experience(text: &str) -> Option<i32> {
-    text.char_indices().find_map(|(i, _)| {
-        let rest = &text[i..];
-        let level = ["Xp:", "XL:", "Exp:"]
-            .iter()
-            .find_map(|p| rest.strip_prefix(p))?;
-        Some(number(level, false)?.0)
-    })
-}
-
 /// Strength as shown after `St:`: digits, optionally `/` and digits or `/**`.
 fn strength(text: &str) -> Option<&str> {
     text.match_indices("St:").find_map(|(i, _)| {
@@ -601,17 +583,10 @@ fn location(text: &str) -> Option<&str> {
         .filter(|&(i, c)| is_word(c) && !text[..i].chars().next_back().is_some_and(is_word));
     word_starts.find_map(|(i, _)| {
         let rest = &text[i..];
-        LOCATIONS.iter().find_map(|&(fixed, tail)| {
+        LOCATIONS.iter().find_map(|&(fixed, numbered)| {
             let after = rest.strip_prefix(fixed)?;
-            let tail = match tail {
-                Tail::Nothing => "",
-                Tail::Digits => digits(after)?.0,
-                Tail::Word => after
-                    .split(|c: char| !is_word(c))
-                    .next()
-                    .filter(|w| !w.is_empty())?,
-            };
-            let end = fixed.len() + tail.len();
+            let number = if numbered { digits(after)?.0 } else { "" };
+            let end = fixed.len() + number.len();
             (!rest[end..].starts_with(is_word)).then(|| &rest[..end])
         })
     })
@@ -730,8 +705,6 @@ mod tests {
             "Astral Plane",
             "Fort Ludios",
             "Tutorial:1",
-            "Plane of Fire",
-            "End Game",
         ] {
             let status2 = format!("{location} $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:400");
             let v = view(&screen(
@@ -776,22 +749,22 @@ mod tests {
     }
 
     #[test]
-    fn negative_and_alternative_status_fields() {
+    fn negative_armour_class_and_partial_status_fields() {
         let v = view(&screen(
             "",
             &[],
             STATUS1,
-            "Dlvl:12 $:40 HP:-3(20) Pw:0(5) AC:-4 Exp:7 T:9",
+            "Dlvl:12 $:40 HP:0(20) Pw:0(5) AC:-4 Xp:7/1280 T:9",
         ));
         let s = &v.status;
         assert_eq!(
             (s.hp, s.hpmax, s.ac, s.xl),
-            (Some(-3), Some(20), Some(-4), Some(7))
+            (Some(0), Some(20), Some(-4), Some(7))
         );
-        let v = view(&screen("", &[], "Hero St:3", "HP:4 XL:3 T:x"));
+        let v = view(&screen("", &[], "Hero St:3", "HP:4 HD:3 T:x"));
         assert_eq!(
             (v.status.hp, v.status.xl, v.status.turn),
-            (None, Some(3), None)
+            (None, None, None)
         );
         assert_eq!(v.status.alignment, None);
     }
@@ -866,6 +839,8 @@ mod tests {
             "Move cursor to the desired position:",
             "Move cursor to the spot to hit:",
             "Where do you want to cast the spell?",
+            "Where do you want to travel to?",
+            "Pick a monster, object or location.",
         ] {
             let v = view(&scr(message, &[]));
             assert_eq!(v.phase(), Phase::Position, "{message}");
@@ -892,9 +867,37 @@ mod tests {
     }
 
     #[test]
+    fn free_text_prompts() {
+        for message in [
+            "What do you want to call the jackal?",
+            "What do you want to name this dagger?",
+            "Call a scroll labeled FOOBIE BLETCH:",
+            "Call an orange potion:",
+            "What do you want to write in the dust here?",
+            "What do you want to add to the writing in the dust here?",
+            "What do you want to engrave in the floor here?",
+            "What do you want to burn into the floor here?",
+            "What do you want to melt into the ice here?",
+            "What do you want to scribble on the floor here?",
+            "What do you want to scrawl on the floor here?",
+            "\"Hello stranger, who are you?\" -",
+            "For what do you wish?",
+            "What class of monsters do you want to genocide?",
+            "What type of monster do you want to genocide?",
+        ] {
+            let v = testkit::view(&scr(message, &[]), 0, message.len() as u8 + 1);
+            assert!(v.text, "{message}");
+            assert_eq!(v.phase(), Phase::Text, "{message}");
+        }
+    }
+
+    #[test]
     fn wrapped_text_remains_input() {
         let lines = scr(
-            &format!("What do you want to engrave? {}", "x".repeat(52)),
+            &format!(
+                "What do you want to burn into the floor here? {}",
+                "x".repeat(34)
+            ),
             &["xxx"],
         );
         let v = testkit::view(&lines, 1, 3);
@@ -1115,7 +1118,7 @@ mod tests {
             0,
             0,
         );
-        assert_eq!(v.cond, glyphs::conditions("Blind TermIll Stone Trapped"));
+        assert_eq!(v.cond, glyphs::conditions("Blind TermIll Stone Trap"));
         let v = view(&screen(
             "",
             &[],

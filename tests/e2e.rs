@@ -108,7 +108,6 @@ fn usage_errors_exit_64_and_touch_nothing() {
         vec!["send"],
         vec!["send", long.as_str()],
         vec!["look", "extra"],
-        vec!["--max-steps", "0", "look"],
         vec!["send", "☃"],
     ] {
         let mut line = vec!["--dir", state_arg];

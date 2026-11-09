@@ -123,7 +123,7 @@ fn serve(dir: &Path, terminal: &Path) -> Child {
 fn look_in_process() {
     for name in [BUSY, "seed1001-start", "seed7-0240"] {
         let view = Fixture::load(name).view();
-        let mut play = Play::new(FixtureTerm::still(view), 64);
+        let mut play = Play::new(FixtureTerm::still(view));
         let (show, show_p99) = time_us(2000, || {
             play.show();
         });
