@@ -7,7 +7,8 @@ pub const COLS: usize = 80;
 /// The map is terminal rows `MAP_TOP..=MAP_BOTTOM`.
 pub const MAP_TOP: u8 = 1;
 pub const MAP_BOTTOM: u8 = 21;
-pub const MAP_SQUARES: usize = (MAP_BOTTOM - MAP_TOP + 1) as usize * COLS;
+pub const MAP_ROWS: usize = (MAP_BOTTOM - MAP_TOP + 1) as usize;
+pub const MAP_SQUARES: usize = MAP_ROWS * COLS;
 
 /// The eight direction keys and their (row, column) steps, cardinal first, in the order routes try them.
 #[rustfmt::skip]
@@ -367,6 +368,9 @@ pub struct Place {
     /// A route exists over terrain but monsters block it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blocked: bool,
+    /// The caller told the harness about its square, which the screen has not shown.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub told: bool,
 }
 
 /// A frontier square: reachable known ground beside unexplored squares.
@@ -406,6 +410,9 @@ pub struct Report {
     /// For `go --wet`, the steps sent into water.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wet: Option<u32>,
+    /// For `go`, the steps onto squares that were told when the walk began.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub told: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<i64>,
     /// For `rest`, when the turn counter was shown before and after it: the searches after which it read as before.

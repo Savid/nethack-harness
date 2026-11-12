@@ -1,12 +1,13 @@
-//! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view.
+//! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view, and `learn`, which
+//! takes in squares the caller tells of.
 
 use crate::exec::{self, Changed, Executor, Kind, Outcome, Stop};
-use crate::glyphs::is_engraving_text;
-use crate::level::Ground;
+use crate::glyphs::{is_engraving_text, numbered};
+use crate::level::{Ground, Squares};
 use crate::link::{LinkError, Term, Terminal};
 use crate::observe::{Entity, Memory};
 use crate::screen::{Phase, strip_more};
-use crate::types::{Answered, ExitCode, Pos, Reply, Report, SquareSet};
+use crate::types::{Answered, ExitCode, MAP_TOP, Pos, Reply, Report, SquareSet};
 use crate::view::{Landmark, Names, Renderer, Scene, landmarks};
 
 /// Most keys one `send` takes.
@@ -171,8 +172,32 @@ impl<T: Terminal> Play<T> {
         self.execute(&verb, action)
     }
 
+    /// Takes in the squares of the current level the caller tells of, as `Level::learn` does: `rows` are the map's
+    /// rows, a space where nothing is told, and `colours` the game's colour number of each square as a hex digit.
+    /// Both are the map's size, as the request check allows. Sends nothing to the game.
+    pub fn learn(&mut self, rows: &[String], colours: &[String]) -> Reply {
+        if let Some(reply) = self.prepare("learn") {
+            return reply;
+        }
+        let Some(level) = self.memory.current_mut() else {
+            return Reply::message(ExitCode::Failed, "learn: no level has been seen yet");
+        };
+        let at = |lines: &[String], p: Pos| {
+            let line = lines.get(usize::from(p.y.checked_sub(MAP_TOP)?))?;
+            line.as_bytes().get(usize::from(p.x)).copied()
+        };
+        let learned = level.learn(|p| {
+            let ch = at(rows, p).filter(|&ch| ch != b' ')?;
+            let colour = char::from(at(colours, p)?).to_digit(16)?;
+            Some((char::from(ch), numbered(u8::try_from(colour).ok()?)?))
+        });
+        let squares = if learned == 1 { "square" } else { "squares" };
+        Reply::message(ExitCode::Done, format!("learned {learned} {squares}"))
+    }
+
     /// The places a `go` target names on the current level, written into `out`; an error says why none match. It
-    /// leaves the routes from the hero around monsters over `ground` in the play's path buffer.
+    /// leaves the routes from the hero around monsters over `ground` in the play's path buffer: for `frontier`,
+    /// routes that enter no square the caller told of.
     pub fn places(
         &mut self,
         target: &str,
@@ -180,8 +205,14 @@ impl<T: Terminal> Play<T> {
         out: &mut Vec<Landmark>,
     ) -> Result<(), String> {
         out.clear();
+        let word = target.trim().to_lowercase();
+        let squares = if word == "frontier" {
+            Squares::Shown
+        } else {
+            Squares::Known
+        };
         let routes = &mut self.renderer.routes;
-        routes.from_hero(&self.memory, self.term.view(), ground);
+        routes.from_hero(&self.memory, self.term.view(), ground, squares);
         let Some(level) = self.memory.current() else {
             return Err(PROMPT_OPEN.to_owned());
         };
@@ -197,7 +228,6 @@ impl<T: Terminal> Play<T> {
             }
             return Ok(());
         }
-        let word = target.trim().to_lowercase();
         if word == "frontier" {
             level.frontier_targets(&routes.paths, &mut self.edges);
             for &(p, _) in &self.edges {
@@ -277,11 +307,14 @@ impl<T: Terminal> Play<T> {
         if self.last.as_ref().is_some_and(|last| last.wet) {
             report.wet = Some(outcome.wet);
         }
+        let walked = matches!(kind, Kind::Travel | Kind::Explore);
+        if walked {
+            report.told = Some(outcome.told);
+        }
         if kind == Kind::Search && outcome.turns.is_some() {
             report.no_time = Some(outcome.no_time);
             report.no_time_why.clone_from(&outcome.no_time_why);
         }
-        let walked = matches!(kind, Kind::Travel | Kind::Explore);
         let near = self.last.as_ref().and_then(|last| last.near);
         let stopped = &mut report.stopped;
         match &outcome.stop {
@@ -611,7 +644,7 @@ mod tests {
     use crate::level::Inspection;
     use crate::screen::View;
     use crate::testkit::{STATUS1, STATUS2, ScriptedTerm, map, screen, view};
-    use crate::types::{COLS, Cell, Colour, Grid, NoTime, NoTimeWhy, ROWS};
+    use crate::types::{COLS, Cell, Colour, Grid, MAP_ROWS, NoTime, NoTimeWhy, ROWS};
     use serde::Deserialize;
 
     /// A recorded screen, editable before it is parsed.
@@ -1172,6 +1205,50 @@ mod tests {
             reply.text,
             "the known route to frontier is blocked by a monster at 5,3"
         );
+    }
+
+    #[test]
+    fn told_squares_are_walked_and_marked_but_leave_the_map_and_the_frontier_as_shown() {
+        let corridor = |x: u8, row: &str| at_turn("", &["", row], 2, x, 397 + u32::from(x));
+        let start = || vec![corridor(3, "   @##")];
+        let (mut shown, mut play) = (play(start()), play(start()));
+        let rows: Vec<String> = (0..MAP_ROWS)
+            .map(|r| format!("{:<80}", if r == 1 { "   @#####>" } else { "" }))
+            .collect();
+        let reply = play.learn(&rows, &vec!["7".repeat(COLS); MAP_ROWS]);
+        assert_eq!(
+            (reply.code, reply.text.as_str()),
+            (ExitCode::Done, "learned 4 squares")
+        );
+        assert!(play.term.sent.is_empty());
+        let (before, after) = (shown.look(), play.look());
+        let unmarked = |text: &str| -> Vec<String> {
+            let lines = text.lines().filter(|line| !line.starts_with("seen:"));
+            lines.map(str::to_owned).collect()
+        };
+        assert_eq!(unmarked(&after.text), unmarked(&before.text));
+        assert!(has_line(&after.text, "frontier: 5,2 (2)"));
+        assert!(has_line(&after.text, "seen: > down stairs 9,2 (6) (told)"));
+        assert!(after.facts.seen[0].told && after.facts.stairs_down.is_none());
+        // The screen shows each told square as the hero comes beside it.
+        play.term.views.extend([
+            corridor(4, "   #@#"),
+            corridor(5, "   ##@#"),
+            corridor(6, "   ###@#"),
+            corridor(7, "   ####@#"),
+            corridor(8, "   #####@>"),
+            corridor(9, "   ######@"),
+        ]);
+        let reply = play.go(">", false, None);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some("go >: 6 steps, 4 told, 6 turns, now at 9,2; done")
+        );
+        assert_eq!(reply.facts.report.and_then(|report| report.told), Some(4));
+        assert!(!reply.text.contains("(told)"), "{}", reply.text);
+        assert_eq!(reply.facts.stairs_down, Some(Pos::new(2, 9)));
+        let reply = shown.go("frontier", false, None);
+        assert_eq!(reply.facts.report.and_then(|report| report.told), Some(0));
     }
 
     #[test]

@@ -9,7 +9,8 @@ are deployed.
 ## Boundaries
 
 - **Decode, remember, route, execute, report.** The harness decodes the screen, remembers what was observed,
-  routes over observed geometry, runs bounded actions and reports what happened.
+  routes over observed geometry and over squares the caller told it about, runs bounded actions and reports what
+  happened. It decides what a told square is from its symbol and colour, as it does for a square on screen.
 - **No game knowledge or policy.** It never advises, ranks, vetoes or chooses, and holds no survival rules or
   game reference tables. Decoding what a symbol or colour on screen is counts as UI decoding and belongs here.
 - **No answers on the caller's behalf.** Prompts are reported with the keys that answered them. The harness
@@ -18,7 +19,7 @@ are deployed.
 - **Bounded actions.** Every action names its target and bounds and stops when observations change. It never
   substitutes a different goal or action. A rest also stops when HP that was below its maximum reaches it: the
   status line shows it, and searching on would only pass turns.
-- Distinguish what is on screen, what is remembered, and what is unknown.
+- Distinguish what is on screen, what is remembered, what the caller told, and what is unknown.
 
 ## Change rules
 
@@ -44,10 +45,10 @@ are deployed.
 
 - `vt.rs`, `screen.rs`: the terminal emulator and the parsed screen (`View`: messages, prompts, status, phase).
 - `glyphs.rs`: what symbols and colours on screen are.
-- `level.rs`: remembered terrain per level, routes and frontier.
+- `level.rs`: remembered terrain per level, squares the caller told of, routes and frontier.
 - `observe.rs`: memory across screens: messages, underfoot notes, inventory, end-of-game text, level identity.
 - `exec.rs`: bounded execution of keys, walks, searches, farlook and look-here.
-- `view.rs`, `play.rs`: the text view and facts, and the `look`, `send`, `go` and `rest` commands.
+- `view.rs`, `play.rs`: the text view and facts, and the `look`, `send`, `go`, `rest` and `learn` commands.
 - `link.rs`: the HTTP/1.1 link to the terminal server.
 - `daemon.rs`, `cli.rs`: the socket API and the command line.
 

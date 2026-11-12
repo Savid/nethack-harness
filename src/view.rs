@@ -8,7 +8,7 @@
 use std::fmt::{Arguments, Write};
 
 use crate::glyphs::{Shade, feature_name};
-use crate::level::{Ground, Level, Near, Paths, door_sides};
+use crate::level::{Ground, Level, Near, Paths, Squares, door_sides};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, View, strip_more};
 use crate::types::{
@@ -79,13 +79,15 @@ impl Names {
 }
 
 /// A remembered place, or one a `go` target names: its square, glyph (`None` for a chosen square or frontier),
-/// what it is (`down stairs`, `door`, `item`, `frontier`, …) and the squares a walk to it may end on.
+/// what it is (`down stairs`, `door`, `item`, `frontier`, …), the squares a walk to it may end on, and whether it
+/// is remembered only from what the caller told of its square.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Landmark {
     pub pos: Pos,
     pub glyph: Option<char>,
     pub label: String,
     pub goals: Near,
+    pub told: bool,
 }
 
 impl Landmark {
@@ -98,6 +100,7 @@ impl Landmark {
             glyph,
             label: label.to_owned(),
             goals,
+            told: false,
         }
     }
 
@@ -120,13 +123,19 @@ impl Landmark {
 pub fn landmarks(level: &Level, entities: &[Entity], out: &mut Vec<Landmark>) {
     out.clear();
     for (p, ch) in level.known() {
-        if let Some(name) = feature_name(ch) {
-            out.push(Landmark::at(p, Some(ch), level.kind(p).unwrap_or(name)));
+        let landmark = if let Some(name) = feature_name(ch) {
+            Landmark::at(p, Some(ch), level.kind(p).unwrap_or(name))
         } else if ch == '+' {
-            out.push(Landmark::door(p));
+            Landmark::door(p)
         } else if level.open_doors.contains(p) {
-            out.push(Landmark::at(p, Some(ch), "open door"));
-        }
+            Landmark::at(p, Some(ch), "open door")
+        } else {
+            continue;
+        };
+        out.push(Landmark {
+            told: level.told.contains(p),
+            ..landmark
+        });
     }
     for entity in entities {
         let label = match entity.kind {
@@ -151,7 +160,7 @@ pub struct Scene<'a> {
 }
 
 /// One `seen:` or `items:` entry while it is sorted: unreachable last, then by route length and square. `at` is its
-/// square and route, such as `32,7 (adjacent j)` or `40,4 (8)`.
+/// square and route, such as `32,7 (adjacent j)` or `40,4 (8)`, with `(told)` after it for a told landmark.
 struct Listed {
     place: Place,
     at: String,
@@ -164,22 +173,25 @@ impl Listed {
     }
 }
 
-/// Routes from the hero over `ground`: the entities in view, the squares monsters and unseen things other than the
-/// pet hold, the routes around them, and the routes over terrain alone, searched only when asked for.
+/// Routes from the hero over `ground` and `squares`: the entities in view, the squares monsters and unseen things
+/// other than the pet hold, the routes around them, and two more searched only when asked for: the routes over
+/// terrain alone, and the routes around them that enter no square the caller told of.
 #[derive(Default)]
 pub struct Routes {
     pub entities: Vec<Entity>,
     pub occupied: SquareSet,
     pub paths: Paths,
     ground: Ground,
+    squares: Squares,
     terrain: Paths,
-    terrain_from: Option<(u16, Pos, Ground)>,
+    terrain_from: Option<(u16, Pos, Ground, Squares)>,
+    shown: Paths,
 }
 
 impl Routes {
-    /// Takes the entities of `view` and routes from its hero around them over `ground`. A route step into the
-    /// highlighted pet swaps places with it, so the pet blocks nothing.
-    pub fn from_hero(&mut self, memory: &Memory, view: &View, ground: Ground) {
+    /// Takes the entities of `view` and routes from its hero around them over `ground` and `squares`. A route step
+    /// into the highlighted pet swaps places with it, so the pet blocks nothing.
+    pub fn from_hero(&mut self, memory: &Memory, view: &View, ground: Ground, squares: Squares) {
         memory.entities(view, &mut self.entities);
         self.occupied.clear();
         for entity in &self.entities {
@@ -189,20 +201,39 @@ impl Routes {
         }
         self.terrain_from = None;
         self.ground = ground;
+        self.squares = squares;
         if let (Some(level), Some(hero)) = (memory.current(), view.hero) {
-            level.paths(hero, &self.occupied, ground, &mut self.paths);
+            level.paths(hero, &self.occupied, ground, squares, &mut self.paths);
         }
     }
 
-    /// Routes from `hero` over `level`'s terrain, on the ground of the last search from the hero, as if no monster
-    /// stood anywhere; searched once per hero square.
+    /// Routes from `hero` over `level`'s terrain, on the ground and squares of the last search from the hero, as if
+    /// no monster stood anywhere; searched once per hero square.
     pub fn terrain(&mut self, level: &Level, hero: Pos) -> &Paths {
-        let from = Some((level.id, hero, self.ground));
+        let from = Some((level.id, hero, self.ground, self.squares));
         if self.terrain_from != from {
-            level.paths(hero, &SquareSet::new(), self.ground, &mut self.terrain);
+            let nothing = SquareSet::new();
+            level.paths(hero, &nothing, self.ground, self.squares, &mut self.terrain);
             self.terrain_from = from;
         }
         &self.terrain
+    }
+
+    /// The routes of the last search from the hero that enter no square the caller told of: that search itself
+    /// where it entered none, or one from `hero` over `level` again without them.
+    pub fn shown(&mut self, level: &Level, hero: Pos) -> &Paths {
+        if self.squares == Squares::Shown || level.told.is_empty() {
+            return &self.paths;
+        }
+        let ground = self.ground;
+        level.paths(
+            hero,
+            &self.occupied,
+            ground,
+            Squares::Shown,
+            &mut self.shown,
+        );
+        &self.shown
     }
 }
 
@@ -361,7 +392,9 @@ impl Renderer {
         let (Some(level), Some(hero)) = (scene.memory.current(), scene.view.hero) else {
             return;
         };
-        self.routes.from_hero(scene.memory, scene.view, Ground::Dry);
+        let (memory, view) = (scene.memory, scene.view);
+        self.routes
+            .from_hero(memory, view, Ground::Dry, Squares::Known);
         self.line.clear();
         here(level, hero, &mut self.line);
         line(text, format_args!("you: {hero}  here: {}", self.line));
@@ -425,10 +458,11 @@ impl Renderer {
         self.listed_level = Some(level.id);
         for landmark in &self.landmarks {
             let item = landmark.is_item();
-            if !item && landmark.glyph == Some('>') {
+            let stairs = !item && !landmark.told;
+            if stairs && landmark.glyph == Some('>') {
                 facts.stairs_down.get_or_insert(landmark.pos);
             }
-            if !item && landmark.glyph == Some('<') {
+            if stairs && landmark.glyph == Some('<') {
                 facts.stairs_up.get_or_insert(landmark.pos);
             }
             if landmark.pos == hero {
@@ -451,6 +485,9 @@ impl Renderer {
                 (None, None) if blocked => write!(at, "{} (blocked)", landmark.pos),
                 (None, None) => write!(at, "{} (no route)", landmark.pos),
             };
+            if landmark.told {
+                at.push_str(" (told)");
+            }
             let place = Place {
                 glyph,
                 label: label.to_owned(),
@@ -458,6 +495,7 @@ impl Renderer {
                 y: landmark.pos.y,
                 steps,
                 blocked,
+                told: landmark.told,
             };
             let listed = Listed { place, at };
             if item {
@@ -493,7 +531,7 @@ impl Renderer {
             .items
             .extend(self.items.drain(..).map(|entry| entry.place));
 
-        level.frontier_targets(&self.routes.paths, &mut self.edges);
+        level.frontier_targets(self.routes.shown(level, hero), &mut self.edges);
         listing(text, "frontier", &self.edges, |text, (p, steps)| {
             let _ = write!(text, "{p} ({steps})");
         });
@@ -573,7 +611,8 @@ fn tail(scene: &Scene, map: bool, text: &mut String, facts: &mut Facts) {
     }
 }
 
-/// The report line, such as `go >: 5 steps, 5 turns, now at 40,7; done` or
+/// The report line, such as `go >: 5 steps, 5 turns, now at 40,7; done`,
+/// `go >: 9 steps, 4 told, 9 turns, now at 60,12; done` for a walk that entered four told squares, or
 /// `rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the hero (d 41,8)`. A rest says
 /// when the turn counter was not shown, and how many searches took no time with what the screen showed for them:
 /// `rest 20: 20 searches, 15 turns, 5 took no time (turn counter unchanged, no message or prompt); done`.
@@ -588,6 +627,9 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
     plural(report.steps.into(), unit, out);
     if let Some(wet) = report.wet {
         let _ = write!(out, ", {wet} wet");
+    }
+    if let Some(told) = report.told.filter(|&n| n > 0) {
+        let _ = write!(out, ", {told} told");
     }
     if let Some(turns) = report.turns {
         out.push_str(", ");

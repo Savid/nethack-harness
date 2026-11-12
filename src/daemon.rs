@@ -2,9 +2,9 @@
 //! line per connection, in order, so play is serialised. It holds all game memory in RAM, has no timers, and writes
 //! only its log, on errors.
 //!
-//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"stop", "keys"?: str, "target"?: str, "wet"?: bool, "count"?: u32,
-//! "near"?: int}`; `keys` uses the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str,
-//! "facts": {…}}`.
+//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"learn"|"stop", "keys"?: str, "target"?: str, "wet"?: bool,
+//! "count"?: u32, "near"?: int, "rows"?: [str], "colours"?: [str]}`; `keys` uses the escape syntax
+//! `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
 
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{ErrorKind, Read, Write};
@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::link::Term;
 use crate::play::{KEYS_MAX, Play, REST_MAX};
-use crate::types::{ExitCode, Reply, unescape};
+use crate::types::{COLS, ExitCode, MAP_ROWS, Reply, unescape};
 
 /// Longest request line accepted, in bytes.
-const REQUEST_MAX: usize = 4096;
+const REQUEST_MAX: usize = 8192;
 /// Longest `go` target, in bytes.
 const TARGET_MAX: usize = 64;
 /// Largest `near` radius, in squares: the map's width.
@@ -38,11 +38,12 @@ pub enum Cmd {
     Send,
     Go,
     Rest,
+    Learn,
     Stop,
 }
 
-/// One request line: `keys` for `send`, `target` and optionally `wet` for `go`, `count` for `rest`, and optionally
-/// `near` for `go` and `rest`.
+/// One request line: `keys` for `send`, `target` and optionally `wet` for `go`, `count` for `rest`, optionally
+/// `near` for `go` and `rest`, and `rows` and `colours` for `learn`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -57,6 +58,10 @@ pub struct Request {
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colours: Option<Vec<String>>,
 }
 
 /// A request whose arguments have been checked.
@@ -73,26 +78,36 @@ pub enum Checked<'a> {
         count: u32,
         near: Option<u8>,
     },
+    Learn {
+        rows: &'a [String],
+        colours: &'a [String],
+    },
     Stop,
 }
 
 /// Checks that a request carries exactly the arguments its command takes, within their limits; the error is the
 /// message it is refused with under code 64.
 pub fn check(request: &Request) -> Result<Checked<'_>, String> {
-    let (keys, target, count, near) = (
+    let (keys, target, count, near, map) = (
         request.keys.is_some(),
         request.target.is_some() || request.wet.is_some(),
         request.count.is_some(),
         request.near,
+        request.rows.is_some() || request.colours.is_some(),
     );
     let any = keys || target || count || near.is_some();
     let refuse = |why: &str| Err(why.to_owned());
     match request.cmd {
-        Cmd::Look if any => refuse("look takes no keys, target, wet, count or near"),
-        Cmd::Stop if any => refuse("stop takes no keys, target, wet, count or near"),
-        Cmd::Send if target || count || near.is_some() => refuse("send takes only keys"),
-        Cmd::Go if keys || count => refuse("go takes only a target, wet and near"),
-        Cmd::Rest if keys || target => refuse("rest takes only a count and near"),
+        Cmd::Look if any || map => {
+            refuse("look takes no keys, target, wet, count, near, rows or colours")
+        }
+        Cmd::Stop if any || map => {
+            refuse("stop takes no keys, target, wet, count, near, rows or colours")
+        }
+        Cmd::Send if target || count || near.is_some() || map => refuse("send takes only keys"),
+        Cmd::Go if keys || count || map => refuse("go takes only a target, wet and near"),
+        Cmd::Rest if keys || target || map => refuse("rest takes only a count and near"),
+        Cmd::Learn if any => refuse("learn takes only rows and colours"),
         Cmd::Go | Cmd::Rest if near.is_some_and(|n| !(1..=NEAR_MAX).contains(&n)) => {
             Err(format!("near takes 1 to {NEAR_MAX} squares"))
         }
@@ -116,6 +131,29 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
             Some(count) if (1..=REST_MAX).contains(&count) => Ok(Checked::Rest { count, near }),
             _ => Err(format!("rest takes 1 to {REST_MAX} searches")),
         },
+        Cmd::Learn => {
+            let rows = request.rows.as_deref().unwrap_or_default();
+            let colours = request.colours.as_deref().unwrap_or_default();
+            let sized = |lines: &[String]| {
+                let printable = |line: &String| line.bytes().all(|b| matches!(b, b' '..=b'~'));
+                lines.len() == MAP_ROWS
+                    && lines
+                        .iter()
+                        .all(|line| line.len() == COLS && printable(line))
+            };
+            if !sized(rows) || !sized(colours) {
+                return Err(format!(
+                    "learn takes {MAP_ROWS} rows and {MAP_ROWS} colours, each of {COLS} printable ASCII characters"
+                ));
+            }
+            let hex = |(ch, colour)| ch == b' ' || matches!(colour, b'0'..=b'9' | b'a'..=b'f');
+            let coloured =
+                |(row, colours): (&String, &String)| row.bytes().zip(colours.bytes()).all(hex);
+            if !rows.iter().zip(colours).all(coloured) {
+                return refuse("learn takes a colour digit, 0 to f, under each square of rows");
+            }
+            Ok(Checked::Learn { rows, colours })
+        }
     }
 }
 
@@ -283,6 +321,7 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
         (Ok(()), Checked::Send(keys)) => play.send(&keys),
         (Ok(()), Checked::Go { target, wet, near }) => play.go(target, wet, near),
         (Ok(()), Checked::Rest { count, near }) => play.rest(count, near),
+        (Ok(()), Checked::Learn { rows, colours }) => play.learn(rows, colours),
         (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
     };
     let exit = reply.code == ExitCode::Closed;
@@ -315,6 +354,8 @@ mod tests {
             wet: None,
             count: None,
             near: None,
+            rows: None,
+            colours: None,
         }
     }
 
@@ -365,6 +406,59 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&request(Cmd::Stop)).unwrap(),
             "{\"cmd\":\"stop\"}"
+        );
+    }
+
+    #[test]
+    fn learn_takes_the_whole_map_and_a_colour_under_each_square_told() {
+        let rows = |row: &str, count: usize| Some(vec![format!("{row:<80}"); count]);
+        let mut learn = request(Cmd::Learn);
+        assert!(check(&learn).is_err());
+        learn.rows = rows(" |..>", MAP_ROWS);
+        learn.colours = Some(vec!["7".repeat(COLS); MAP_ROWS]);
+        assert!(matches!(
+            check(&learn),
+            Ok(Checked::Learn { rows, colours }) if rows.len() == MAP_ROWS && colours.len() == MAP_ROWS
+        ));
+        // A request that tells of every square fits a request line.
+        learn.rows = rows(&"\\".repeat(COLS), MAP_ROWS);
+        let line = serde_json::to_string(&learn).unwrap();
+        assert_eq!(parse_request(line.as_bytes()).unwrap(), learn);
+        // The colour under a square that tells nothing is not read.
+        learn.rows = rows(" |..>", MAP_ROWS);
+        learn.colours = rows("x3bf0", MAP_ROWS);
+        assert!(check(&learn).is_ok());
+        for colours in [" g777", " F777", " 7"] {
+            learn.colours = rows(colours, MAP_ROWS);
+            let refused = check(&learn).unwrap_err();
+            assert!(refused.contains("colour digit"), "{colours}: {refused}");
+        }
+        for (told, colours) in [
+            (rows(" |..>", MAP_ROWS - 1), rows("77777", MAP_ROWS)),
+            (rows(" |..>", MAP_ROWS), rows("77777", MAP_ROWS + 1)),
+            (rows(" |..>", MAP_ROWS), None),
+            (
+                Some(vec![" |..>".to_owned(); MAP_ROWS]),
+                rows("77777", MAP_ROWS),
+            ),
+            (rows(" |.\u{b7}>", MAP_ROWS), rows("77777", MAP_ROWS)),
+        ] {
+            learn.rows = told;
+            learn.colours = colours;
+            let refused = check(&learn).unwrap_err();
+            assert!(refused.contains("21 rows and 21 colours"), "{refused}");
+        }
+        learn.near = Some(3);
+        assert_eq!(
+            check(&learn).unwrap_err(),
+            "learn takes only rows and colours"
+        );
+        let mut go = request(Cmd::Go);
+        go.target = Some(">".to_owned());
+        go.rows = rows("", MAP_ROWS);
+        assert_eq!(
+            check(&go).unwrap_err(),
+            "go takes only a target, wet and near"
         );
     }
 
@@ -420,7 +514,7 @@ mod tests {
         look.keys = Some("x".to_owned());
         assert_eq!(
             check(&look).unwrap_err(),
-            "look takes no keys, target, wet, count or near"
+            "look takes no keys, target, wet, count, near, rows or colours"
         );
         let mut look = request(Cmd::Look);
         look.near = Some(3);

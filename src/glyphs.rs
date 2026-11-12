@@ -63,6 +63,21 @@ pub fn shade(fg: Colour, bold: bool) -> Shade {
     Shade { base, bright }
 }
 
+/// The shade of a square the game colours `colour`, its colour number 0 to 15, as the tty draws that colour: black
+/// as bold SGR 30, 1 to 6 as SGR 31 to 36, gray (7) and no colour (8) in the default colour, 9 to 14 as 1 to 6 in
+/// bold, and white (15) as bold SGR 37. `None` for any other number.
+pub fn numbered(colour: u8) -> Option<Shade> {
+    let (sgr, bold) = match colour {
+        0 => (30, true),
+        1..=6 => (30 + u16::from(colour), false),
+        7 | 8 => return Some(shade(Colour::Default, false)),
+        9..=14 => (22 + u16::from(colour), true),
+        15 => (37, true),
+        _ => return None,
+    };
+    Colour::from_sgr(sgr).map(|fg| shade(fg, bold))
+}
+
 /// Whether the symbol is an object class symbol.
 pub fn is_item(ch: char) -> bool {
     ")[%?/=!(*\"$".contains(ch)
@@ -265,6 +280,24 @@ mod tests {
                 bright: true
             }
         );
+    }
+
+    #[test]
+    fn colour_numbers_shade_as_the_tty_draws_them() {
+        let shades: Vec<(Base, bool)> = (0..16)
+            .filter_map(numbered)
+            .map(|shade| (shade.base, shade.bright))
+            .collect();
+        #[rustfmt::skip]
+        let drawn = [
+            (Base::Black, true), (Base::Red, false), (Base::Green, false), (Base::Brown, false),
+            (Base::Blue, false), (Base::Magenta, false), (Base::Cyan, false), (Base::Gray, false),
+            (Base::Gray, false), (Base::Red, true), (Base::Green, true), (Base::Brown, true),
+            (Base::Blue, true), (Base::Magenta, true), (Base::Cyan, true), (Base::White, true),
+        ];
+        assert_eq!(shades, drawn);
+        assert_eq!(numbered(12), Some(shade(Colour::BrightBlue, false)));
+        assert_eq!(numbered(16), None);
     }
 
     #[test]
