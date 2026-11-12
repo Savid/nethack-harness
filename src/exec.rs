@@ -4,7 +4,7 @@
 use std::iter::repeat_n;
 
 use crate::glyphs::{Base, is_monster};
-use crate::level::Paths;
+use crate::level::{Level, Paths};
 use crate::link::{LinkError, Terminal};
 use crate::observe::{Entity, EntityKind, LookSource, Memory};
 use crate::screen::{MenuEntry, Phase, Status, View, strip_more};
@@ -127,6 +127,8 @@ pub struct Outcome {
     pub steps: u32,
     /// Route steps sent into remembered water.
     pub wet: u32,
+    /// Route steps that entered squares the caller had told of when the walk began.
+    pub told: u32,
     /// Game turns that passed, when the status line showed them before and after.
     pub turns: Option<i64>,
     /// For a search, the searches after which the turn counter read as before, and what the screen showed with
@@ -202,12 +204,12 @@ pub struct Executor {
     entries: Vec<MenuEntry>,
     /// The screen an information command was asked from.
     before: Option<View>,
-    /// When the action began: the level it was on, its remembered terrain (`'\0'` where none) and colour by
-    /// square, the squares that had shown a glyph, the open doors and the status line.
+    /// When the action began: the level it was on, what it watches of each square (`watched`), the squares that
+    /// had shown a glyph, the squares the caller had told of and the status line.
     level: Option<u16>,
-    terrain: Vec<(char, Option<Base>)>,
+    terrain: Vec<Watched>,
     seen: SquareSet,
-    doors: SquareSet,
+    told: SquareSet,
     status: Status,
     /// Squares an exploration has known or stood on.
     covered: SquareSet,
@@ -453,7 +455,7 @@ impl Executor {
         let exploring = action.kind == Kind::Explore;
         let moving = matches!(action.kind, Kind::Travel | Kind::Explore);
         let repeat = action.kind == Kind::Search;
-        self.remember_start(io.memory);
+        self.remember_start(io.memory, action.kind);
         let start = io.term.view();
         self.status.clone_from(&start.status);
         let (cond, engulfed) = (start.cond, start.engulfed);
@@ -515,6 +517,12 @@ impl Executor {
                 untimed(io, prior, prior_turn, written);
             }
             let view = io.term.view();
+            if let Some((_, to, ..)) = target
+                && view.hero == Some(to)
+                && self.told.contains(to)
+            {
+                io.outcome.told += 1;
+            }
             match settled(view) {
                 Stop::Completed => {}
                 stop => return Ok(stop),
@@ -602,29 +610,32 @@ impl Executor {
         })
     }
 
-    /// Remembers the current level's terrain, colours, seen squares and open doors as the action's start.
-    fn remember_start(&mut self, memory: &Memory) {
+    /// Remembers what an action of `kind` watches of the current level as its start: each square's terrain, the
+    /// squares that had shown a glyph and the squares the caller had told of.
+    fn remember_start(&mut self, memory: &Memory, kind: Kind) {
         self.terrain.clear();
-        self.terrain.resize(MAP_SQUARES, ('\0', None));
+        self.terrain.resize(MAP_SQUARES, ('\0', None, false));
         self.seen.clear();
-        self.doors.clear();
+        self.told.clear();
         self.covered.clear();
         self.level = memory.current().map(|level| level.id);
         let Some(level) = memory.current() else {
             return;
         };
-        for (p, ch) in level.known() {
-            if let Some(i) = p.index() {
-                self.terrain[i] = (ch, level.colour(p));
+        for (i, square) in self.terrain.iter_mut().enumerate() {
+            let p = Pos::from_index(i);
+            *square = watched(level, kind, p);
+            if square.0 != '\0' {
                 self.covered.insert(p);
             }
         }
         self.seen.clone_from(&level.seen);
-        self.doors.clone_from(&level.open_doors);
+        self.told.clone_from(&level.told);
     }
 
-    /// Whether remembered terrain differs from the start, or the hero is on another level. Travel watches only
-    /// features, `+`, coloured `#` and open doors; exploring judges terrain by what it discovers instead.
+    /// Whether the terrain the action watches differs from the start, or the hero is on another level. Travel
+    /// watches only features, `+`, coloured `#` and open doors, and takes a square shown as the caller told of it
+    /// as unchanged; exploring judges terrain by what it discovers instead.
     fn terrain_changed(&self, memory: &Memory, kind: Kind) -> bool {
         if kind == Kind::Explore {
             return false;
@@ -632,17 +643,23 @@ impl Executor {
         let Some(level) = memory.current() else {
             return self.level.is_some();
         };
-        if self.level != Some(level.id) || level.open_doors != self.doors {
+        if self.level != Some(level.id) {
             return true;
         }
         (0..MAP_SQUARES).any(|i| {
             let p = Pos::from_index(i);
-            let (old, was) = self.terrain[i];
-            let (new, now) = (level.terrain(p).unwrap_or('\0'), level.colour(p));
-            let structure = structural(old, was) != structural(new, now);
+            // A told square the hero has stood on shows nothing of itself until the hero has left it.
+            if self.told.contains(p) && level.inferred_floor.contains(p) {
+                return false;
+            }
+            let (old, was, open) = self.terrain[i];
+            let (new, now, opened) = watched(level, kind, p);
+            if open != opened || structural(old, was) != structural(new, now) {
+                return true;
+            }
             match kind {
-                Kind::Travel => feature(old) != feature(new) || structure,
-                _ => old != new || structure,
+                Kind::Travel => feature(old) != feature(new),
+                _ => old != new,
             }
         })
     }
@@ -655,16 +672,17 @@ impl Executor {
         let Some(level) = memory.current() else {
             return false;
         };
-        let opened = level.open_doors.iter().any(|p| !self.doors.contains(p));
-        if self.level != Some(level.id) || opened {
+        if self.level != Some(level.id) {
             return true;
         }
-        level.known().any(|(p, ch)| {
-            let Some(i) = p.index() else {
-                return false;
-            };
-            let (old, colour) = self.terrain[i];
-            if old == ch && colour == level.colour(p) {
+        (0..MAP_SQUARES).any(|i| {
+            let p = Pos::from_index(i);
+            let (old, colour, open) = self.terrain[i];
+            let (ch, now, opened) = watched(level, Kind::Explore, p);
+            if opened && !open {
+                return true;
+            }
+            if ch == '\0' || old == ch && colour == now {
                 return false;
             }
             if feature(ch).is_some() {
@@ -853,6 +871,20 @@ fn status_moved(a: &Status, b: &Status) -> bool {
     rest(a) != rest(b)
 }
 
+/// What an action watches of a square: its remembered terrain (`'\0'` where none) and colour, and whether it is an
+/// open door.
+type Watched = (char, Option<Base>, bool);
+
+/// What an action of `kind` watches of `p` on `level`. Only travel, whose route may cross them, watches the squares
+/// the caller told of; to any other action they hold nothing until the screen shows them.
+fn watched(level: &Level, kind: Kind, p: Pos) -> Watched {
+    if kind != Kind::Travel && level.told.contains(p) {
+        return ('\0', None, false);
+    }
+    let ch = level.terrain(p).unwrap_or('\0');
+    (ch, level.colour(p), level.open_doors.contains(p))
+}
+
 /// A remembered feature or `+`, or `None` for other terrain.
 fn feature(ch: char) -> Option<char> {
     (ch == '+' || crate::glyphs::feature_name(ch).is_some()).then_some(ch)
@@ -946,7 +978,8 @@ pub fn needs_redraw(keys: &[u8], after_run: bool, view: &View) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level::{Ground, Paths};
+    use crate::glyphs::Shade;
+    use crate::level::{Ground, Squares};
     use crate::testkit::{STATUS1, ScriptedTerm, grid, screen, view};
     use crate::types::{Cell, Colour, Grid};
 
@@ -1184,7 +1217,13 @@ mod tests {
             // The refusal is reported, not remembered: the next wet route takes the same step.
             let level = memory.current().expect("a level");
             let mut paths = Paths::default();
-            level.paths(Pos::new(2, 4), &SquareSet::new(), Ground::Wet, &mut paths);
+            level.paths(
+                Pos::new(2, 4),
+                &SquareSet::new(),
+                Ground::Wet,
+                Squares::Known,
+                &mut paths,
+            );
             let mut route = Vec::new();
             assert!(paths.route(Pos::new(2, 7), &mut route));
             assert_eq!(route.first(), Some(&Pos::new(2, 5)));
@@ -1242,16 +1281,62 @@ mod tests {
             assert_eq!(outcome.stop == expected, refused, "{:?}", outcome.stop);
             let level = memory.current().expect("a level");
             let mut paths = Paths::default();
-            level.paths(Pos::new(2, 2), &SquareSet::new(), Ground::Dry, &mut paths);
+            level.paths(
+                Pos::new(2, 2),
+                &SquareSet::new(),
+                Ground::Dry,
+                Squares::Known,
+                &mut paths,
+            );
             let length = if refused { 2 } else { 1 };
             assert_eq!(paths.distance(Pos::new(3, 3)), Some(length));
             // Where no route avoids it, a route still takes the refused step.
             let mut occupied = SquareSet::new();
             occupied.insert(Pos::new(2, 3));
             occupied.insert(Pos::new(3, 2));
-            level.paths(Pos::new(2, 2), &occupied, Ground::Dry, &mut paths);
+            level.paths(
+                Pos::new(2, 2),
+                &occupied,
+                Ground::Dry,
+                Squares::Known,
+                &mut paths,
+            );
             assert_eq!(paths.distance(Pos::new(3, 3)), Some(1));
         }
+    }
+
+    #[test]
+    fn a_step_onto_a_told_square_is_counted_and_a_refused_one_is_remembered() {
+        // The caller told of floor east and southeast of the hero; the screen shows neither.
+        let alone = || corridor((2, 3), &[], 400);
+        let moved = corridor((3, 4), &[((2, 3), '.')], 401);
+        let (mut term, mut memory) = start(vec![alone(), alone(), moved]);
+        let level = memory.current_mut().expect("a level");
+        let told = |p: Pos| (p.x == 4 && (2..=3).contains(&p.y)).then_some(('.', Shade::GRAY));
+        assert_eq!(level.learn(told), 2);
+        let mut exec = Executor::default();
+        let east = walk(Kind::Travel, 1, (2, 4), &[(2, 4)]);
+        let outcome = exec.run(&mut term, &mut memory, &east);
+        let refused = Stop::Refused {
+            from: Pos::new(2, 3),
+            to: Pos::new(2, 4),
+        };
+        assert_eq!((outcome.stop, outcome.told), (refused, 0));
+        let level = memory.current().expect("a level");
+        assert!(level.told.contains(Pos::new(2, 4)));
+        let mut paths = Paths::default();
+        level.paths(
+            Pos::new(2, 3),
+            &SquareSet::new(),
+            Ground::Dry,
+            Squares::Known,
+            &mut paths,
+        );
+        assert_eq!(paths.distance(Pos::new(2, 4)), Some(2));
+        let southeast = walk(Kind::Travel, 1, (3, 4), &[(3, 4)]);
+        let outcome = exec.run(&mut term, &mut memory, &southeast);
+        assert_eq!(sent(&term), ["ml", "mn"]);
+        assert_eq!((outcome.stop, outcome.told), (Stop::Completed, 1));
     }
 
     #[test]

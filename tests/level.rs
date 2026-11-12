@@ -3,7 +3,7 @@
 mod support;
 
 use nethack_harness::glyphs::{Shade, is_floor_engraving, shade};
-use nethack_harness::level::{Ground, Level, Paths, Plus, plus_kind};
+use nethack_harness::level::{Ground, Level, Paths, Plus, Squares, plus_kind};
 use nethack_harness::screen::{Status, View};
 use nethack_harness::types::{Grid, MAP_SQUARES, Pos, SquareSet};
 use support::{Fixture, fixture_names};
@@ -44,7 +44,13 @@ fn observed(name: &str) -> (Level, View) {
 
 fn search(level: &Level, start: Pos) -> Paths {
     let mut paths = Paths::default();
-    level.paths(start, &SquareSet::new(), Ground::Dry, &mut paths);
+    level.paths(
+        start,
+        &SquareSet::new(),
+        Ground::Dry,
+        Squares::Known,
+        &mut paths,
+    );
     paths
 }
 

@@ -1,9 +1,9 @@
 # nethack-harness
 
 A NetHack observation and execution adapter for a caller, human or program, driving one game over a terminal
-socket. It decodes the screen, remembers what was observed, routes over observed geometry, runs bounded actions
-and reports what happened. It never decides what to do: it holds no game reference tables, survival rules or
-advice, and it never answers a prompt the caller did not answer.
+socket. It decodes the screen, remembers what was observed, routes over observed geometry and over squares the
+caller told it about, runs bounded actions and reports what happened. It never decides what to do: it holds no
+game reference tables, survival rules or advice, and it never answers a prompt the caller did not answer.
 
 It is one static binary, `nethack-harness`, with no runtime dependencies. A client invocation sends one request
 to a per-session daemon and prints its reply; the daemon owns the game's memory and the terminal connection.
@@ -53,6 +53,7 @@ nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 | `send KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. |
 | `go [--wet] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water. |
 | `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
+| `learn ROW… COLOURS…` | Tell the harness about squares of the current level it has not observed: the map's 21 rows, then their 21 rows of colours. Sends nothing to the game and prints `learned N squares`. |
 | `stop` | Stop the session's daemon. With none running it prints `no daemon is running` and exits 0. |
 | `serve` | Run the daemon in the foreground (the client starts it on demand). |
 
@@ -100,6 +101,36 @@ into view inside the radius, or moves into it from outside; one already inside t
 stop reads `a monster came within N squares of the hero (d 41,8, 2 away)`. Every other stop is unchanged, and
 without `--near` a monster coming into view anywhere stops the action, as above.
 
+`learn` tells the harness about squares of the current level that it has not observed, so that a route can cross
+them and `go` can reach a target the hero never saw. Its 42 operands are the map as the view draws it: 21 rows of
+80 characters, row 1 first, each character the square's map symbol and a space where nothing is told; then 21 rows
+of 80 colours, each character the game's colour number for the square above it as one hex digit:
+
+| Digit | Colour | Digit | Colour | Digit | Colour | Digit | Colour |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `0` | black | `4` | blue | `8` | no colour | `c` | bright blue |
+| `1` | red | `5` | magenta | `9` | orange | `d` | bright magenta |
+| `2` | green | `6` | cyan | `a` | bright green | `e` | bright cyan |
+| `3` | brown | `7` | gray | `b` | yellow | `f` | white |
+
+The digit under a space is not read. A told square is remembered as if the screen had drawn that symbol in that
+colour, and the harness alone decides what it is and whether a route may enter it, exactly as for a square it
+observed. Only a square with nothing remembered on it is learned: one the screen has shown, or one told before,
+stays as it is, and a monster letter, an `I` or a warning digit tells nothing about its square. The reply counts
+the squares learned.
+
+Told squares differ from observed ones in these ways only:
+
+- They are not drawn on the map and do not count as explored: the map, `frontier:` and `go frontier` are the same
+  with and without them, and a `frontier` walk follows no told corridor.
+- A feature remembered only from a told square is listed under `seen:` with `(told)`, and is left out of
+  `stairs_up` and `stairs_down`. A told object only makes its square one a route may enter; it is not listed.
+- Once the screen shows a told square, or the hero stands on it, what was told is forgotten and what is observed
+  takes its place.
+- A `go` walk counts the steps that entered told squares. A told square the screen shows as it was told is no
+  change of terrain to the walk; one it shows otherwise is judged like any other change. A step the game refuses
+  onto a told square is remembered like any refused step.
+
 After `send`, `go` and `rest`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
 eight per command) and reads underfoot with `:` where the hero stands on a square never seen, an object square, or
 a known engraving last read on an earlier turn. Both take no game time and run only while the map waits for a
@@ -132,7 +163,7 @@ the caller; the client waits at most 90 s for its reply.
 
 ## Socket API
 
-A program may talk to the daemon directly. Connect to `<dir>/sock`, write one JSON request line (at most 4096
+A program may talk to the daemon directly. Connect to `<dir>/sock`, write one JSON request line (at most 8192
 bytes, all of it within 2 s), read one JSON reply line. One request per connection; requests are served one at a
 time, in order.
 
@@ -143,17 +174,24 @@ time, in order.
 {"cmd": "go", "target": ">", "wet": true}
 {"cmd": "rest", "count": 20}
 {"cmd": "rest", "count": 20, "near": 3}
+{"cmd": "learn", "rows": ["…80 characters…", …21 rows], "colours": ["…80 hex digits…", …21 rows]}
 {"cmd": "stop"}
 ```
 
 `keys` uses the escape syntax above. Each command takes exactly its own field: `send` requires `keys`, `go`
 requires `target` (at most 64 bytes) and takes an optional `wet` (`true` is `go --wet`), `rest` requires `count`
-(1 to 200), `go` and `rest` take an optional `near` (1 to 80, as `--near`), and any other field is refused with
-code 64. The reply is
+(1 to 200), `go` and `rest` take an optional `near` (1 to 80, as `--near`), `learn` requires `rows` and `colours`,
+and any other field is refused with code 64. `rows` and `colours` are each 21 strings of 80 printable ASCII
+characters, as the `learn` operands above: `rows[0]` is map row 1 and a string's first character is column 0. A
+request with another number of rows, a row of another length, or a character other than `0` to `9` or `a` to `f`
+under a square of `rows` that is not a space is refused with code 64. The reply is
 
 ```json
 {"code": 0, "text": "…the text view…", "facts": {…}}
 ```
+
+`learn` answers code 0 with the text `learned 12 squares` (`learned 1 square`) and no view: its `facts` hold only
+empty lists. Before the first map it answers code 1 with `learn: no level has been seen yet`.
 
 A connection that closes without sending anything gets no reply. Only the client starts a daemon on demand; a
 program using the socket directly starts one with `nethack-harness --dir D --socket PATH serve`, which prints
@@ -187,6 +225,7 @@ rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the h
 rest 20: 20 searches, 15 turns, 5 took no time (turn counter unchanged, no message or prompt); done
 rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; 3 screen unchanged); stopped: no time passed
 go --wet <: 4 steps, 1 wet, 4 turns, now at 16,3; done
+go >: 9 steps, 4 told, 9 turns, now at 60,12; done
 inventory: (T:4) a - a +0 scalpel (weapon in hand); b - an uncursed stethoscope
 answered: "Do you want your possessions identified? [ynq] (n)" ← n
 end: killed by a jackal
@@ -195,9 +234,10 @@ end: killed by a jackal
 The parts, in order:
 
 - **Report line**, after `send`, `go` and `rest`: the command with its options (`go --wet --near 3 >`), steps or
-  searches, for `go --wet` the steps into water (`N wet`), turns passed, for `rest` the searches that took no time
-  (`N took no time (…)`, each distinct answer on screen after its count unless one covers them all, at most eight
-  listed and any others as `N more`), where the hero is, and `done` or `stopped:` with each reason.
+  searches, for `go --wet` the steps into water (`N wet`), for `go` the steps that entered told squares (`N told`,
+  when there were any), turns passed, for `rest` the searches that took no time (`N took no time (…)`, each
+  distinct answer on screen after its count unless one covers them all, at most eight listed and any others as
+  `N more`), where the hero is, and `done` or `stopped:` with each reason.
 - **Status**: the game's two status lines, spaces squashed.
 - **`msg:`**: each complete message written during the command, joined across wrapped rows. Text already on a
   screen printed in full is not repeated. A command reports its last 32 lines, after `(N earlier lines left out)`.
@@ -216,9 +256,10 @@ The parts, in order:
   is never hidden by one seen on hundreds; kinds with as many squares go by their nearest square. Each kind lists
   its nearest three squares by route with the route length, `(no route)` or `(blocked)`, then `+N more` of that
   kind: `seen: > down stairs 60,12 (no route); + door 32,7 (adjacent j), 30,5 (1); } water 33,6 (adjacent l),
-  34,6 (no route), 35,6 (no route), +712 more`. **`items:`**: remembered objects. **`frontier:`**: known ground
-  beside unexplored squares. These two list the nearest six by route with the route length, `(no route)` or
-  `(blocked)`, then `+N more`.
+  34,6 (no route), 35,6 (no route), +712 more`. A square the harness knows only because the caller told it is
+  marked `(told)` after its route: `seen: > down stairs 60,12 (9) (told)`. **`items:`**: remembered objects.
+  **`frontier:`**: known ground beside unexplored squares. These two list the nearest six by route with the route
+  length, `(no route)` or `(blocked)`, then `+N more`.
 - **`inventory:`**: the last inventory menu the game showed, whoever opened it, with the turn it was shown.
 - **`answered:`**: each prompt the sent keys passed and the key that answered it, marked
   `(typed into a text prompt)` when the keys went into a free-text prompt; the last 32, after
@@ -250,11 +291,11 @@ underfoot that describe it.
 | `prompt` | string? | The open prompt's text. |
 | `msgs` | string[] | Messages written since the last reply. |
 | `monsters` | object[] | `{name?, glyph, x, y, dist, looked_turn?, pet?}`, nearest first. |
-| `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?}`, every one, nearest by route first. |
+| `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?, told?}`, every one, nearest by route first; `told` is `true` in `seen` for a square known only because the caller told it. |
 | `frontier` | object[] | `{x, y, steps}`. |
-| `stairs_up`, `stairs_down` | `[x, y]`? | Remembered stairs on this level. |
+| `stairs_up`, `stairs_down` | `[x, y]`? | Observed stairs on this level; told ones are only in `seen`. |
 | `inventory` | object? | `{turn?, lines[]}`, lines such as `a - a +0 scalpel (weapon in hand)`. |
-| `report` | object? | `{verb, done, stopped[], steps, wet?, turns?, no_time?, no_time_why?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water. For a `rest` that saw the turn counter at its start and end, `no_time` counts the searches after which it read as before, and `no_time_why` lists what the screen showed with them, one `{searches, why, text?}` per distinct answer in the order first seen, at most eight: `why` is `message` or `prompt` with its `text`, `screen unchanged`, or `turn counter unchanged`. |
+| `report` | object? | `{verb, done, stopped[], steps, wet?, told?, turns?, no_time?, no_time_why?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water, and `told`, present for every `go` that walked, the steps that entered squares that were told when the walk began. For a `rest` that saw the turn counter at its start and end, `no_time` counts the searches after which it read as before, and `no_time_why` lists what the screen showed with them, one `{searches, why, text?}` per distinct answer in the order first seen, at most eight: `why` is `message` or `prompt` with its `text`, `screen unchanged`, or `turn counter unchanged`. |
 | `answered` | object[] | `{prompt, key, text_entry?}`; `key` in escape syntax. |
 | `end` | object? | `{death?, lines[]}` once the game is over; `death` is the death line, verbatim. |
 

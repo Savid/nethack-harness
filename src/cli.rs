@@ -1,5 +1,6 @@
 //! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] COMMAND`, where COMMAND is
-//! `look`, `send KEYS`, `go [--wet] [--near N] TARGET`, `rest [--near N] COUNT`, `stop` or `serve`.
+//! `look`, `send KEYS`, `go [--wet] [--near N] TARGET`, `rest [--near N] COUNT`, `learn ROW… COLOURS…`, `stop` or
+//! `serve`.
 //!
 //! A client command connects to `<dir>/sock`, sends one request line, prints the reply's text (or, with `--json`,
 //! the reply object) and exits with its code. When nothing answers it takes `flock(<dir>/lock)`, checks again, and
@@ -31,7 +32,8 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] \
-                         look | send KEYS | go [--wet] [--near N] TARGET | rest [--near N] COUNT | stop | serve";
+                         look | send KEYS | go [--wet] [--near N] TARGET | rest [--near N] COUNT | \
+                         learn ROW... COLOURS... | stop | serve";
 
 /// A parsed command line: the options, then the request for the daemon or `serve` (`None`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,7 +52,7 @@ struct Answer {
 }
 
 /// Parses the arguments after the program name. `send` keys may start with `-`; they are checked against the escape
-/// syntax and the 1–256 byte limit here.
+/// syntax and the 1–256 byte limit here. `learn` takes the map's rows and then their colours, one operand each.
 pub fn parse(args: &[String]) -> Result<Args, String> {
     let mut parsed = Args {
         dir: PathBuf::from(DEFAULT_DIR),
@@ -107,6 +109,15 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 _ => return Err("rest takes [--near N] COUNT".to_owned()),
             }
             rest
+        }
+        ("learn", _) => {
+            // The map's rows, then as many rows of colours; the request check counts and measures them.
+            let (rows, colours) = operands.split_at(operands.len() / 2);
+            Request {
+                rows: Some(rows.to_vec()),
+                colours: Some(colours.to_vec()),
+                ..request(Cmd::Learn)
+            }
         }
         ("look" | "stop" | "serve", _) => return Err(format!("{name} takes no arguments")),
         ("send", _) => return Err("send takes one argument".to_owned()),
@@ -416,6 +427,16 @@ mod tests {
         ] {
             assert!(args(bad).is_err(), "{bad:?}");
         }
+        let (row, colours) = (format!("{:<80}", " |..>"), "7".repeat(80));
+        let mut learn = vec!["learn"];
+        learn.extend([row.as_str(); 21]);
+        learn.extend([colours.as_str(); 21]);
+        let told = request(&learn);
+        assert_eq!(told.cmd, Cmd::Learn);
+        assert_eq!(told.rows, Some(vec![row.clone(); 21]));
+        assert_eq!(told.colours, Some(vec![colours.clone(); 21]));
+        assert!(args(&learn[..42]).unwrap_err().contains("21 rows"));
+        assert!(args(&["learn"]).is_err());
         let long = "a".repeat(257);
         assert!(args(&["send", &long]).unwrap_err().contains("1 to 256"));
         assert!(args(&["send", &long[..256]]).is_ok());

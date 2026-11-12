@@ -1,4 +1,5 @@
-//! Per-level memory of observed terrain, passability, shortest routes through known squares, and the frontier.
+//! Per-level memory of observed terrain and of squares the caller told of, passability, shortest routes through
+//! known squares, and the frontier.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -24,6 +25,15 @@ pub enum Ground {
     #[default]
     Dry,
     Wet,
+}
+
+/// Which remembered squares a route may enter: all of them (`Known`), or only those the screen has shown (`Shown`),
+/// leaving out the squares the caller told of.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Squares {
+    #[default]
+    Known,
+    Shown,
 }
 
 /// What a `+` is: a closed door and a spellbook are both drawn `+`.
@@ -162,6 +172,9 @@ pub struct Level {
     pub inferred_floor: SquareSet,
     /// Squares that ever showed a glyph.
     pub seen: SquareSet,
+    /// Squares the caller told of that the screen has not shown since: what is remembered of them is what was
+    /// told.
+    pub told: SquareSet,
     /// Squares known only as showing an object.
     pub object_squares: SquareSet,
     /// Squares showing a `+` that may be a closed door or an object: routes neither enter nor leave them
@@ -194,6 +207,7 @@ impl Level {
             colours: Box::new([None; MAP_SQUARES]),
             inferred_floor: SquareSet::new(),
             seen: SquareSet::new(),
+            told: SquareSet::new(),
             object_squares: SquareSet::new(),
             maybe_doors: SquareSet::new(),
             open_doors: SquareSet::new(),
@@ -214,6 +228,11 @@ impl Level {
 
     pub fn colour(&self, p: Pos) -> Option<Base> {
         p.index().and_then(|i| self.colours[i])
+    }
+
+    /// The remembered glyph at `p` unless the caller told of it: what the screen showed or the game said.
+    pub fn observed(&self, p: Pos) -> Option<char> {
+        self.terrain(p).filter(|_| !self.told.contains(p))
     }
 
     /// The remembered squares with their glyphs, row then column.
@@ -238,7 +257,8 @@ impl Level {
 
     /// Takes in every map square of a screen in normal play: terrain, objects, doors, engravings and the hero's
     /// square. A remembered trap whose square the screen shows with other terrain is forgotten, with its name and
-    /// the notes underfoot that describe it: the game draws every trap it has seen.
+    /// the notes underfoot that describe it: the game draws every trap it has seen. What the caller told of a
+    /// square is forgotten once the screen shows the square or the hero stands on it.
     pub fn observe(&mut self, view: &View) {
         let blind = view.cond.contains(BLIND);
         for i in 0..MAP_SQUARES {
@@ -258,34 +278,100 @@ impl Level {
                 continue;
             }
             self.seen.insert(p);
+            self.forget_told(p);
             let plus = (ch == '+').then(|| plus_kind(view, Some(self), p));
-            mark(&mut self.maybe_doors, p, plus == Some(Plus::DoorOrObject));
-            if is_item(ch) || statue || matches!(plus, Some(Plus::Object | Plus::DoorOrObject)) {
-                if self.terrain[i] == '\0' {
-                    self.object_squares.insert(p);
-                }
-                continue;
-            }
-            self.object_squares.remove(p);
-            let floor = is_floor_engraving(ch, colour);
-            if ch != '^' && self.terrain[i] == '^' {
-                self.forget_trap(p);
-            }
-            self.remember_terrain(p, if floor { '.' } else { ch }, Some(colour.base));
-            let engraved = floor || is_corridor_engraving(ch, colour);
-            mark(&mut self.engravings, p, engraved);
-            let door = matches!(ch, '|' | '-') && colour.base == Base::Brown;
-            mark(&mut self.open_doors, p, door);
+            self.remember_square(p, ch, colour, plus, statue);
         }
         if let Some(hero) = view.hero
             && let Some(i) = hero.index()
         {
             self.seen.insert(hero);
+            self.forget_told(hero);
             self.object_squares.remove(hero);
             if self.terrain[i] == '\0' {
                 self.terrain[i] = '.';
                 self.inferred_floor.insert(hero);
             }
+        }
+    }
+
+    /// Takes in the squares the caller tells of: `told(p)` is the glyph and colour it gives for `p`, `None` where
+    /// it tells nothing. A square is learned only where nothing is remembered; it is decoded as `observe` decodes a
+    /// square on screen, so a monster, an `I` or a warning tells nothing of its square, and it is marked told, not
+    /// seen. Returns how many squares were learned.
+    pub fn learn(&mut self, told: impl Fn(Pos) -> Option<(char, Shade)>) -> u32 {
+        let mut learned = 0;
+        for i in 0..MAP_SQUARES {
+            let p = Pos::from_index(i);
+            let Some((ch, colour)) = told(p) else {
+                continue;
+            };
+            if self.terrain[i] != '\0'
+                || self.object_squares.contains(p)
+                || self.told.contains(p)
+                || is_monster(ch)
+                || is_warning(ch, colour)
+                || ch == 'I'
+            {
+                continue;
+            }
+            let plus = (ch == '+').then(|| {
+                let around = |q| told(q).map(|(ch, _)| ch).or_else(|| self.terrain(q));
+                plus_among(|q| around(q).unwrap_or(' '), None, p)
+            });
+            self.remember_square(p, ch, colour, plus, false);
+            self.told.insert(p);
+            learned += 1;
+        }
+        learned
+    }
+
+    /// Remembers what the square `p` holds from its glyph and colour, a monster's aside: an object (a `statue`,
+    /// or a `+` that `plus` says may be one) or terrain, with its engraving and open door.
+    fn remember_square(
+        &mut self,
+        p: Pos,
+        ch: char,
+        colour: Shade,
+        plus: Option<Plus>,
+        statue: bool,
+    ) {
+        let Some(i) = p.index() else {
+            return;
+        };
+        mark(&mut self.maybe_doors, p, plus == Some(Plus::DoorOrObject));
+        if is_item(ch) || statue || matches!(plus, Some(Plus::Object | Plus::DoorOrObject)) {
+            if self.terrain[i] == '\0' {
+                self.object_squares.insert(p);
+            }
+            return;
+        }
+        self.object_squares.remove(p);
+        let floor = is_floor_engraving(ch, colour);
+        if ch != '^' && self.terrain[i] == '^' {
+            self.forget_trap(p);
+        }
+        self.remember_terrain(p, if floor { '.' } else { ch }, Some(colour.base));
+        let engraved = floor || is_corridor_engraving(ch, colour);
+        mark(&mut self.engravings, p, engraved);
+        let door = matches!(ch, '|' | '-') && colour.base == Base::Brown;
+        mark(&mut self.open_doors, p, door);
+    }
+
+    /// Forgets what the caller told of `p`, if it told anything.
+    fn forget_told(&mut self, p: Pos) {
+        let (true, Some(i)) = (self.told.remove(p), p.index()) else {
+            return;
+        };
+        self.terrain[i] = '\0';
+        self.colours[i] = None;
+        for set in [
+            &mut self.object_squares,
+            &mut self.maybe_doors,
+            &mut self.open_doors,
+            &mut self.engravings,
+        ] {
+            set.remove(p);
         }
     }
 
@@ -383,34 +469,45 @@ impl Level {
             || self.object_squares.contains(p)
     }
 
-    /// Whether a corridor walk may step onto `q`: ground or a door, but no coloured `#`.
+    /// Whether a corridor walk may step onto `q`: ground or a door the screen has shown, but no coloured `#`.
     fn connects(&self, q: Pos) -> bool {
         let ch = self.terrain(q);
-        (ch.is_some_and(|ch| ch == '+' || PASSABLE.contains(&ch)) || self.open_doors.contains(q))
+        !self.told.contains(q)
+            && (ch.is_some_and(|ch| ch == '+' || PASSABLE.contains(&ch))
+                || self.open_doors.contains(q))
             && (ch != Some('#') || self.corridor(q))
     }
 
-    /// The corridor squares `p` connects to: cardinal neighbours, and diagonal ones no cardinal path joins.
+    /// The squares the corridor at `p` connects to, of those the screen has shown: cardinal neighbours, and
+    /// diagonal ones no cardinal path joins.
     pub fn corridor_links(&self, p: Pos) -> Near {
         let joins = |q| self.corridor(p) && self.corridor(q) && linked(p, q, |r| self.connects(r));
         Near::around(p, |key, q| self.connects(q) && (cardinal(key) || joins(q)))
     }
 
-    /// Corridor squares beyond `p` not in `covered`, cardinal ones first.
+    /// Corridor squares the screen has shown beyond `p` that are not in `covered`, cardinal ones first.
     pub fn continuations(&self, p: Pos, covered: &SquareSet) -> Near {
-        let open = |q| !covered.contains(q) && self.corridor(q);
+        let corridor = |q| self.corridor(q) && !self.told.contains(q);
+        let open = |q| !covered.contains(q) && corridor(q);
         let straight = Near::around(p, |key, q| cardinal(key) && open(q));
         if !straight.is_empty() {
             return straight;
         }
-        let diagonal = |q| linked(p, q, |r| self.corridor(r));
+        let diagonal = |q| linked(p, q, corridor);
         Near::around(p, |key, q| !cardinal(key) && open(q) && diagonal(q))
     }
 
-    /// Fills `paths` with shortest routes from `start` avoiding `occupied`: fewest refused steps, then fewest
-    /// remembered traps, then fewest steps, as the game's own travel prefers. A `Wet` search may also enter
-    /// remembered water, and of routes otherwise equal takes the one with fewest steps into water.
-    pub fn paths(&self, start: Pos, occupied: &SquareSet, ground: Ground, paths: &mut Paths) {
+    /// Fills `paths` with shortest routes from `start` over `squares` avoiding `occupied`: fewest refused steps,
+    /// then fewest remembered traps, then fewest steps, as the game's own travel prefers. A `Wet` search may also
+    /// enter remembered water, and of routes otherwise equal takes the one with fewest steps into water.
+    pub fn paths(
+        &self,
+        start: Pos,
+        occupied: &SquareSet,
+        ground: Ground,
+        squares: Squares,
+        paths: &mut Paths,
+    ) {
         paths.reached.clear();
         paths.queue.clear();
         let Some(si) = start.index() else {
@@ -438,6 +535,7 @@ impl Level {
                 };
                 let water = wet(q);
                 if (q != start && occupied.contains(q))
+                    || (squares == Squares::Shown && self.told.contains(q))
                     || !(self.passable(q) || water)
                     || (ch == Some('#') && !self.corridor(q))
                     || (!cardinal(key) && (door(p) || door(q)))
@@ -563,8 +661,13 @@ fn stairs_here(note: &str) -> Option<char> {
 /// One on remembered ground, or with floor beside it both across and along, is in no wall line: an object. The
 /// screen cannot tell the rest, such as a `+` at a corridor's end whose walls have not been seen.
 pub fn plus_kind(view: &View, level: Option<&Level>, p: Pos) -> Plus {
-    let beside = |dy, dx| p.step(dy, dx).map_or(' ', |q| view.ch(q));
-    let remembered = level.and_then(|l| l.terrain(p));
+    plus_among(|q| view.ch(q), level.and_then(|l| l.terrain(p)), p)
+}
+
+/// What a `+` at `p` is, from the glyph `around` gives for each square beside it and the terrain `remembered`
+/// there.
+fn plus_among(around: impl Fn(Pos) -> char, remembered: Option<char>, p: Pos) -> Plus {
+    let beside = |dy, dx| p.step(dy, dx).map_or(' ', &around);
     let wall_line =
         beside(0, -1) == '-' || beside(0, 1) == '-' || beside(-1, 0) == '|' || beside(1, 0) == '|';
     if wall_line || remembered == Some('+') {
@@ -643,7 +746,7 @@ mod tests {
             blocked.insert(q);
         }
         let mut paths = Paths::default();
-        level.paths(start, &blocked, Ground::Dry, &mut paths);
+        level.paths(start, &blocked, Ground::Dry, Squares::Known, &mut paths);
         paths
     }
 
@@ -653,7 +756,7 @@ mod tests {
             blocked.insert(q);
         }
         let mut paths = Paths::default();
-        level.paths(start, &blocked, Ground::Wet, &mut paths);
+        level.paths(start, &blocked, Ground::Wet, Squares::Known, &mut paths);
         let mut out = Vec::new();
         paths.route(target, &mut out).then_some(out)
     }
@@ -668,11 +771,64 @@ mod tests {
         Pos::new(y, x)
     }
 
+    /// Tells `level` of the map rows `rows`, from terminal row 1 down, each square in the default colour.
+    fn tell(level: &mut Level, rows: &[&str]) -> u32 {
+        level.learn(|p| {
+            let row = rows.get(usize::from(p.y) - 1)?;
+            let ch = char::from(*row.as_bytes().get(usize::from(p.x))?);
+            (ch != ' ').then_some((ch, Shade::GRAY))
+        })
+    }
+
     fn frontier(level: &Level, start: Pos) -> Vec<(Pos, u32)> {
         let paths = search(level, start, &[]);
         let mut out = Vec::new();
         level.frontier_targets(&paths, &mut out);
         out
+    }
+
+    #[test]
+    fn routes_cross_told_squares_and_the_frontier_stays_where_the_screen_left_it() {
+        let mut level = observed(&map(&["", "   @#"]), 2, 3);
+        let shown = frontier(&level, at(2, 3));
+        assert_eq!(shown, [(at(2, 4), 1)]);
+        assert!(route(&level, at(2, 3), at(2, 8), &[]).is_none());
+        // The hero's `@` tells nothing, and neither does a square already remembered.
+        assert_eq!(tell(&mut level, &["", "   @.###>"]), 4);
+        assert_eq!(level.terrain(at(2, 4)), Some('#'));
+        assert_eq!(
+            route(&level, at(2, 3), at(2, 8), &[]),
+            Some((4..=8).map(|x| at(2, x)).collect())
+        );
+        assert!(level.told.contains(at(2, 8)) && !level.seen.contains(at(2, 8)));
+        assert_eq!(level.observed(at(2, 8)), None);
+        let mut paths = Paths::default();
+        level.paths(
+            at(2, 3),
+            &SquareSet::new(),
+            Ground::Dry,
+            Squares::Shown,
+            &mut paths,
+        );
+        let mut edges = Vec::new();
+        level.frontier_targets(&paths, &mut edges);
+        assert_eq!(edges, shown);
+        assert!(level.continuations(at(2, 4), &SquareSet::new()).is_empty());
+    }
+
+    #[test]
+    fn a_told_square_is_replaced_once_the_screen_shows_it() {
+        let mut level = observed(&map(&["", "   @#"]), 2, 3);
+        assert_eq!(tell(&mut level, &["", "     |>"]), 2);
+        assert_eq!(level.terrain(at(2, 5)), Some('|'));
+        visit(&mut level, &map(&["", "   #@."]), 2, 4, 401);
+        assert_eq!(level.terrain(at(2, 5)), Some('.'));
+        assert!(!level.told.contains(at(2, 5)) && level.seen.contains(at(2, 5)));
+        assert!(level.told.contains(at(2, 6)));
+        // A square told once is not told again, and one the hero stands on is as if never told.
+        assert_eq!(tell(&mut level, &["", "     .."]), 0);
+        visit(&mut level, &map(&["", "   #.#@"]), 2, 6, 402);
+        assert!(!level.told.contains(at(2, 6)) && level.inferred_floor.contains(at(2, 6)));
     }
 
     #[test]
@@ -1209,13 +1365,25 @@ mod tests {
     fn paths_are_reused_and_report_distances() {
         let level = observed(&map(&["", "   @#####"]), 2, 3);
         let mut paths = Paths::default();
-        level.paths(at(2, 3), &SquareSet::new(), Ground::Dry, &mut paths);
+        level.paths(
+            at(2, 3),
+            &SquareSet::new(),
+            Ground::Dry,
+            Squares::Known,
+            &mut paths,
+        );
         assert_eq!(paths.distance(at(2, 8)), Some(5));
         assert_eq!(paths.distance(at(2, 3)), Some(0));
         let mut out = vec![at(9, 9)];
         assert!(paths.route(at(2, 3), &mut out));
         assert!(out.is_empty());
-        level.paths(at(2, 8), &SquareSet::new(), Ground::Dry, &mut paths);
+        level.paths(
+            at(2, 8),
+            &SquareSet::new(),
+            Ground::Dry,
+            Squares::Known,
+            &mut paths,
+        );
         assert_eq!(paths.distance(at(2, 3)), Some(5));
         assert!(!paths.reaches(at(3, 3)));
         assert!(!paths.route(at(3, 3), &mut out));

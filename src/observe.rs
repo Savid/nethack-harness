@@ -556,7 +556,7 @@ impl Memory {
 
     /// The known level labelled `label` that leaving level `old` at `at` and arriving at `hero` connects: the same
     /// stair taken before, the stair that brought the hero back, or a level remembering the opposite stair at or
-    /// beside the arrival square.
+    /// beside the arrival square, other than from what the caller told of it.
     fn connected(
         &self,
         old: usize,
@@ -585,10 +585,10 @@ impl Memory {
         self.levels.iter().enumerate().position(|(i, level)| {
             i != old
                 && level.label == label
-                && (level.terrain(hero) == Some(opposite)
+                && (level.observed(hero) == Some(opposite)
                     || hero
                         .neighbours()
-                        .any(|(_, p)| level.terrain(p) == Some(opposite)))
+                        .any(|(_, p)| level.observed(p) == Some(opposite)))
         })
     }
 

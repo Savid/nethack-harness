@@ -509,12 +509,30 @@ fn the_socket_api_answers_one_line_per_connection() {
     assert_eq!(bad["code"], 64);
     assert_eq!(
         bad["text"],
-        "look takes no keys, target, wet, count or near"
+        "look takes no keys, target, wet, count, near, rows or colours"
     );
     assert_eq!(ask("not json\n")["code"], 64);
+    let learn = |rows: usize| {
+        let mut told = vec![" ".repeat(80); rows];
+        told[0].replace_range(70..71, ">");
+        let colours = vec!["7".repeat(80); 21];
+        let request = serde_json::json!({"cmd": "learn", "rows": told, "colours": colours});
+        ask(&format!("{request}\n"))
+    };
+    assert_eq!(learn(20)["code"], 64);
+    let learned = learn(21);
+    assert_eq!(
+        (learned["code"].as_i64(), learned["text"].as_str()),
+        (Some(0), Some("learned 1 square"))
+    );
     let look = ask("{\"cmd\":\"look\"}\n");
     assert_eq!(look["code"], 0);
-    assert!(look["text"].as_str().unwrap().contains("|.@..|"));
+    let text = look["text"].as_str().unwrap();
+    assert!(text.contains("|.@..|"));
+    assert!(
+        text.contains("seen: > down stairs 70,1 (no route) (told)"),
+        "{text}"
+    );
     let stopped = ask("{\"cmd\":\"stop\"}\n");
     assert_eq!(
         (stopped["code"].as_i64(), stopped["text"].as_str()),
