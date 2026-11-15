@@ -111,6 +111,8 @@ pub struct Memory {
     window: Vec<String>,
     /// The game reported writing or wiping an engraving under the hero since the notes were last placed.
     rewritten: bool,
+    /// The game reported an object reaching or leaving the hero's square since the notes were last placed.
+    moved: bool,
     pets: Vec<String>,
     inventory: Option<Inventory>,
     /// The pages of the inventory menu being read, one bit each; none while no menu is being read.
@@ -359,6 +361,8 @@ impl Memory {
             for sentence in sentences(line) {
                 if engraving_change(sentence) {
                     self.rewritten = true;
+                } else if object_moved(sentence) {
+                    self.moved = true;
                 } else if underfoot_sentence(sentence) {
                     push_bounded(&mut self.notes, sentence);
                 }
@@ -478,6 +482,11 @@ impl Memory {
         }
         if rewritten || self.notes.iter().any(|note| is_engraving_text(note)) {
             level.engravings.insert(hero);
+        }
+        if std::mem::take(&mut self.moved)
+            && let Some(underfoot) = level.underfoot.get_mut(&hero)
+        {
+            underfoot.stale = true;
         }
         if !self.notes.is_empty() {
             level.note_underfoot(hero, &self.notes, view.status.turn);
@@ -613,6 +622,18 @@ pub fn underfoot_sentence(sentence: &str) -> bool {
         && bare.ends_with(" here"))
         || sentence.starts_with("You see here ")
         || is_engraving_text(sentence)
+}
+
+/// Whether a sentence reports an object reaching or leaving the hero's square: an inventory line (`x - …`) for
+/// something picked up, an object dropped or put down, or the game finding nothing there to pick up.
+fn object_moved(sentence: &str) -> bool {
+    let bytes = sentence.as_bytes();
+    (bytes.len() > 4
+        && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'$')
+        && &bytes[1..4] == b" - ")
+        || sentence.starts_with("You drop ")
+        || sentence.starts_with("You put ")
+        || sentence.starts_with("There is nothing here to pick up")
 }
 
 /// Whether a sentence reports the engraving under the hero being written, added to or wiped out.

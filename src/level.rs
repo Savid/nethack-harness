@@ -45,11 +45,13 @@ pub enum Plus {
 }
 
 /// What the game said about a square the hero stood on: the notes merged across readings (`There is …`, `You see
-/// here …`, engraving read-outs, trap sentences) and the turn of the last reading.
+/// here …`, engraving read-outs, trap sentences), the turn of the last reading, and whether the game has since
+/// reported an object reaching or leaving the square, which leaves the notes stale.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Underfoot {
     pub notes: Vec<String>,
     pub turn: Option<u32>,
+    pub stale: bool,
 }
 
 /// A farlook or `:` reading of a square: the game's description, and the turn, glyph and colour when it was read.
