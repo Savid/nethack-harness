@@ -580,8 +580,9 @@ impl<T: Terminal> Play<T> {
     }
 
     /// Asks the game what is underfoot (`:`, no game time): on arriving at a square never seen under the hero
-    /// or listed under `items:`, and on a known engraving square whenever the turn has advanced since its last
-    /// reading. Memory makes the reading what is noted there, so a scuffed or wiped engraving is not kept.
+    /// or listed under `items:`, on a known engraving square whenever the turn has advanced since its last
+    /// reading, and once the game reports an object reaching or leaving the square. Memory makes the reading
+    /// what is noted there, so a scuffed or wiped engraving is not kept, nor an object no longer there.
     fn look_underfoot(&mut self) {
         let view = self.term.view();
         let (Some(level), Some(hero)) = (self.memory.current(), view.hero) else {
@@ -590,14 +591,15 @@ impl<T: Terminal> Play<T> {
         let arrived = self.last_square != Some((level.id, hero));
         self.last_square = Some((level.id, hero));
         let known = level.underfoot.get(&hero);
-        if known.is_some_and(|known| known.turn == view.status.turn) {
+        let stale = known.is_some_and(|known| known.stale);
+        if !stale && known.is_some_and(|known| known.turn == view.status.turn) {
             return;
         }
         let object =
             level.inferred_floor.contains(hero) || self.renderer.listed_item(level.id, hero);
         let engraving = level.engravings.contains(hero)
             || known.is_some_and(|known| known.notes.iter().any(|note| is_engraving_text(note)));
-        if arrived && object || engraving {
+        if arrived && object || engraving || stale {
             let action = exec::look_here();
             self.exec.run(&mut self.term, &mut self.memory, &action);
         }
@@ -1478,6 +1480,34 @@ mod tests {
             here.ends_with("You read: \"Elbe?eth\".") && !here.contains("Elbereth"),
             "{here}"
         );
+    }
+
+    #[test]
+    fn an_object_picked_up_underfoot_is_looked_at_again() {
+        let room = |turn: u32, message: &str| {
+            let status = format!("Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:{turn}");
+            let rows = screen(
+                message,
+                &[" ------ ", " |..@.| ", " ------ "],
+                STATUS1,
+                &status,
+            );
+            View::parse(&crate::testkit::grid(&rows), Pos::new(2, 4))
+        };
+        let mut play = play(vec![room(400, "")]);
+        play.memory.ingest(&room(400, "You see here a dagger."));
+        let reply = play.look();
+        assert!(sent(&play).is_empty());
+        assert!(reply.facts.here.unwrap().contains("dagger"));
+        // Picking it up takes no turn for a fast hero, so the turn alone would not prompt a new look.
+        play.term.views = vec![
+            room(400, "a - a dagger."),
+            room(400, "You see no objects here."),
+        ];
+        let reply = play.look();
+        assert_eq!(sent(&play), [":"]);
+        let here = reply.facts.here.unwrap();
+        assert!(!here.contains("dagger"), "{here}");
     }
 
     #[test]

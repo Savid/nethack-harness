@@ -133,7 +133,8 @@ Told squares differ from observed ones in these ways only:
 
 After `send`, `go` and `rest`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
 eight per command) and reads underfoot with `:` where the hero stands on a square never seen, an object square, or
-a known engraving last read on an earlier turn. Both take no game time and run only while the map waits for a
+a known engraving last read on an earlier turn, or a square the game has just reported an object reaching or leaving
+(an inventory line for something picked up, `You drop`, `You put`, or nothing there to pick up). Both take no game time and run only while the map waits for a
 command.
 
 When the game ends during a command, the daemon pages through the end-of-game screens, answering `n` to the
