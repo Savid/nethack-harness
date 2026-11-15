@@ -953,13 +953,30 @@ pub fn keys(keys: &[u8]) -> Action {
     action(Kind::Keys, keys, 1, None)
 }
 
-/// The farlook cursor keys from `start` to `target`: `@` to the hero, moves, then `.` to pick.
+/// The farlook cursor keys from `start` to `target`: `@` to the hero, the fewest moves, then `.` to pick. The
+/// moves go diagonally while both coordinates differ, then straight; each run of 8 or more takes the capital key,
+/// which moves the cursor 8 squares.
 pub fn cursor_keys(start: Pos, target: Pos, out: &mut Vec<u8>) {
     out.push(b'@');
-    let across = if target.x > start.x { b'l' } else { b'h' };
-    out.extend(repeat_n(across, usize::from(target.x.abs_diff(start.x))));
-    let down = if target.y > start.y { b'j' } else { b'k' };
-    out.extend(repeat_n(down, usize::from(target.y.abs_diff(start.y))));
+    let (across, down) = (target.x.abs_diff(start.x), target.y.abs_diff(start.y));
+    let (east, south) = (target.x > start.x, target.y > start.y);
+    let slant = match (east, south) {
+        (true, true) => b'n',
+        (true, false) => b'u',
+        (false, true) => b'b',
+        (false, false) => b'y',
+    };
+    let straight = match (across > down, east, south) {
+        (true, true, _) => b'l',
+        (true, false, _) => b'h',
+        (false, _, true) => b'j',
+        (false, _, false) => b'k',
+    };
+    let diagonal = across.min(down);
+    for (key, count) in [(slant, diagonal), (straight, across.max(down) - diagonal)] {
+        out.extend(repeat_n(key.to_ascii_uppercase(), usize::from(count / 8)));
+        out.extend(repeat_n(key, usize::from(count % 8)));
+    }
     out.push(b'.');
 }
 
@@ -1099,10 +1116,16 @@ mod tests {
     fn cursor_keys_move_from_the_hero_and_pick() {
         let mut out = Vec::new();
         cursor_keys(Pos::new(5, 10), Pos::new(3, 13), &mut out);
-        assert_eq!(out, b"@lllkk.");
+        assert_eq!(out, b"@uul.");
         out.clear();
         cursor_keys(Pos::new(5, 10), Pos::new(6, 8), &mut out);
-        assert_eq!(out, b"@hhj.");
+        assert_eq!(out, b"@bh.");
+        out.clear();
+        cursor_keys(Pos::new(2, 60), Pos::new(21, 5), &mut out);
+        assert_eq!(out, b"@BBbbbHHHHhhhh.");
+        out.clear();
+        cursor_keys(Pos::new(7, 30), Pos::new(7, 30), &mut out);
+        assert_eq!(out, b"@.");
     }
 
     #[test]
