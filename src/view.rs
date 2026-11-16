@@ -207,6 +207,11 @@ impl Routes {
         }
     }
 
+    /// The ground of the last search from the hero.
+    pub fn ground(&self) -> Ground {
+        self.ground
+    }
+
     /// Routes from `hero` over `level`'s terrain, on the ground and squares of the last search from the hero, as if
     /// no monster stood anywhere; searched once per hero square.
     pub fn terrain(&mut self, level: &Level, hero: Pos) -> &Paths {
@@ -448,6 +453,7 @@ impl Renderer {
                 pet: entity.pet,
             });
         }
+        sea_monsters(level, text);
         self.places(level, hero, text, facts);
     }
 
@@ -540,6 +546,26 @@ impl Renderer {
             facts.frontier.push(Frontier { x, y, steps });
         }
     }
+}
+
+/// The `sea monsters:` line: `level`'s sea-monster sightings, newest first, each named by the farlook of its
+/// square while that showed the same glyph and colour, with the turn it was seen.
+fn sea_monsters(level: &Level, out: &mut String) {
+    if level.sightings.is_empty() {
+        return;
+    }
+    line(out, format_args!("sea monsters: "));
+    join(out, "; ", level.sightings.iter().rev(), |out, seen| {
+        out.push(';');
+        let looked = level.inspections.get(&seen.pos);
+        if let Some(look) = looked.filter(|look| look.glyph == ';' && look.shade == seen.shade) {
+            let _ = write!(out, " {}", look.description);
+        }
+        let _ = write!(out, " {}", seen.pos);
+        if let Some(turn) = seen.turn {
+            let _ = write!(out, " T:{turn}");
+        }
+    });
 }
 
 /// The `seen:` line for `entries`, sorted nearest by route first: grouped by kind, the kinds with fewest squares
@@ -808,6 +834,7 @@ pub fn here(level: &Level, hero: Pos, out: &mut String) {
 mod tests {
     use super::*;
     use crate::glyphs::{Base, Shade};
+    use crate::level::Inspection;
     use crate::testkit::{STATUS1, STATUS2, screen, view};
 
     fn monster(y: u8, x: u8, glyph: char, base: Base) -> Entity {
@@ -1068,6 +1095,52 @@ mod tests {
         );
         assert_eq!(facts.answered.len(), 2);
         assert!(text.lines().any(|line| line == "you: 3,2  here: unknown"));
+    }
+
+    #[test]
+    fn sea_monsters_list_every_sighting_newest_first_with_the_farlook_of_its_square() {
+        let shown = |row: &str, turn: u32| {
+            let status = format!("Dlvl:3 $:0 HP:12(16) Pw:2(2) AC:6 Xp:2 T:{turn}");
+            let rows = [" ---------- ", row, " ---------- "];
+            let mut grid = crate::testkit::grid(&screen("", &rows, STATUS1, &status));
+            for cell in grid.cells.iter_mut().flatten() {
+                if matches!(cell.ch, '}' | ';') {
+                    cell.fg = crate::types::Colour::Blue;
+                }
+            }
+            View::parse(&grid, Pos::new(2, 2))
+        };
+        let mut memory = Memory::default();
+        memory.ingest(&shown(" |@.};}}}.| ", 400));
+        let eel = Inspection {
+            description: "giant eel".to_owned(),
+            turn: Some(400),
+            glyph: ';',
+            shade: Shade {
+                base: Base::Blue,
+                bright: false,
+            },
+        };
+        if let Some(level) = memory.current_mut() {
+            level.inspections.insert(Pos::new(2, 5), eel);
+        }
+        let last = shown(" |@.}}}};.| ", 401);
+        memory.ingest(&last);
+        let names = Names::default();
+        let scene = Scene {
+            view: &last,
+            memory: &memory,
+            names: &names,
+            fresh: &[],
+            report: None,
+            answered: &[],
+        };
+        let (text, _) = Renderer::default().render(&scene).unwrap();
+        assert!(
+            text.lines()
+                .any(|line| line == "sea monsters: ; 8,2 T:401; ; giant eel 5,2 T:400"),
+            "{text}"
+        );
     }
 
     #[test]

@@ -4,8 +4,10 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
+use serde::{Deserialize, Serialize};
+
 use crate::glyphs::{
-    BLIND, Base, Shade, feature_name, find_word, is_corridor_engraving, is_engraving_text,
+    BLIND, Base, HALLU, Shade, feature_name, find_word, is_corridor_engraving, is_engraving_text,
     is_floor_engraving, is_item, is_monster, is_warning, is_word, liquid_name, shade, trap_kind,
 };
 use crate::screen::View;
@@ -18,13 +20,26 @@ pub const REFUSED_STEPS: usize = 64;
 /// never cross them, unless a wet route is asked for, which may enter water.
 const PASSABLE: &[char] = &['.', '#', '<', '>', '^', '{', '_', '\\'];
 
-/// What a route may enter besides ground: nothing more (`Dry`), or also remembered water (`Wet`). Lava is never
-/// entered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What a route may enter besides ground: nothing more (`Dry`), also remembered water (`Wet`), or less: no square
+/// beside remembered water past the start (`Inland`). Lava is never entered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Ground {
     #[default]
     Dry,
     Wet,
+    Inland,
+}
+
+/// Sea-monster sightings remembered per level; the oldest is forgotten beyond this.
+pub const SIGHTINGS: usize = 6;
+
+/// A sea monster (`;`) the screen showed: its square, colour and the turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sighting {
+    pub pos: Pos,
+    pub shade: Shade,
+    pub turn: Option<u32>,
 }
 
 /// Which remembered squares a route may enter: all of them (`Known`), or only those the screen has shown (`Shown`),
@@ -195,6 +210,8 @@ pub struct Level {
     /// Monster glyphs a farlook named as statues, with the colour shown.
     pub statues: BTreeMap<Pos, (char, Shade)>,
     pub underfoot: BTreeMap<Pos, Underfoot>,
+    /// The last `SIGHTINGS` sea monsters seen, one per square, oldest first.
+    pub sightings: Vec<Sighting>,
     /// Refused steps as (square, direction key), oldest first, and the squares they start from.
     refused: Vec<(Pos, u8)>,
     refused_from: SquareSet,
@@ -219,6 +236,7 @@ impl Level {
             trap_kinds: BTreeMap::new(),
             statues: BTreeMap::new(),
             underfoot: BTreeMap::new(),
+            sightings: Vec::with_capacity(SIGHTINGS + 1),
             refused: Vec::with_capacity(REFUSED_STEPS + 1),
             refused_from: SquareSet::new(),
         }
@@ -260,9 +278,11 @@ impl Level {
     /// Takes in every map square of a screen in normal play: terrain, objects, doors, engravings and the hero's
     /// square. A remembered trap whose square the screen shows with other terrain is forgotten, with its name and
     /// the notes underfoot that describe it: the game draws every trap it has seen. What the caller told of a
-    /// square is forgotten once the screen shows the square or the hero stands on it.
+    /// square is forgotten once the screen shows the square or the hero stands on it. A sea monster shown while
+    /// the hero is neither blind nor hallucinating is a sighting.
     pub fn observe(&mut self, view: &View) {
         let blind = view.cond.contains(BLIND);
+        let sighted = !blind && !view.cond.contains(HALLU);
         for i in 0..MAP_SQUARES {
             let p = Pos::from_index(i);
             let cell = view.grid.cell(p);
@@ -276,6 +296,18 @@ impl Level {
                 // A monster sensed while blind does not show its square.
                 if !blind {
                     self.seen.insert(p);
+                }
+                if ch == ';' && sighted {
+                    self.sightings.retain(|s| s.pos != p);
+                    let turn = view.status.turn;
+                    self.sightings.push(Sighting {
+                        pos: p,
+                        shade: colour,
+                        turn,
+                    });
+                    if self.sightings.len() > SIGHTINGS {
+                        self.sightings.remove(0);
+                    }
                 }
                 continue;
             }
@@ -464,6 +496,11 @@ impl Level {
         self.terrain(p) == Some('}') && self.colour(p).and_then(liquid_name) == Some("water")
     }
 
+    /// Whether a square beside `p` is remembered water.
+    pub fn shore(&self, p: Pos) -> bool {
+        p.neighbours().any(|(_, q)| self.water(q))
+    }
+
     /// Whether a route may enter `p`: remembered ground, an open door, or a square seen only under an object.
     pub fn passable(&self, p: Pos) -> bool {
         self.terrain(p).is_some_and(|ch| PASSABLE.contains(&ch))
@@ -501,7 +538,8 @@ impl Level {
 
     /// Fills `paths` with shortest routes from `start` over `squares` avoiding `occupied`: fewest refused steps,
     /// then fewest remembered traps, then fewest steps, as the game's own travel prefers. A `Wet` search may also
-    /// enter remembered water, and of routes otherwise equal takes the one with fewest steps into water.
+    /// enter remembered water, and of routes otherwise equal takes the one with fewest steps into water. An
+    /// `Inland` search enters no square beside remembered water.
     pub fn paths(
         &self,
         start: Pos,
@@ -521,6 +559,7 @@ impl Level {
         let mut order: u32 = 0;
         paths.queue.push(Reverse(((0, 0, 0, 0), order, si as u16)));
         let wet = |q| ground == Ground::Wet && self.water(q);
+        let shore = |q| ground == Ground::Inland && self.shore(q);
         let door = |p| self.open_doors.contains(p) || self.maybe_doors.contains(p);
         while let Some(Reverse((cost, _, index))) = paths.queue.pop() {
             let index = index as usize;
@@ -539,6 +578,7 @@ impl Level {
                 if (q != start && occupied.contains(q))
                     || (squares == Squares::Shown && self.told.contains(q))
                     || !(self.passable(q) || water)
+                    || shore(q)
                     || (ch == Some('#') && !self.corridor(q))
                     || (!cardinal(key) && (door(p) || door(q)))
                 {
@@ -707,6 +747,7 @@ pub fn door_sides(p: Pos) -> Near {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::glyphs::conditions;
     use crate::screen::Status;
     use crate::testkit::{STATUS1, STATUS2, grid, screen};
     use crate::types::{Colour, Grid};
@@ -767,13 +808,19 @@ mod tests {
         paths
     }
 
-    fn wet_route(level: &Level, start: Pos, target: Pos, occupied: &[Pos]) -> Option<Vec<Pos>> {
+    fn route_on(
+        ground: Ground,
+        level: &Level,
+        start: Pos,
+        target: Pos,
+        occupied: &[Pos],
+    ) -> Option<Vec<Pos>> {
         let mut blocked = SquareSet::new();
         for &q in occupied {
             blocked.insert(q);
         }
         let mut paths = Paths::default();
-        level.paths(start, &blocked, Ground::Wet, Squares::Known, &mut paths);
+        level.paths(start, &blocked, ground, Squares::Known, &mut paths);
         let mut out = Vec::new();
         paths.route(target, &mut out).then_some(out)
     }
@@ -987,11 +1034,11 @@ mod tests {
         assert!(level.water(at(2, 4)) && level.water(at(2, 5)));
         assert!(route(&level, at(2, 3), at(2, 6), &[]).is_none());
         assert_eq!(
-            wet_route(&level, at(2, 3), at(2, 6), &[]),
+            route_on(Ground::Wet, &level, at(2, 3), at(2, 6), &[]),
             Some(vec![at(2, 4), at(2, 5), at(2, 6)])
         );
         // A monster in the water still blocks the route.
-        assert!(wet_route(&level, at(2, 3), at(2, 6), &[at(2, 5)]).is_none());
+        assert!(route_on(Ground::Wet, &level, at(2, 3), at(2, 6), &[at(2, 5)]).is_none());
         // Bright blue is water too.
         paint(&mut g, 2, 5, Colour::BrightBlue, false);
         assert!(observed(&g, 2, 3).water(at(2, 5)));
@@ -999,8 +1046,68 @@ mod tests {
             paint(&mut g, 2, 5, colour, false);
             let level = observed(&g, 2, 3);
             assert!(!level.water(at(2, 5)));
-            assert!(wet_route(&level, at(2, 3), at(2, 6), &[]).is_none());
+            assert!(route_on(Ground::Wet, &level, at(2, 3), at(2, 6), &[]).is_none());
         }
+    }
+
+    #[test]
+    fn inland_routes_keep_off_every_square_beside_water() {
+        let rows = [
+            " -------- ",
+            " |@.....| ",
+            " |..}...| ",
+            " |......| ",
+            " |.....>| ",
+            " -------- ",
+        ];
+        let mut g = map(&rows);
+        paint(&mut g, 3, 4, Colour::Blue, false);
+        let level = observed(&g, 2, 2);
+        assert!(level.shore(at(2, 3)) && level.shore(at(4, 5)) && !level.shore(at(5, 3)));
+        let dry = route(&level, at(2, 2), at(5, 7), &[]).unwrap_or_default();
+        assert_eq!(dry.len(), 5);
+        assert!(dry.iter().any(|&p| level.shore(p)), "{dry:?}");
+        let inland = route_on(Ground::Inland, &level, at(2, 2), at(5, 7), &[]).unwrap_or_default();
+        assert_eq!(inland.len(), 7);
+        assert!(!inland.iter().any(|&p| level.shore(p)), "{inland:?}");
+        // A hero beside water may step away from it, but no inland route ends beside it.
+        assert!(route_on(Ground::Inland, &level, at(2, 3), at(5, 7), &[]).is_some());
+        assert!(route_on(Ground::Inland, &level, at(2, 2), at(2, 5), &[]).is_none());
+        // Lava is no shore.
+        paint(&mut g, 3, 4, Colour::Red, false);
+        let level = observed(&g, 2, 2);
+        let inland = route_on(Ground::Inland, &level, at(2, 2), at(5, 7), &[]).unwrap_or_default();
+        assert_eq!(inland.len(), 5);
+    }
+
+    #[test]
+    fn sea_monsters_shown_are_remembered_one_per_square_newest_last() {
+        let mut level = Level::new(1, "Dlvl:3");
+        let mut seen = |x: u8, turn: u32, cond: &str| {
+            let mut g = map(&[" -------------- ", " |@...........| ", " -------------- "]);
+            g.cells[2][usize::from(x)].ch = ';';
+            paint(&mut g, 2, usize::from(x), Colour::Blue, false);
+            let mut view = view_at(&g, 2, 2, turn);
+            view.cond = conditions(cond);
+            level.observe(&view);
+            level
+                .sightings
+                .iter()
+                .map(|s| (s.pos.x, s.turn))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(seen(5, 400, ""), [(5, Some(400))]);
+        assert_eq!(seen(6, 401, ""), [(5, Some(400)), (6, Some(401))]);
+        assert_eq!(seen(5, 402, ""), [(6, Some(401)), (5, Some(402))]);
+        // Hallucination and blindness show no sighting.
+        assert_eq!(seen(7, 403, "Hallu").len(), 2);
+        assert_eq!(seen(7, 404, "Blind").len(), 2);
+        for x in 7..=12 {
+            seen(x, 400 + u32::from(x), "");
+        }
+        let kept: Vec<u8> = level.sightings.iter().map(|s| s.pos.x).collect();
+        assert_eq!(kept, [7, 8, 9, 10, 11, 12]);
+        assert_eq!(level.sightings[0].shade, shade(Colour::Blue, false));
     }
 
     #[test]
@@ -1010,7 +1117,7 @@ mod tests {
         paint(&mut g, 2, 4, Colour::Blue, false);
         let level = observed(&g, 2, 2);
         // A dry route as short as the one through the water is taken instead.
-        let path = wet_route(&level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
+        let path = route_on(Ground::Wet, &level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
         assert_eq!(path.len(), 4);
         assert!(!path.iter().any(|&p| level.water(p)), "{path:?}");
         // Water across the room: the route crosses it once, where it is shortest.
@@ -1020,7 +1127,7 @@ mod tests {
         paint(&mut g, 3, 4, Colour::Blue, false);
         let level = observed(&g, 2, 2);
         assert!(route(&level, at(2, 2), at(2, 6), &[]).is_none());
-        let path = wet_route(&level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
+        let path = route_on(Ground::Wet, &level, at(2, 2), at(2, 6), &[]).unwrap_or_default();
         assert_eq!(path, [at(2, 3), at(2, 4), at(2, 5), at(2, 6)]);
     }
 

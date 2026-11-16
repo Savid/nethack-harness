@@ -149,6 +149,8 @@ const CONDITIONS: [&[&str]; 41] = [
 const HUNGER: usize = 6;
 /// The index of `Blind` in `CONDITIONS`.
 pub const BLIND: usize = 12;
+/// The index of `Hallu` in `CONDITIONS`.
+pub const HALLU: usize = 21;
 
 /// A set of status-line conditions, by their index in `CONDITIONS`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

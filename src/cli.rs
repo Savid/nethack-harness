@@ -1,6 +1,6 @@
 //! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] COMMAND`, where COMMAND is
-//! `look`, `send KEYS`, `go [--wet] [--near N] TARGET`, `rest [--near N] COUNT`, `learn ROW… COLOURS…`, `stop` or
-//! `serve`.
+//! `look`, `send KEYS`, `go [--wet|--inland] [--near N] TARGET`, `rest [--near N] COUNT`, `learn ROW… COLOURS…`,
+//! `stop` or `serve`.
 //!
 //! A client command connects to `<dir>/sock`, sends one request line, prints the reply's text (or, with `--json`,
 //! the reply object) and exits with its code. When nothing answers it takes `flock(<dir>/lock)`, checks again, and
@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::daemon::{COMMAND_TIME, Cmd, NEAR_MAX, Request, check, serve, serving};
+use crate::level::Ground;
 use crate::types::ExitCode;
 
 /// The session directory when `--dir` is not given.
@@ -32,7 +33,7 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] \
-                         look | send KEYS | go [--wet] [--near N] TARGET | rest [--near N] COUNT | \
+                         look | send KEYS | go [--wet|--inland] [--near N] TARGET | rest [--near N] COUNT | \
                          learn ROW... COLOURS... | stop | serve";
 
 /// A parsed command line: the options, then the request for the daemon or `serve` (`None`).
@@ -98,7 +99,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             let mut go = request(Cmd::Go);
             match options(name, operands, &mut go)?.as_slice() {
                 [target] => go.target = Some(target.clone()),
-                _ => return Err("go takes [--wet] [--near N] TARGET".to_owned()),
+                _ => return Err("go takes [--wet|--inland] [--near N] TARGET".to_owned()),
             }
             go
         }
@@ -129,13 +130,19 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
 }
 
 /// The operands of `go` or `rest` left once their options, anywhere among them, are set on `request`: `--near N`,
-/// and for `go` `--wet`.
+/// and for `go` one of `--wet` and `--inland`.
 fn options(name: &str, operands: &[String], request: &mut Request) -> Result<Vec<String>, String> {
     let mut left = Vec::new();
     let mut operands = operands.iter();
     while let Some(operand) = operands.next() {
         match operand.as_str() {
-            "--wet" if name == "go" => request.wet = Some(true),
+            "--wet" | "--inland" if name == "go" => {
+                if request.ground.is_some() {
+                    return Err("go takes one of --wet and --inland".to_owned());
+                }
+                let wet = operand == "--wet";
+                request.ground = Some(if wet { Ground::Wet } else { Ground::Inland });
+            }
             "--near" => {
                 let near = operands.next().and_then(|n| n.parse().ok());
                 request.near = Some(near.ok_or_else(|| format!("--near takes 1 to {NEAR_MAX}"))?);
@@ -382,13 +389,30 @@ mod tests {
     #[test]
     fn operands_are_checked() {
         assert_eq!(request(&["go", "23,3"]).target.as_deref(), Some("23,3"));
-        assert_eq!(request(&["go", "23,3"]).wet, None);
+        assert_eq!(request(&["go", "23,3"]).ground, None);
         let wet = request(&["go", "--wet", ">"]);
-        assert_eq!((wet.target.as_deref(), wet.wet), (Some(">"), Some(true)));
+        assert_eq!(
+            (wet.target.as_deref(), wet.ground),
+            (Some(">"), Some(Ground::Wet))
+        );
         assert_eq!(request(&["go", ">", "--wet"]), wet);
-        assert!(args(&["go", "--wet"]).unwrap_err().contains("[--wet]"));
-        let near = request(&["go", "--near", "3", "--wet", "<"]);
-        assert_eq!((near.near, near.wet), (Some(3), Some(true)));
+        assert!(
+            args(&["go", "--wet"])
+                .unwrap_err()
+                .contains("[--wet|--inland]")
+        );
+        let near = request(&["go", "--near", "3", "--inland", "<"]);
+        assert_eq!((near.near, near.ground), (Some(3), Some(Ground::Inland)));
+        for both in [
+            ["go", "--wet", "--inland", ">"],
+            ["go", "--inland", ">", "--inland"],
+        ] {
+            assert!(
+                args(&both)
+                    .unwrap_err()
+                    .contains("one of --wet and --inland")
+            );
+        }
         let rest = request(&["rest", "20", "--near", "3"]);
         assert_eq!((rest.count, rest.near), (Some(20), Some(3)));
         assert_eq!(request(&["rest", "--near", "3", "20"]), rest);
@@ -399,6 +423,7 @@ mod tests {
             &["rest", "20", "--near", "x"],
             &["rest", "20", "--near", "300"],
             &["rest", "--wet", "20"],
+            &["rest", "--inland", "20"],
             &["go", "--near", "81", ">"],
             &["rest", "--near", "3"],
             &["send", "--near", "3"],
