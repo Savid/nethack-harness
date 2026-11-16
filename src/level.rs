@@ -496,6 +496,14 @@ impl Level {
         self.terrain(p) == Some('}') && self.colour(p).and_then(liquid_name) == Some("water")
     }
 
+    /// Whether `p` is remembered as the screen showed it, terrain or an object, rather than told of or assumed.
+    pub fn remembered_shown(&self, p: Pos) -> bool {
+        self.seen.contains(p)
+            && !self.told.contains(p)
+            && !self.inferred_floor.contains(p)
+            && (self.terrain(p).is_some() || self.object_squares.contains(p))
+    }
+
     /// Whether a square beside `p` is remembered water.
     pub fn shore(&self, p: Pos) -> bool {
         p.neighbours().any(|(_, q)| self.water(q))

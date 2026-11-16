@@ -214,6 +214,7 @@ A `look` at the start of a recorded game:
 ```
 Dlvl:1 $:0 HP:14(14) Pw:5(5) AC:4 Xp:1 T:1
 Hero the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
+monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away
    30        40
    01234567890
  3 -----------
@@ -222,7 +223,6 @@ Hero the Candidate St:17 Dx:13 Co:13 In:10 Wi:14 Ch:8 Neutral
  6 |.@...d...|
  7 --+--------
 you: 32,6  here: < up stairs; There is a staircase up out of the dungeon here.
-monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away
 seen: + door 32,7 (adjacent j), 30,5 (1)
 items: / 33,4 (2)
 frontier: 40,4 (8)
@@ -233,7 +233,7 @@ Other commands add a report line at the top and, when they apply, lines such as:
 ```
 rest 20: 3 searches, 3 turns; stopped: a monster came into view or next to the hero (d 41,8)
 rest 20: 20 searches, 15 turns, 5 took no time (turn counter unchanged, no message or prompt); done
-rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; 3 screen unchanged); stopped: no time passed
+rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; 3 screen unchanged); stopped: no time passed; beside the hero: Jay's ghost (shown blank) 51,18
 go --wet <: 4 steps, 1 wet, 4 turns, now at 16,3; done
 go >: 9 steps, 4 told, 9 turns, now at 60,12; done
 inventory: (T:4) a - a +0 scalpel (weapon in hand); b - an uncursed stethoscope
@@ -247,20 +247,26 @@ The parts, in order:
   searches, for `go --wet` the steps into water (`N wet`), for `go` the steps that entered told squares (`N told`,
   when there were any), turns passed, for `rest` the searches that took no time (`N took no time (…)`, each
   distinct answer on screen after its count unless one covers them all, at most eight listed and any others as
-  `N more`), where the hero is, and `done` or `stopped:` with each reason.
+  `N more`), where the hero is, and `done` or `stopped:` with each reason. A rest whose searches took no time and a
+  walk whose hero did not arrive where expected add `; beside the hero:` and each monster beside the hero, as
+  `monsters:` lists it without its distance; a monster stop names a monster drawn blank as `blank`.
 - **Status**: the game's two status lines, spaces squashed.
 - **`msg:`**: each complete message written during the command, joined across wrapped rows. Text already on a
   screen printed in full is not repeated. A command reports its last 32 lines, after `(N earlier lines left out)`.
 - **Prompts**: `prompt:` with the question, `cursor:` while targeting, and `keys:` with the answers the screen
   offers. Menus, `--More--` windows and the end of the game print `screen (MODE):` and the screen rows instead of
   the map.
+- **`monsters:`**, above the map: glyph, farlook name, `pet` when highlighted, square, and distance or `adjacent K`
+  (the move key toward it). A name lasts while the monster stays on its square looking the same; `(looked T:n)`
+  marks a name from an earlier turn. A square the screen shows blank where this level remembers terrain or an
+  object the screen showed is a monster drawn blank, such as a ghost: it is listed as its farlook name and
+  `(shown blank)` in place of its glyph (`monsters: Jay's ghost (shown blank) 50,18 adjacent l`), is named by
+  farlook, blocks routes and stops walks and rests as any monster does. None is listed while the hero is blind, nor
+  when more than 8 such squares show, as after the map was forgotten.
 - **Map**: without blank rows, cropped to known columns, with column numbers above and row numbers on the left.
   Every position is `x,y`: x the terminal column, y the terminal row (the map is rows 1 to 21).
 - **`you:`**: the hero's square and what is underfoot: remembered terrain, `engraving` for an engraved square,
   and what the game said about the square.
-- **`monsters:`**: glyph, farlook name, `pet` when highlighted, square, and distance or `adjacent K` (the move key
-  toward it). A name lasts while the monster stays on its square looking the same; `(looked T:n)` marks a name
-  from an earlier turn.
 - **`sea monsters:`**: the last six squares where a sea monster (`;`) was shown on this level, newest first, while
   the hero was neither blind nor hallucinating: the farlook name of the square when it was looked at showing the
   same glyph and colour or `(not looked at)`, such as for one seen only during a walk, square and `T:n`, the turn
@@ -306,7 +312,7 @@ underfoot that describe it.
 | `here` | string? | What is underfoot, as `here:` prints it. |
 | `prompt` | string? | The open prompt's text. |
 | `msgs` | string[] | Messages written since the last reply. |
-| `monsters` | object[] | `{name?, glyph, x, y, dist, looked_turn?, pet?}`, nearest first. |
+| `monsters` | object[] | `{name?, glyph, x, y, dist, looked_turn?, pet?}`, nearest first; `glyph` is `" "` for a monster drawn blank. |
 | `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?, behind?, told?}`, every one, nearest by route first; `behind` is the `[x, y]` of the closed door a place with no route lies behind, as `seen:` names it; `told` is `true` in `seen` for a square known only because the caller told it. |
 | `frontier` | object[] | `{x, y, steps}`. |
 | `stairs_up`, `stairs_down` | `[x, y]`? | Observed stairs on this level; told ones are only in `seen`. |

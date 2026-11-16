@@ -1,5 +1,6 @@
 Dlvl:1 $:0 HP:16(16) Pw:5(5) AC:3 Xp:1 T:43
 Hero the Gallant St:14 Dx:11 Co:13 In:7 Wi:14 Ch:17 Lawful
+monsters: u pet 6,19 adjacent h
    1        10
    1234567890123
  2   ------
@@ -22,7 +23,6 @@ Hero the Gallant St:14 Dx:11 Co:13 In:7 Wi:14 Ch:17 Lawful
 19 |....u@..|
 20 ----------
 you: 7,19  here: unknown
-monsters: u pet 6,19 adjacent h
 seen: < up stairs 4,4 (16)
 items: ( 6,3 (16); ! 7,3 (16)
 frontier: 13,6 (19)

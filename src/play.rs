@@ -5,10 +5,10 @@ use crate::exec::{self, Changed, Executor, Kind, Outcome, Stop};
 use crate::glyphs::{is_engraving_text, numbered};
 use crate::level::{Ground, Paths, Squares};
 use crate::link::{LinkError, Term, Terminal};
-use crate::observe::{Entity, Memory};
+use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, strip_more};
 use crate::types::{Answered, ExitCode, MAP_TOP, Pos, Reply, Report, SquareSet};
-use crate::view::{Landmark, Names, Renderer, Scene, landmarks};
+use crate::view::{BLANK, Landmark, Names, Renderer, Scene, landmarks};
 
 /// Most keys one `send` takes.
 pub const KEYS_MAX: usize = 256;
@@ -348,7 +348,9 @@ impl<T: Terminal> Play<T> {
         let near = self.last.as_ref().and_then(|last| last.near);
         let stopped = &mut report.stopped;
         match &outcome.stop {
-            _ if refused_search(kind, outcome) => stopped.push("no time passed".to_owned()),
+            _ if refused_search(kind, outcome) => {
+                stopped.push(format!("no time passed{}", self.beside_hero()));
+            }
             Stop::Link(error) => report.error = Some(error.to_string()),
             Stop::Failed(error) => report.error = Some(error.clone()),
             // The caller's own keys are done once sent, unless the game ended.
@@ -371,23 +373,31 @@ impl<T: Terminal> Play<T> {
                     }
                     match (outcome.arrival, near) {
                         (Some(arrival), Some(near)) if flag == Changed::ENTITIES => {
-                            let (glyph, pos, dist) = (arrival.glyph, arrival.pos, arrival.dist);
+                            let (glyph, pos, dist) =
+                                (shown(arrival.glyph), arrival.pos, arrival.dist);
                             stopped.push(format!(
                                 "a monster came within {near} squares of the hero ({glyph} {pos}, {dist} away)"
                             ));
                         }
                         (Some(arrival), None) if flag == Changed::ENTITIES => {
-                            stopped.push(format!("{phrase} ({} {})", arrival.glyph, arrival.pos));
+                            stopped.push(format!(
+                                "{phrase} ({} {})",
+                                shown(arrival.glyph),
+                                arrival.pos
+                            ));
                         }
                         _ => stopped.push(phrase.to_owned()),
                     }
                 }
             }
+            Stop::MovementInterrupted => stopped.push(format!(
+                "the hero did not arrive where expected{}",
+                self.beside_hero()
+            )),
             stop => stopped.push(
                 match stop {
                     Stop::StepLimit => "it reached its step limit",
                     Stop::Prompt => "a prompt opened",
-                    Stop::MovementInterrupted => "the hero did not arrive where expected",
                     Stop::NoEffect => "nothing changed",
                     Stop::RouteChanged => "the hero left the route",
                     Stop::FeatureDiscovered => "new terrain came into view",
@@ -400,6 +410,33 @@ impl<T: Terminal> Play<T> {
             ),
         }
         report
+    }
+
+    /// The monsters beside the hero on the screen, other than the pet, as `; beside the hero: ` and each one's
+    /// glyph, kept farlook name and square; "" for none.
+    fn beside_hero(&self) -> String {
+        let view = self.term.view();
+        let (Some(level), Some(hero)) = (self.memory.current(), view.hero) else {
+            return String::new();
+        };
+        let mut entities = Vec::new();
+        self.memory.entities(view, &mut entities);
+        let mut out = String::new();
+        let beside = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Monster && !e.pet && e.pos.chebyshev(hero) == 1);
+        for (i, entity) in beside.enumerate() {
+            out.push_str(if i == 0 { "; beside the hero: " } else { ", " });
+            let name = self.names.get(level.id, entity).map(|(name, _)| name);
+            match (entity.glyph, name) {
+                (' ', Some(name)) => out.push_str(&format!("{name} {BLANK}")),
+                (' ', None) => out.push_str(BLANK),
+                (glyph, Some(name)) => out.push_str(&format!("{glyph} {name}")),
+                (glyph, None) => out.push(glyph),
+            }
+            out.push_str(&format!(" {}", entity.pos));
+        }
+        out
     }
 
     /// Whether the game verifiably waits for a command: no prompt, the cursor on `@`, the status lines shown.
@@ -656,6 +693,15 @@ fn failed(verb: &str, error: &str) -> Report {
     }
 }
 
+/// A monster's glyph as a stop names it: `blank` for one the screen draws blank.
+fn shown(glyph: char) -> String {
+    if glyph == ' ' {
+        "blank".to_owned()
+    } else {
+        glyph.to_string()
+    }
+}
+
 /// Whether a rest's searches passed no game time and changed nothing but, at most, the message: the game refused
 /// them. A fast hero's single search, or one that monsters acted during, can also leave the turn counter where it
 /// was, so a lone search that completed, or one that changed the status or brought a monster, is not refused.
@@ -851,9 +897,13 @@ mod tests {
         let lines: Vec<&str> = reply.text.lines().collect();
         let monsters = "monsters: d tame little dog 32,5 adjacent k; d jackal 36,6 4 away";
         let at = lines.iter().position(|line| *line == monsters).unwrap();
-        assert_eq!(
-            lines[at - 1],
-            "you: 32,6  here: < up stairs; There is a staircase up out of the dungeon here."
+        // The monsters come above the map, the hero's square below it.
+        let you = "you: 32,6  here: < up stairs; There is a staircase up out of the dungeon here.";
+        let below = lines.iter().position(|line| *line == you).unwrap();
+        assert!(
+            lines[at + 1].starts_with("   30") && at < below,
+            "{}",
+            reply.text
         );
         assert!(has_line(
             &reply.text,
@@ -1693,6 +1743,45 @@ mod tests {
     }
 
     #[test]
+    fn a_monster_drawn_blank_on_remembered_ground_is_listed_named_and_named_beside_the_hero() {
+        let floor = [" ------- ", " |..@..| ", " |.....| ", " ------- "];
+        let ghost = [" ------- ", " |..@ .| ", " |.....| ", " ------- "];
+        let mut play = play(vec![
+            map("", &ghost, 2, 4),
+            map("Pick a monster, object or location.", &ghost, 2, 4),
+            map("         ghost (Jay's ghost)", &ghost, 2, 4),
+        ]);
+        play.memory.ingest(&map("", &floor, 2, 4));
+        let reply = play.look();
+        assert_eq!(sent(&play), [";", "@l.", ":"]);
+        assert!(
+            has_line(
+                &reply.text,
+                "monsters: Jay's ghost (shown blank) 5,2 adjacent l"
+            ),
+            "{}",
+            reply.text
+        );
+        // The game refuses a search beside it; the rest names it.
+        let refused = "You already found a monster.  Use 'm' prefix to force another search.";
+        play.term.views.push(map(refused, &ghost, 2, 4));
+        let reply = play.rest(5, None);
+        assert!(
+            reply.text.lines().next().is_some_and(|line| line.ends_with(
+                "stopped: no time passed; beside the hero: Jay's ghost (shown blank) 5,2"
+            )),
+            "{}",
+            reply.text
+        );
+        // A screen that blanks more remembered squares than monsters could, as after the map was forgotten,
+        // shows none.
+        let gone = [" ------- ", " |  @  | ", " |     | ", " ------- "];
+        let mut forgot = Play::new(ScriptedTerm::new(vec![map("", &gone, 2, 4)]));
+        forgot.memory.ingest(&map("", &floor, 2, 4));
+        assert!(!forgot.show().text.contains("monsters:"));
+    }
+
+    #[test]
     fn a_refused_search_says_what_the_game_said_and_a_repeat_that_it_showed_nothing() {
         // The game answers the first search with its refusal and the next ones with nothing, the message line
         // cleared, the turn counter where it was.
@@ -1705,7 +1794,7 @@ mod tests {
             reply.text.lines().next(),
             Some(
                 "rest 5: 1 search, 0 turns, 1 took no time (the game said \"You already found a monster.  \
-                 Use 'm' prefix to force another search.\"); stopped: no time passed"
+                 Use 'm' prefix to force another search.\"); stopped: no time passed; beside the hero: d 5,2"
             )
         );
         play.term.views.push(map("", &room, 2, 4));
@@ -1715,7 +1804,7 @@ mod tests {
             reply.text.lines().next(),
             Some(
                 "rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; \
-                 3 screen unchanged); stopped: no time passed"
+                 3 screen unchanged); stopped: no time passed; beside the hero: d 5,2"
             )
         );
         let report = reply.facts.report.unwrap();

@@ -2,7 +2,7 @@
 //! entities in view, inventory menus and end-of-game text.
 
 use crate::glyphs::{
-    Shade, find_word, is_engraving_text, is_floor_engraving, is_item, is_monster, is_warning,
+    BLIND, Shade, find_word, is_engraving_text, is_floor_engraving, is_item, is_monster, is_warning,
 };
 use crate::level::{Inspection, Level, Plus, plus_kind};
 use crate::screen::{EndKind, MenuEntry, Phase, View, byte_at, strip_more};
@@ -17,6 +17,9 @@ const PETS: usize = 16;
 /// Most levels remembered under one location label: branches share dungeon level numbers, and arrivals that no
 /// stair connects (a trap door, a level teleport) start a new copy; the oldest copy beyond this is forgotten.
 const LEVELS_PER_LABEL: usize = 3;
+/// Most squares a screen may show blank over what the level remembers there for them to be monsters drawn blank,
+/// such as a ghost; a screen blanking more does not show this level's memory, as after the map was forgotten.
+const BLANKS_MAX: usize = 8;
 const END_LINES: usize = 64;
 const INVENTORY_LINES: usize = 128;
 /// Most menu pages an inventory read tracks, one bit each of a `u64`.
@@ -250,18 +253,25 @@ impl Memory {
         }
     }
 
-    /// The entities in a normal-play view, row then column, written into `out`.
+    /// The entities in a normal-play view, row then column, written into `out`. A square the screen shows blank
+    /// where the level remembers what the screen showed there is a monster drawn blank, such as a ghost, unless
+    /// the hero is blind or more than `BLANKS_MAX` squares show so.
     pub fn entities(&self, view: &View, out: &mut Vec<Entity>) {
         out.clear();
         if !view.normal || view.engulfed {
             return;
         }
         let level = self.current();
+        let sighted = !view.cond.contains(BLIND);
+        let mut blanks = 0;
         for pos in (0..MAP_SQUARES).map(Pos::from_index) {
             let glyph = view.ch(pos);
+            let blank = glyph == ' ' && sighted && level.is_some_and(|l| l.remembered_shown(pos));
             // Only these glyphs can be entities; the rest are skipped before the costlier checks below.
-            let candidate =
-                matches!(glyph, '+' | 'I' | '`' | '0'..='5') || is_monster(glyph) || is_item(glyph);
+            let candidate = blank
+                || matches!(glyph, '+' | 'I' | '`' | '0'..='5')
+                || is_monster(glyph)
+                || is_item(glyph);
             if !candidate || Some(pos) == view.hero {
                 continue;
             }
@@ -273,12 +283,13 @@ impl Memory {
                 Some(Plus::DoorOrObject) => EntityKind::DoorOrObject,
                 Some(Plus::Door) => continue,
                 None if statue => EntityKind::Object,
-                None if is_monster(glyph) => EntityKind::Monster,
+                None if blank || is_monster(glyph) => EntityKind::Monster,
                 None if glyph == 'I' || is_warning(glyph, shade) => EntityKind::Unseen,
                 None if is_item(glyph) || glyph == '0' => EntityKind::Object,
                 None if glyph == '`' && !is_floor_engraving(glyph, shade) => EntityKind::Object,
                 None => continue,
             };
+            blanks += usize::from(blank);
             out.push(Entity {
                 pos,
                 glyph,
@@ -287,6 +298,9 @@ impl Memory {
                 pet: view.pet(pos),
                 statue,
             });
+        }
+        if blanks > BLANKS_MAX {
+            out.retain(|entity| entity.glyph != ' ');
         }
     }
 

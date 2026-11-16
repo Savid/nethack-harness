@@ -1,5 +1,6 @@
 Dlvl:2 $:0 HP:11(11) Pw:7(7) AC:9 Xp:1 T:84
 Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
+monsters: f pet 30,14 2 away; r 40,16 12 away
    27 30        40
    78901234567890123456
 13 ### #
@@ -11,6 +12,5 @@ Player the Evoker St:7 Dx:13 Co:10 In:19 Wi:13 Ch:13 Neutral
 19   |..............|
 20   ----------------
 you: 28,14  here: unknown
-monsters: f pet 30,14 2 away; r 40,16 12 away
 seen: _ altar 35,16 (7); < up stairs 40,17 (12); + door 29,18 (5), 41,15 (13)
 frontier: 27,13 (1); 28,15 (1); 31,13 (4); 46,18 (18)
