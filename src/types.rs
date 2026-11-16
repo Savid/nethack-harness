@@ -368,6 +368,9 @@ pub struct Place {
     /// A route exists over terrain but monsters block it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blocked: bool,
+    /// With no route, the closed door it lies behind: the nearest on the edge of the area routes from it reach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behind: Option<Pos>,
     /// The caller told the harness about its square, which the screen has not shown.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub told: bool,

@@ -71,7 +71,8 @@ corridor follows the corridor on. In a group, it walks to the farthest square th
 the hero has walked beside every square of the group, such as the next strip of a dark room, it walks to the square
 that shows the most unknown squares around it, the nearest of those first. Routes never cross remembered lava, or
 water except with `--wet` (below), cross a remembered trap or a step the game refused only where no other route
-exists, and pass through the highlighted pet. When no route exists `go` sends nothing and says why. A walk or rest
+exists, and pass through the highlighted pet. When no route exists `go` sends nothing and says why, such as
+`no known route to >: it is behind the closed door at 33,5` (as `seen:` names it). A walk or rest
 stops short when a monster arrives (a
 monster with no monster of the same glyph and colour within one square of it at the previous step; `I` and warning
 digits never count), a message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
@@ -269,7 +270,9 @@ The parts, in order:
   its nearest three squares by route with the route length, `(no route)` or `(blocked)`, then `+N more` of that
   kind: `seen: > down stairs 60,12 (no route); + door 32,7 (adjacent j), 30,5 (1); } water 33,6 (adjacent l),
   34,6 (no route), 35,6 (no route), +712 more`. A square the harness knows only because the caller told it is
-  marked `(told)` after its route: `seen: > down stairs 60,12 (9) (told)`. **`items:`**: remembered objects.
+  marked `(told)` after its route: `seen: > down stairs 60,12 (9) (told)`. Stairs, an altar, a fountain or a
+  throne with no route that lie in an area of known terrain edged by a closed door say `(behind closed door X,Y)`
+  instead of `(no route)`, naming that area's closed door nearest the hero. **`items:`**: remembered objects.
   **`frontier:`**: known ground beside unexplored squares. These two list the nearest six by route with the route
   length, `(no route)` or `(blocked)`, then `+N more`.
 - **`inventory:`**: the last inventory menu the game showed, whoever opened it, with the turn it was shown.
@@ -303,7 +306,7 @@ underfoot that describe it.
 | `prompt` | string? | The open prompt's text. |
 | `msgs` | string[] | Messages written since the last reply. |
 | `monsters` | object[] | `{name?, glyph, x, y, dist, looked_turn?, pet?}`, nearest first. |
-| `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?, told?}`, every one, nearest by route first; `told` is `true` in `seen` for a square known only because the caller told it. |
+| `items`, `seen` | object[] | `{glyph, label, x, y, steps?, blocked?, behind?, told?}`, every one, nearest by route first; `behind` is the `[x, y]` of the closed door a place with no route lies behind, as `seen:` names it; `told` is `true` in `seen` for a square known only because the caller told it. |
 | `frontier` | object[] | `{x, y, steps}`. |
 | `stairs_up`, `stairs_down` | `[x, y]`? | Observed stairs on this level; told ones are only in `seen`. |
 | `inventory` | object? | `{turn?, lines[]}`, lines such as `a - a +0 scalpel (weapon in hand)`. |
