@@ -262,9 +262,9 @@ The parts, in order:
   toward it). A name lasts while the monster stays on its square looking the same; `(looked T:n)` marks a name
   from an earlier turn.
 - **`sea monsters:`**: the last six squares where a sea monster (`;`) was shown on this level, newest first, while
-  the hero was neither blind nor hallucinating: glyph, the farlook name of the square when it was looked at
-  showing the same glyph and colour or `(not looked at)`, such as for one seen only during a walk, square and
-  `T:n`, the turn it was seen there: `sea monsters: ; giant eel 41,9 T:812; ; (not looked at) 16,7 T:790`.
+  the hero was neither blind nor hallucinating: the farlook name of the square when it was looked at showing the
+  same glyph and colour or `(not looked at)`, such as for one seen only during a walk, square and `T:n`, the turn
+  it was seen there: `sea monsters: giant eel 41,9 T:812; (not looked at) 16,7 T:790`.
 - **`seen:`**: remembered stairs, traps, altars, fountains, water, lava, doors, and squares that may be a door or
   an object, grouped by kind (glyph and name). Kinds with fewest squares come first, so a kind seen on one square
   is never hidden by one seen on hundreds; kinds with as many squares go by their nearest square. Each kind lists
