@@ -253,7 +253,7 @@ impl<T: Terminal> Play<T> {
 
     /// Why no known route over the ground of the last search reaches `target`: the monsters standing on every route
     /// over terrain, for an `Inland` search a route over terrain only beside water, the target never seen, or no
-    /// route at all.
+    /// route at all, with the closed door a target with one goal lies behind.
     pub fn unreachable(&mut self, target: &str, places: &[Landmark]) -> String {
         let routes = &mut self.renderer.routes;
         let frontier = target.trim().eq_ignore_ascii_case("frontier");
@@ -314,7 +314,14 @@ impl<T: Terminal> Play<T> {
         {
             return format!("{target} has not been seen");
         }
-        none
+        let behind = places
+            .iter()
+            .filter(|place| !frontier && place.goals.as_slice() == [place.pos])
+            .find_map(|place| routes.behind(level, hero, place.pos));
+        match behind {
+            Some(door) => format!("{none}: it is behind the closed door at {door}"),
+            None => none,
+        }
     }
 
     pub fn report(&self, verb: &str, outcome: &Outcome) -> Report {
@@ -1230,6 +1237,44 @@ mod tests {
             reply.text,
             "the known route to frontier is blocked by a monster at 5,3"
         );
+    }
+
+    #[test]
+    fn stairs_with_no_route_name_the_closed_door_they_lie_behind() {
+        let rows = [
+            "",
+            " -----     -------",
+            " |.@.|     |..>..|",
+            " |...|     +.....+",
+            " -----     -------",
+        ];
+        let mut play = Play::new(ScriptedTerm::new(vec![map("", &rows, 3, 3)]));
+        let look = play.show();
+        // Of the stairs' room's two doors, the one nearer the hero.
+        assert!(
+            look.text
+                .lines()
+                .any(|line| line.starts_with("seen: > down stairs 14,3 (behind closed door 11,4);")),
+            "{}",
+            look.text
+        );
+        assert_eq!(look.facts.seen[0].behind, Some(Pos::new(4, 11)));
+        let reply = play.go(">", Ground::Dry, None);
+        assert_eq!(reply.code, ExitCode::Failed);
+        assert_eq!(
+            reply.text,
+            "no known route to >: it is behind the closed door at 11,4"
+        );
+        // Without a closed door on the edge of the stairs' area, there is no route and nothing more.
+        let walls = rows.map(|row| row.replace('+', "|"));
+        let walls = walls.each_ref().map(String::as_str);
+        let mut walled = Play::new(ScriptedTerm::new(vec![map("", &walls, 3, 3)]));
+        assert!(walled.show().text.contains("> down stairs 14,3 (no route)"));
+        assert_eq!(
+            walled.go("14,3", Ground::Dry, None).text,
+            "no known route to 14,3"
+        );
+        assert!(play.term.sent.is_empty() && walled.term.sent.is_empty());
     }
 
     #[test]

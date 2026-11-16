@@ -602,6 +602,23 @@ impl Level {
         }
     }
 
+    /// The closed door nearest `hero` on the edge of the area that routes over remembered terrain reach from
+    /// `goal`, searched into `paths`: the door a square no route reaches lies behind. `None` when no closed door
+    /// edges that area.
+    pub fn behind(&self, goal: Pos, hero: Pos, paths: &mut Paths) -> Option<Pos> {
+        self.paths(goal, &SquareSet::new(), Ground::Dry, Squares::Known, paths);
+        let mut door: Option<Pos> = None;
+        for p in paths.reached().iter() {
+            for (key, q) in p.neighbours() {
+                let nearer = door.is_none_or(|d| q.chebyshev(hero) < d.chebyshev(hero));
+                if cardinal(key) && self.terrain(q) == Some('+') && nearer {
+                    door = Some(q);
+                }
+            }
+        }
+        door
+    }
+
     /// A square that never showed a glyph and that the hero never stood beside.
     ///
     /// Standing on a square shows all of its neighbours; one still blank afterwards is solid rock.

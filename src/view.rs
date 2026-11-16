@@ -186,6 +186,7 @@ pub struct Routes {
     terrain: Paths,
     terrain_from: Option<(u16, Pos, Ground, Squares)>,
     shown: Paths,
+    region: Paths,
 }
 
 impl Routes {
@@ -222,6 +223,11 @@ impl Routes {
             self.terrain_from = from;
         }
         &self.terrain
+    }
+
+    /// The closed door `goal` lies behind, as `Level::behind` finds it from `hero`.
+    pub fn behind(&mut self, level: &Level, hero: Pos, goal: Pos) -> Option<Pos> {
+        level.behind(goal, hero, &mut self.region)
     }
 
     /// The routes of the last search from the hero that enter no square the caller told of: that search itself
@@ -484,12 +490,22 @@ impl Renderer {
             let glyph = landmark.glyph.unwrap_or(' ');
             let plain = landmark.label == "item";
             let label = if plain { "" } else { landmark.label.as_str() };
+            let adjacent = hero.direction_to(landmark.pos);
+            // The closed door stairs, an altar, a fountain or a throne with no route lies behind.
+            let few = matches!(glyph, '<' | '>' | '_' | '{' | '\\') && !item;
+            let behind = few && adjacent.is_none() && steps.is_none() && !blocked;
+            let behind = behind
+                .then(|| self.routes.behind(level, hero, landmark.pos))
+                .flatten();
             let mut at = String::new();
-            let _ = match (hero.direction_to(landmark.pos), steps) {
+            let _ = match (adjacent, steps) {
                 (Some(key), _) => write!(at, "{} (adjacent {})", landmark.pos, key as char),
                 (None, Some(n)) => write!(at, "{} ({n})", landmark.pos),
                 (None, None) if blocked => write!(at, "{} (blocked)", landmark.pos),
-                (None, None) => write!(at, "{} (no route)", landmark.pos),
+                (None, None) => match behind {
+                    Some(door) => write!(at, "{} (behind closed door {door})", landmark.pos),
+                    None => write!(at, "{} (no route)", landmark.pos),
+                },
             };
             if landmark.told {
                 at.push_str(" (told)");
@@ -501,6 +517,7 @@ impl Renderer {
                 y: landmark.pos.y,
                 steps,
                 blocked,
+                behind,
                 told: landmark.told,
             };
             let listed = Listed { place, at };
@@ -549,7 +566,7 @@ impl Renderer {
 }
 
 /// The `sea monsters:` line: `level`'s sea-monster sightings, newest first, each named by the farlook of its
-/// square while that showed the same glyph and colour, with the turn it was seen.
+/// square while that showed the same glyph and colour, or `(not looked at)`, with the turn it was seen.
 fn sea_monsters(level: &Level, out: &mut String) {
     if level.sightings.is_empty() {
         return;
@@ -558,8 +575,11 @@ fn sea_monsters(level: &Level, out: &mut String) {
     join(out, "; ", level.sightings.iter().rev(), |out, seen| {
         out.push(';');
         let looked = level.inspections.get(&seen.pos);
-        if let Some(look) = looked.filter(|look| look.glyph == ';' && look.shade == seen.shade) {
-            let _ = write!(out, " {}", look.description);
+        match looked.filter(|look| look.glyph == ';' && look.shade == seen.shade) {
+            Some(look) => {
+                let _ = write!(out, " {}", look.description);
+            }
+            None => out.push_str(" (not looked at)"),
         }
         let _ = write!(out, " {}", seen.pos);
         if let Some(turn) = seen.turn {
@@ -1138,7 +1158,8 @@ mod tests {
         let (text, _) = Renderer::default().render(&scene).unwrap();
         assert!(
             text.lines()
-                .any(|line| line == "sea monsters: ; 8,2 T:401; ; giant eel 5,2 T:400"),
+                .any(|line| line
+                    == "sea monsters: ; (not looked at) 8,2 T:401; ; giant eel 5,2 T:400"),
             "{text}"
         );
     }
