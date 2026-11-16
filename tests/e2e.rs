@@ -1126,7 +1126,7 @@ fn a_rest_says_which_searches_took_no_time_and_what_the_screen_showed() {
         text.lines().next(),
         Some(
             "rest 5: 1 search, 0 turns, 1 took no time (the game said \"You already found a monster.  Use \
-             'm' prefix to force another search.\"); stopped: no time passed"
+             'm' prefix to force another search.\"); stopped: no time passed; beside the hero: d jackal 23,4"
         ),
         "{text}"
     );
@@ -1137,7 +1137,7 @@ fn a_rest_says_which_searches_took_no_time_and_what_the_screen_showed() {
         reply["text"].as_str().and_then(|text| text.lines().next()),
         Some(
             "rest 5: 4 searches, 0 turns, 4 took no time (1 turn counter unchanged, no message or prompt; \
-             3 screen unchanged); stopped: no time passed"
+             3 screen unchanged); stopped: no time passed; beside the hero: d jackal 23,4"
         )
     );
     let report = &reply["facts"]["report"];

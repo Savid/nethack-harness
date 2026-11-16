@@ -20,6 +20,8 @@ use crate::types::{
 pub const FARLOOKS: usize = 8;
 /// Most entries listed under `items:` and `frontier:` before `+N more`.
 pub const LISTED: usize = 6;
+/// How a monster the screen draws blank, such as a ghost, is listed in place of its glyph.
+pub const BLANK: &str = "(shown blank)";
 /// Most squares of one kind listed under `seen:` before `+N more` of that kind.
 pub const PER_KIND: usize = 3;
 /// The refusal for a map drawn with non-ASCII symbols.
@@ -382,10 +384,14 @@ impl Renderer {
         if !self.line.is_empty() {
             line(&mut text, format_args!("{}", self.line));
         }
+        let hero = view.hero.filter(|_| phase == Phase::Play);
+        if hero.is_some() && !view.engulfed {
+            self.monsters(scene, &mut text, &mut facts);
+        }
         if map_shown {
             map_lines(view, &mut text);
         }
-        if let Some(hero) = view.hero.filter(|_| phase == Phase::Play) {
+        if let Some(hero) = hero {
             facts.pos = Some(hero);
             if view.engulfed {
                 line(&mut text, format_args!("you: {hero}, engulfed"));
@@ -398,18 +404,15 @@ impl Renderer {
         Ok((text, facts))
     }
 
-    /// `you:`, `monsters:` (nearest first, with kept farlook names) and the places for the map view.
-    fn surroundings(&mut self, scene: &Scene, text: &mut String, facts: &mut Facts) {
+    /// `monsters:`, nearest first, with kept farlook names, which the map view shows above the map, and the routes
+    /// from the hero the rest of the view uses.
+    fn monsters(&mut self, scene: &Scene, text: &mut String, facts: &mut Facts) {
         let (Some(level), Some(hero)) = (scene.memory.current(), scene.view.hero) else {
             return;
         };
         let (memory, view) = (scene.memory, scene.view);
         self.routes
             .from_hero(memory, view, Ground::Dry, Squares::Known);
-        self.line.clear();
-        here(level, hero, &mut self.line);
-        line(text, format_args!("you: {hero}  here: {}", self.line));
-        facts.here = Some(self.line.clone());
         let turn = scene.view.status.turn;
         // A stable sort keeps row-then-column order among monsters at the same distance.
         let entities = &mut self.routes.entities;
@@ -440,9 +443,16 @@ impl Renderer {
             } else {
                 text.push_str("; ");
             }
-            text.push(entity.glyph);
-            if !self.line.is_empty() {
-                let _ = write!(text, " {}", self.line);
+            if entity.glyph == ' ' {
+                if !self.line.is_empty() {
+                    let _ = write!(text, "{} ", self.line);
+                }
+                text.push_str(BLANK);
+            } else {
+                text.push(entity.glyph);
+                if !self.line.is_empty() {
+                    let _ = write!(text, " {}", self.line);
+                }
             }
             let dist = entity.pos.chebyshev(hero);
             let _ = match hero.direction_to(entity.pos) {
@@ -459,6 +469,17 @@ impl Renderer {
                 pet: entity.pet,
             });
         }
+    }
+
+    /// `you:`, `sea monsters:` and the places for the map view, after `monsters` searched the routes.
+    fn surroundings(&mut self, scene: &Scene, text: &mut String, facts: &mut Facts) {
+        let (Some(level), Some(hero)) = (scene.memory.current(), scene.view.hero) else {
+            return;
+        };
+        self.line.clear();
+        here(level, hero, &mut self.line);
+        line(text, format_args!("you: {hero}  here: {}", self.line));
+        facts.here = Some(self.line.clone());
         sea_monsters(level, text);
         self.places(level, hero, text, facts);
     }
