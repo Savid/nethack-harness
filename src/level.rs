@@ -579,8 +579,13 @@ impl Level {
                 .any(|(key, q)| cardinal(key) && self.unknown(q))
     }
 
-    /// For each connected group of reachable frontier squares, its farthest square and route length, nearest group
-    /// first, written into `out`.
+    /// For each connected group of reachable frontier squares, its target and route length, nearest group first,
+    /// written into `out`.
+    ///
+    /// A group's target is its farthest square that no walked square touches, such as the far end of a corridor seen
+    /// but never walked. A group the walk has already passed alongside, such as the next strip of a dark room, has
+    /// only squares a walked square touches; walking along it shows one more strip. Its target is then the square
+    /// that shows the most unknown squares, nearest first, which steps across the strip into the unknown.
     pub fn frontier_targets(&self, paths: &Paths, out: &mut Vec<(Pos, u32)>) {
         out.clear();
         let mut edge = SquareSet::new();
@@ -589,7 +594,7 @@ impl Level {
         }
         // Each square enters the stack once, as it leaves `edge`.
         let mut stack = [Pos::default(); MAP_SQUARES];
-        // The nearest distance of each group, by the index of its farthest square.
+        // The nearest distance of each group, by the index of its target.
         let mut nearest = [0u32; MAP_SQUARES];
         for first in edge.clone().iter() {
             if !edge.remove(first) {
@@ -598,13 +603,20 @@ impl Level {
             stack[0] = first;
             let mut top = 1;
             let mut near = u32::MAX;
-            let mut far = (0, first);
+            let mut far: Option<(u32, Pos)> = None;
+            let mut beside: Option<(Reverse<usize>, u32, Pos)> = None;
             while top > 0 {
                 top -= 1;
                 let p = stack[top];
                 let d = paths.distance(p).unwrap_or(0);
                 near = near.min(d);
-                far = far.max((d, p));
+                if p.neighbours().any(|(_, q)| self.visits.contains_key(&q)) {
+                    let shows = p.neighbours().filter(|&(_, q)| self.unknown(q)).count();
+                    let here = (Reverse(shows), d, p);
+                    beside = Some(beside.map_or(here, |b| b.min(here)));
+                } else {
+                    far = far.max(Some((d, p)));
+                }
                 for (_, q) in p.neighbours() {
                     if edge.remove(q) {
                         stack[top] = q;
@@ -612,10 +624,13 @@ impl Level {
                     }
                 }
             }
-            if let Some(fi) = far.1.index() {
-                nearest[fi] = near;
+            let Some((d, target)) = far.or(beside.map(|(_, d, p)| (d, p))) else {
+                continue;
+            };
+            if let Some(i) = target.index() {
+                nearest[i] = near;
             }
-            out.push((far.1, far.0));
+            out.push((target, d));
         }
         out.sort_unstable_by_key(|&(p, d)| (p.index().map_or(0, |i| nearest[i]), p, d));
     }
@@ -921,6 +936,17 @@ mod tests {
         // Groups as near as each other go in square order.
         let level = observed(&map(&["", "##...@######"]), 2, 5);
         assert_eq!(frontier(&level, at(2, 5)), [(at(2, 0), 5), (at(2, 11), 6)]);
+    }
+
+    #[test]
+    fn a_dark_room_strip_already_passed_alongside_is_stepped_across() {
+        // The hero walked down the west column of a dark room, seeing only the squares beside it.
+        let g = map(&[" ---", " |..", " |..", " |..", " |..", " ---"]);
+        let mut level = Level::new(1, "Dlvl:3");
+        for (turn, y) in (2..=5).enumerate() {
+            visit(&mut level, &g, y, 2, 400 + turn as u32);
+        }
+        assert_eq!(frontier(&level, at(5, 2)), [(at(4, 3), 1)]);
     }
 
     #[test]
