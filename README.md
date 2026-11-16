@@ -67,9 +67,12 @@ reported.
 `go` takes `x,y`, `<`, `>`, a map glyph, a kind listed under `seen:` (`door`, `open door`, `altar`,
 `fountain`, `dart trap`, …) or `frontier`, and walks to the nearest match by known route. For a closed door it
 walks to a square beside it. `frontier` walks to the nearest group of frontier squares, and at the end of a known
-corridor follows the corridor on. Routes never cross remembered lava, or water except with `--wet` (below), cross
-a remembered trap or a step the game refused only where no other route exists, and pass through the highlighted
-pet. When no route exists `go` sends nothing and says why. A walk or rest stops short when a monster arrives (a
+corridor follows the corridor on. In a group, it walks to the farthest square that no walked square touches. When
+the hero has walked beside every square of the group, such as the next strip of a dark room, it walks to the square
+that shows the most unknown squares around it, the nearest of those first. Routes never cross remembered lava, or
+water except with `--wet` (below), cross a remembered trap or a step the game refused only where no other route
+exists, and pass through the highlighted pet. When no route exists `go` sends nothing and says why. A walk or rest
+stops short when a monster arrives (a
 monster with no monster of the same glyph and colour within one square of it at the previous step; `I` and warning
 digits never count), a message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
 refused or a prompt opens. A rest also stops when three searches in a row leave the screen unchanged (`nothing
