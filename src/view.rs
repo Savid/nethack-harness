@@ -566,7 +566,7 @@ impl Renderer {
 }
 
 /// The `sea monsters:` line: `level`'s sea-monster sightings, newest first, each named by the farlook of its
-/// square while that showed the same glyph and colour, with the turn it was seen.
+/// square while that showed the same glyph and colour, or `(not looked at)`, with the turn it was seen.
 fn sea_monsters(level: &Level, out: &mut String) {
     if level.sightings.is_empty() {
         return;
@@ -575,8 +575,11 @@ fn sea_monsters(level: &Level, out: &mut String) {
     join(out, "; ", level.sightings.iter().rev(), |out, seen| {
         out.push(';');
         let looked = level.inspections.get(&seen.pos);
-        if let Some(look) = looked.filter(|look| look.glyph == ';' && look.shade == seen.shade) {
-            let _ = write!(out, " {}", look.description);
+        match looked.filter(|look| look.glyph == ';' && look.shade == seen.shade) {
+            Some(look) => {
+                let _ = write!(out, " {}", look.description);
+            }
+            None => out.push_str(" (not looked at)"),
         }
         let _ = write!(out, " {}", seen.pos);
         if let Some(turn) = seen.turn {
@@ -1155,7 +1158,8 @@ mod tests {
         let (text, _) = Renderer::default().render(&scene).unwrap();
         assert!(
             text.lines()
-                .any(|line| line == "sea monsters: ; 8,2 T:401; ; giant eel 5,2 T:400"),
+                .any(|line| line
+                    == "sea monsters: ; (not looked at) 8,2 T:401; ; giant eel 5,2 T:400"),
             "{text}"
         );
     }
