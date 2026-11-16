@@ -509,7 +509,7 @@ fn the_socket_api_answers_one_line_per_connection() {
     assert_eq!(bad["code"], 64);
     assert_eq!(
         bad["text"],
-        "look takes no keys, target, wet, count, near, rows or colours"
+        "look takes no keys, target, ground, count, near, rows or colours"
     );
     assert_eq!(ask("not json\n")["code"], 64);
     let learn = |rows: usize| {
@@ -993,6 +993,13 @@ fn go_wet_crosses_water_that_a_dry_go_has_no_route_over() {
     assert_eq!(facts["report"]["verb"], "go --wet 22,4");
     assert_eq!(facts["report"]["wet"], 2);
     assert_eq!(facts["report"]["steps"], 5);
+    // An inland go keeps off the squares beside the water, which a dry go walks onto.
+    let inland = session.run(&["go", "--inland", "23,4"]);
+    assert_eq!(code(&inland), 1, "{}{}", stdout(&inland), stderr(&inland));
+    assert_eq!(
+        stdout(&inland),
+        "every known route to 23,4 passes beside water\n"
+    );
     // A dry go reports no wet steps at all.
     let dry = facts_of(&session.run(&["--json", "go", "23,4"]));
     assert_eq!(dry["report"]["done"], true);
@@ -1007,7 +1014,7 @@ fn a_wet_step_the_game_refuses_stops_short_with_its_message_and_square() {
     assert_eq!(code(&session.run(&["look"])), 0);
     let mut stream = UnixStream::connect(session.socket()).expect("connect to the daemon");
     stream
-        .write_all(b"{\"cmd\":\"go\",\"target\":\">\",\"wet\":true}\n")
+        .write_all(b"{\"cmd\":\"go\",\"target\":\">\",\"ground\":\"wet\"}\n")
         .unwrap();
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line).unwrap();
@@ -1034,10 +1041,10 @@ fn a_wet_step_the_game_refuses_stops_short_with_its_message_and_square() {
     assert_eq!(reply["facts"]["pos"], serde_json::json!([23, 4]));
     // The refused step was sent once and not tried again.
     assert_eq!(moves(&server.inputs()), ["ml", "ml"]);
-    // `wet` belongs to go alone.
+    // `ground` belongs to go alone.
     let mut stream = UnixStream::connect(session.socket()).expect("connect to the daemon");
     stream
-        .write_all(b"{\"cmd\":\"rest\",\"count\":1,\"wet\":true}\n")
+        .write_all(b"{\"cmd\":\"rest\",\"count\":1,\"ground\":\"wet\"}\n")
         .unwrap();
     line.clear();
     BufReader::new(&stream).read_line(&mut line).unwrap();

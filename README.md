@@ -51,7 +51,7 @@ nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 | --- | --- |
 | `look` | Print the view. Names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
 | `send KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. |
-| `go [--wet] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water. |
+| `go [--wet\|--inland] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water; `--inland` keeps it off every square beside remembered water. |
 | `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
 | `learn ROW… COLOURS…` | Tell the harness about squares of the current level it has not observed: the map's 21 rows, then their 21 rows of colours. Sends nothing to the game and prints `learned N squares`. |
 | `stop` | Stop the session's daemon. With none running it prints `no daemon is running` and exits 0. |
@@ -96,6 +96,10 @@ whether the hero can cross; what the game does is reported. A step into water th
 such as `You avoid stepping into the water.`, stops the walk short (exit code 2) with the game's message under
 `msg:` and `wet step X,Y->X,Y refused`; it is not tried again or routed around. The report counts the steps sent
 into water. Without `--wet`, nothing changes.
+
+`go --inland TARGET` takes a route that enters no square beside remembered water (any of its eight neighbours a
+blue `}`); the hero's own square may be one. When only a route beside water reaches the target, `go` sends nothing
+and says `every known route to TARGET passes beside water`.
 
 `--near N` on `go` or `rest` (1 to 80; options may come before or after the operand) narrows the monster stop to a
 radius the caller picks: a monster stops the walk or rest only when it is within N squares of the hero (the larger
@@ -175,7 +179,7 @@ time, in order.
 {"cmd": "look"}
 {"cmd": "send", "keys": "Fh"}
 {"cmd": "go", "target": "frontier"}
-{"cmd": "go", "target": ">", "wet": true}
+{"cmd": "go", "target": ">", "ground": "wet"}
 {"cmd": "rest", "count": 20}
 {"cmd": "rest", "count": 20, "near": 3}
 {"cmd": "learn", "rows": ["…80 characters…", …21 rows], "colours": ["…80 hex digits…", …21 rows]}
@@ -183,7 +187,8 @@ time, in order.
 ```
 
 `keys` uses the escape syntax above. Each command takes exactly its own field: `send` requires `keys`, `go`
-requires `target` (at most 64 bytes) and takes an optional `wet` (`true` is `go --wet`), `rest` requires `count`
+requires `target` (at most 64 bytes) and takes an optional `ground` (`"dry"`, `"wet"` as `go --wet` or
+`"inland"` as `go --inland`), `rest` requires `count`
 (1 to 200), `go` and `rest` take an optional `near` (1 to 80, as `--near`), `learn` requires `rows` and `colours`,
 and any other field is refused with code 64. `rows` and `colours` are each 21 strings of 80 printable ASCII
 characters, as the `learn` operands above: `rows[0]` is map row 1 and a string's first character is column 0. A
@@ -237,7 +242,7 @@ end: killed by a jackal
 
 The parts, in order:
 
-- **Report line**, after `send`, `go` and `rest`: the command with its options (`go --wet --near 3 >`), steps or
+- **Report line**, after `send`, `go` and `rest`: the command with its options (`go --wet --near 3 >`, `go --inland >`), steps or
   searches, for `go --wet` the steps into water (`N wet`), for `go` the steps that entered told squares (`N told`,
   when there were any), turns passed, for `rest` the searches that took no time (`N took no time (…)`, each
   distinct answer on screen after its count unless one covers them all, at most eight listed and any others as
@@ -255,6 +260,9 @@ The parts, in order:
 - **`monsters:`**: glyph, farlook name, `pet` when highlighted, square, and distance or `adjacent K` (the move key
   toward it). A name lasts while the monster stays on its square looking the same; `(looked T:n)` marks a name
   from an earlier turn.
+- **`sea monsters:`**: the last six squares where a sea monster (`;`) was shown on this level, newest first, while
+  the hero was neither blind nor hallucinating: glyph, the farlook name of the square when it was looked at
+  showing the same glyph and colour, square and `T:n`, the turn it was seen there.
 - **`seen:`**: remembered stairs, traps, altars, fountains, water, lava, doors, and squares that may be a door or
   an object, grouped by kind (glyph and name). Kinds with fewest squares come first, so a kind seen on one square
   is never hidden by one seen on hundreds; kinds with as many squares go by their nearest square. Each kind lists

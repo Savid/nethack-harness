@@ -2,9 +2,9 @@
 //! line per connection, in order, so play is serialised. It holds all game memory in RAM, has no timers, and writes
 //! only its log, on errors.
 //!
-//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"learn"|"stop", "keys"?: str, "target"?: str, "wet"?: bool,
-//! "count"?: u32, "near"?: int, "rows"?: [str], "colours"?: [str]}`; `keys` uses the escape syntax
-//! `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
+//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"learn"|"stop", "keys"?: str, "target"?: str,
+//! "ground"?: "dry"|"wet"|"inland", "count"?: u32, "near"?: int, "rows"?: [str], "colours"?: [str]}`; `keys` uses
+//! the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
 
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{ErrorKind, Read, Write};
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::level::Ground;
 use crate::link::Term;
 use crate::play::{KEYS_MAX, Play, REST_MAX};
 use crate::types::{COLS, ExitCode, MAP_ROWS, Reply, unescape};
@@ -42,7 +43,7 @@ pub enum Cmd {
     Stop,
 }
 
-/// One request line: `keys` for `send`, `target` and optionally `wet` for `go`, `count` for `rest`, optionally
+/// One request line: `keys` for `send`, `target` and optionally `ground` for `go`, `count` for `rest`, optionally
 /// `near` for `go` and `rest`, and `rows` and `colours` for `learn`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -53,7 +54,7 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wet: Option<bool>,
+    pub ground: Option<Ground>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,7 +72,7 @@ pub enum Checked<'a> {
     Send(Vec<u8>),
     Go {
         target: &'a str,
-        wet: bool,
+        ground: Ground,
         near: Option<u8>,
     },
     Rest {
@@ -90,7 +91,7 @@ pub enum Checked<'a> {
 pub fn check(request: &Request) -> Result<Checked<'_>, String> {
     let (keys, target, count, near, map) = (
         request.keys.is_some(),
-        request.target.is_some() || request.wet.is_some(),
+        request.target.is_some() || request.ground.is_some(),
         request.count.is_some(),
         request.near,
         request.rows.is_some() || request.colours.is_some(),
@@ -99,13 +100,13 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
     let refuse = |why: &str| Err(why.to_owned());
     match request.cmd {
         Cmd::Look if any || map => {
-            refuse("look takes no keys, target, wet, count, near, rows or colours")
+            refuse("look takes no keys, target, ground, count, near, rows or colours")
         }
         Cmd::Stop if any || map => {
-            refuse("stop takes no keys, target, wet, count, near, rows or colours")
+            refuse("stop takes no keys, target, ground, count, near, rows or colours")
         }
         Cmd::Send if target || count || near.is_some() || map => refuse("send takes only keys"),
-        Cmd::Go if keys || count || map => refuse("go takes only a target, wet and near"),
+        Cmd::Go if keys || count || map => refuse("go takes only a target, ground and near"),
         Cmd::Rest if keys || target || map => refuse("rest takes only a count and near"),
         Cmd::Learn if any => refuse("learn takes only rows and colours"),
         Cmd::Go | Cmd::Rest if near.is_some_and(|n| !(1..=NEAR_MAX).contains(&n)) => {
@@ -120,7 +121,7 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
         Cmd::Go => match request.target.as_deref().map(str::trim) {
             Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go {
                 target,
-                wet: request.wet == Some(true),
+                ground: request.ground.unwrap_or_default(),
                 near,
             }),
             _ => Err(format!(
@@ -319,7 +320,14 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
         (Ok(()), Checked::Look) => play.look(),
         (Ok(()), Checked::Send(keys)) => play.send(&keys),
-        (Ok(()), Checked::Go { target, wet, near }) => play.go(target, wet, near),
+        (
+            Ok(()),
+            Checked::Go {
+                target,
+                ground,
+                near,
+            },
+        ) => play.go(target, ground, near),
         (Ok(()), Checked::Rest { count, near }) => play.rest(count, near),
         (Ok(()), Checked::Learn { rows, colours }) => play.learn(rows, colours),
         (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
@@ -351,7 +359,7 @@ mod tests {
             cmd,
             keys: None,
             target: None,
-            wet: None,
+            ground: None,
             count: None,
             near: None,
             rows: None,
@@ -368,9 +376,12 @@ mod tests {
             read("{\"cmd\":\"rest\",\"count\":5}").unwrap().count,
             Some(5)
         );
-        let wet = read("{\"cmd\":\"go\",\"target\":\">\",\"wet\":true}").unwrap();
-        assert_eq!((wet.target.as_deref(), wet.wet), (Some(">"), Some(true)));
-        assert!(read("{\"cmd\":\"go\",\"target\":\">\",\"wet\":1}").is_err());
+        let go = read("{\"cmd\":\"go\",\"target\":\">\",\"ground\":\"inland\"}").unwrap();
+        assert_eq!(
+            (go.target.as_deref(), go.ground),
+            (Some(">"), Some(Ground::Inland))
+        );
+        assert!(read("{\"cmd\":\"go\",\"target\":\">\",\"ground\":\"deep\"}").is_err());
     }
 
     #[test]
@@ -458,7 +469,7 @@ mod tests {
         go.rows = rows("", MAP_ROWS);
         assert_eq!(
             check(&go).unwrap_err(),
-            "go takes only a target, wet and near"
+            "go takes only a target, ground and near"
         );
     }
 
@@ -482,14 +493,14 @@ mod tests {
             check(&go),
             Ok(Checked::Go {
                 target: "23,3",
-                wet: false,
+                ground: Ground::Dry,
                 near: None,
             })
         ));
-        go.wet = Some(true);
-        assert!(matches!(check(&go), Ok(Checked::Go { wet: true, .. })));
-        go.wet = Some(false);
-        assert!(matches!(check(&go), Ok(Checked::Go { wet: false, .. })));
+        for ground in [Ground::Wet, Ground::Inland] {
+            go.ground = Some(ground);
+            assert!(matches!(check(&go), Ok(Checked::Go { ground: g, .. }) if g == ground));
+        }
         go.target = None;
         assert!(check(&go).is_err());
         go.target = Some("x".repeat(TARGET_MAX + 1));
@@ -497,7 +508,7 @@ mod tests {
         go.count = Some(1);
         assert_eq!(
             check(&go).unwrap_err(),
-            "go takes only a target, wet and near"
+            "go takes only a target, ground and near"
         );
         let mut rest = request(Cmd::Rest);
         for (count, ok) in [
@@ -514,23 +525,23 @@ mod tests {
         look.keys = Some("x".to_owned());
         assert_eq!(
             check(&look).unwrap_err(),
-            "look takes no keys, target, wet, count, near, rows or colours"
+            "look takes no keys, target, ground, count, near, rows or colours"
         );
         let mut look = request(Cmd::Look);
         look.near = Some(3);
         assert!(check(&look).is_err());
         let mut send = request(Cmd::Send);
         send.keys = Some("s".to_owned());
-        send.wet = Some(true);
+        send.ground = Some(Ground::Wet);
         assert_eq!(check(&send).unwrap_err(), "send takes only keys");
         let mut rest = request(Cmd::Rest);
         rest.count = Some(1);
-        rest.wet = Some(false);
+        rest.ground = Some(Ground::Dry);
         assert_eq!(
             check(&rest).unwrap_err(),
             "rest takes only a count and near"
         );
-        rest.wet = None;
+        rest.ground = None;
         for (near, ok) in [
             (Some(0), false),
             (Some(1), true),
@@ -549,7 +560,7 @@ mod tests {
             })
         ));
         send.near = Some(3);
-        send.wet = None;
+        send.ground = None;
         assert_eq!(check(&send).unwrap_err(), "send takes only keys");
     }
 }
