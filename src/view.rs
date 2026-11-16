@@ -566,20 +566,18 @@ impl Renderer {
 }
 
 /// The `sea monsters:` line: `level`'s sea-monster sightings, newest first, each named by the farlook of its
-/// square while that showed the same glyph and colour, or `(not looked at)`, with the turn it was seen.
+/// square while that showed the same glyph and colour, or `(not looked at)`, with the turn it was seen. Every
+/// sighting is a `;`, which the line leaves out, as it would read as a separator.
 fn sea_monsters(level: &Level, out: &mut String) {
     if level.sightings.is_empty() {
         return;
     }
     line(out, format_args!("sea monsters: "));
     join(out, "; ", level.sightings.iter().rev(), |out, seen| {
-        out.push(';');
         let looked = level.inspections.get(&seen.pos);
         match looked.filter(|look| look.glyph == ';' && look.shade == seen.shade) {
-            Some(look) => {
-                let _ = write!(out, " {}", look.description);
-            }
-            None => out.push_str(" (not looked at)"),
+            Some(look) => out.push_str(&look.description),
+            None => out.push_str("(not looked at)"),
         }
         let _ = write!(out, " {}", seen.pos);
         if let Some(turn) = seen.turn {
@@ -1158,8 +1156,7 @@ mod tests {
         let (text, _) = Renderer::default().render(&scene).unwrap();
         assert!(
             text.lines()
-                .any(|line| line
-                    == "sea monsters: ; (not looked at) 8,2 T:401; ; giant eel 5,2 T:400"),
+                .any(|line| line == "sea monsters: (not looked at) 8,2 T:401; giant eel 5,2 T:400"),
             "{text}"
         );
     }
