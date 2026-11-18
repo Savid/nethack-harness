@@ -408,8 +408,11 @@ pub struct Report {
     pub done: bool,
     /// Why it stopped short, one phrase per reason.
     pub stopped: Vec<String>,
-    /// Steps, searches or keys executed.
+    /// Steps, searches, attacks or keys executed.
     pub steps: u32,
+    /// For `explore`, the legs walked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legs: Option<u32>,
     /// For `go --wet`, the steps sent into water.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wet: Option<u32>,

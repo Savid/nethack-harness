@@ -507,10 +507,7 @@ fn the_socket_api_answers_one_line_per_connection() {
     assert!(reply.contains("\"code\":64"), "{reply}");
     let bad = ask("{\"cmd\":\"look\",\"keys\":\"x\"}\n");
     assert_eq!(bad["code"], 64);
-    assert_eq!(
-        bad["text"],
-        "look takes no keys, target, ground, count, near, rows or colours"
-    );
+    assert_eq!(bad["text"], "look takes no arguments");
     assert_eq!(ask("not json\n")["code"], 64);
     let learn = |rows: usize| {
         let mut told = vec![" ".repeat(80); rows];
@@ -550,6 +547,10 @@ enum Stage {
     Pick,
     /// A direction to fight in.
     Direction,
+    /// The inventory menu, until Escape.
+    Inventory,
+    /// The question whether to quit.
+    Quit,
     /// The `You die...--More--` page.
     Dying,
     /// An end-of-game disclosure question.
@@ -590,8 +591,9 @@ const PRAYING: Death = Death {
 const ALREADY_FOUND: &str = "You already found a monster.  Use 'm' prefix to force another search.";
 
 /// A small game behind the fake terminal: one lit room, a hero that moves and searches, a jackal that turns up
-/// after a set number of searches, farlook, look-here, and a death with its end-of-game pages, after which the game
-/// prints the score list and exits. A room may hold water and down stairs: a step into water is taken only after
+/// after a set number of searches and dies of its second wound, farlook, look-here, an inventory, a question
+/// whether to quit that any answer declines, and a death, attacking where no jackal stands, with its end-of-game
+/// pages, after which the game prints the score list and exits. A room may hold water and down stairs: a step into water is taken only after
 /// the `m` prefix, as the game takes a deliberate move into known water, and never when the water refuses the hero.
 ///
 /// Searches take no time in two ways. A hero that acts twice in some turns (`acts_twice`, every Nth search)
@@ -605,6 +607,7 @@ struct MiniGame {
     arrives_after: Option<u32>,
     arrives_at: (u8, u8),
     jackal: Option<(u8, u8)>,
+    wounds: u32,
     stage: Stage,
     pick: (u8, u8),
     message: String,
@@ -633,6 +636,7 @@ impl MiniGame {
             arrives_after,
             arrives_at: (27, 4),
             jackal: None,
+            wounds: 0,
             stage: Stage::Map,
             pick: (22, 4),
             message: String::new(),
@@ -746,11 +750,31 @@ impl MiniGame {
                 }
             },
             Stage::Direction => {
-                self.stage = if Self::delta(key).is_some() {
-                    Stage::Dying
-                } else {
-                    Stage::Map
-                };
+                let toward = Self::delta(key).map(|delta| Self::shifted(self.hero, delta));
+                self.stage = Stage::Map;
+                match toward {
+                    Some(at) if Some(at) == self.jackal => {
+                        self.wounds += 1;
+                        self.turn += 1;
+                        self.message = if self.wounds < 2 {
+                            "You hit the jackal.".to_owned()
+                        } else {
+                            self.jackal = None;
+                            "You kill the jackal!".to_owned()
+                        };
+                    }
+                    Some(_) => self.stage = Stage::Dying,
+                    None => {}
+                }
+            }
+            Stage::Inventory => {
+                if key == 0x1b {
+                    self.stage = Stage::Map;
+                }
+            }
+            Stage::Quit => {
+                self.message = "Okay.".to_owned();
+                self.stage = Stage::Map;
             }
             Stage::Dying => self.stage = Stage::Disclose,
             Stage::Disclose => self.stage = Stage::Tomb,
@@ -795,7 +819,15 @@ impl MiniGame {
                 self.message = "Pick a monster, object or location.".to_owned();
                 self.stage = Stage::Pick;
             }
-            b'F' => self.stage = Stage::Direction,
+            b'F' => {
+                self.message = "In what direction?".to_owned();
+                self.stage = Stage::Direction;
+            }
+            b'i' => self.stage = Stage::Inventory,
+            b'Q' => {
+                self.message = "Really quit? [yn] (n)".to_owned();
+                self.stage = Stage::Quit;
+            }
             other => match Self::delta(other) {
                 Some(delta) => {
                     let to = Self::shifted(self.hero, delta);
@@ -882,6 +914,21 @@ impl MiniGame {
             "Dlvl:1 $:0 HP:{hp}(16) Pw:2(2) AC:6 Xp:1 T:{}",
             self.turn
         ));
+        if self.stage == Stage::Inventory {
+            let menu = [
+                "Weapons",
+                "a - a +1 long sword (weapon in hand)",
+                "Armor",
+                "b - an uncursed +0 ring mail (being worn)",
+                "(end)",
+            ];
+            for (row, line) in menu.iter().enumerate() {
+                at(&mut out, 32, row as u8);
+                out.push_str(&format!("{line:<47}"));
+            }
+            at(&mut out, 38, 4);
+            return out.into_bytes();
+        }
         let message = match self.stage {
             Stage::Dying => "You die...--More--",
             Stage::Disclose => "Do you want your possessions identified? [ynq] (n)",
@@ -890,7 +937,9 @@ impl MiniGame {
         at(&mut out, 0, 0);
         out.push_str(message);
         match self.stage {
-            Stage::Dying | Stage::Disclose => at(&mut out, message.len() as u8 + 1, 0),
+            Stage::Dying | Stage::Disclose | Stage::Quit | Stage::Direction => {
+                at(&mut out, message.len() as u8 + 1, 0);
+            }
             Stage::Pick => at(&mut out, self.pick.0, self.pick.1),
             _ => at(&mut out, self.hero.0, self.hero.1),
         }
@@ -1275,4 +1324,146 @@ fn stop_ends_the_daemon() {
     assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
     assert!(session.wait_gone());
     assert_eq!(stdout(&session.run(&["stop"])), "no daemon is running\n");
+}
+
+#[test]
+fn look_reads_the_inventory_once_a_turn() {
+    let dir = scratch("e2e-inventory");
+    let server = serve_game(&dir, MiniGame::new(None));
+    let session = Session::new(&dir, server.path());
+    let look = session.run(&["--json", "look"]);
+    assert_eq!(code(&look), 0, "{}{}", stdout(&look), stderr(&look));
+    let facts = facts(&look);
+    assert_eq!(facts["inventory"]["turn"], 10);
+    assert_eq!(
+        facts["inventory"]["lines"],
+        serde_json::json!([
+            "a - a +1 long sword (weapon in hand)",
+            "b - an uncursed +0 ring mail (being worn)"
+        ])
+    );
+    let reads = |inputs: &[Vec<u8>]| inputs.iter().filter(|keys| *keys == b"i").count();
+    assert_eq!(reads(&server.inputs()), 1);
+    assert_eq!(
+        server
+            .inputs()
+            .iter()
+            .filter(|keys| *keys == b"\x1b")
+            .count(),
+        1
+    );
+    session.run(&["look"]);
+    assert_eq!(reads(&server.inputs()), 1, "the same turn reads it once");
+}
+
+#[test]
+fn fight_attacks_until_its_monster_is_gone() {
+    let dir = scratch("e2e-fight");
+    let server = serve_game(&dir, MiniGame::cornered());
+    let session = Session::new(&dir, server.path());
+    let fought = session.run(&["--json", "fight", "l", "6", "4"]);
+    assert_eq!(code(&fought), 2, "{}{}", stdout(&fought), stderr(&fought));
+    let facts = facts(&fought);
+    assert_eq!(facts["report"]["steps"], 2);
+    assert_eq!(
+        facts["report"]["stopped"],
+        serde_json::json!(["no monster is shown at 23,4"])
+    );
+    assert_eq!(
+        facts["msgs"],
+        serde_json::json!(["You hit the jackal.", "You kill the jackal!"])
+    );
+    assert_eq!(
+        server.inputs().iter().filter(|keys| *keys == b"Fl").count(),
+        2
+    );
+    let refused = session.run(&["fight", "l", "6", "4"]);
+    assert_eq!(code(&refused), 1);
+    assert!(
+        stdout(&refused).contains("no monster is shown at 23,4"),
+        "{}",
+        stdout(&refused)
+    );
+    assert_eq!(code(&session.run(&["fight", "l", "21", "4"])), 64);
+}
+
+#[test]
+fn a_guarded_prompt_keeps_the_keys_after_it() {
+    let dir = scratch("e2e-guard");
+    let server = serve_game(&dir, MiniGame::new(None));
+    let session = Session::new(&dir, server.path());
+    let sent = session.run(&["--json", "send", "--guard", "Really quit", "Qy"]);
+    assert_eq!(code(&sent), 2, "{}{}", stdout(&sent), stderr(&sent));
+    let facts = facts(&sent);
+    assert_eq!(facts["prompt"], "Really quit? [yn] (n)");
+    let stopped = facts["report"]["stopped"][0].as_str().unwrap();
+    assert!(
+        stopped.starts_with("the guarded prompt \"Really quit? [yn] (n)\" opened"),
+        "{stopped}"
+    );
+    assert!(!server.inputs().contains(&b"y".to_vec()));
+    // Answered by the caller, the prompt takes the key.
+    let answered = session.run(&["send", "n"]);
+    assert_eq!(code(&answered), 0, "{}", stdout(&answered));
+    assert!(
+        stdout(&answered).contains("msg: Okay."),
+        "{}",
+        stdout(&answered)
+    );
+}
+
+#[test]
+fn explore_says_when_nothing_is_left_to_explore() {
+    let dir = scratch("e2e-explore");
+    let server = serve_game(&dir, MiniGame::new(None));
+    let session = Session::new(&dir, server.path());
+    let explored = session.run(&["explore", "8"]);
+    assert_eq!(
+        code(&explored),
+        1,
+        "{}{}",
+        stdout(&explored),
+        stderr(&explored)
+    );
+    assert_eq!(
+        stdout(&explored),
+        "no reachable known square borders unexplored ones\n"
+    );
+    assert_eq!(code(&session.run(&["explore", "31"])), 64);
+}
+
+#[test]
+fn schema_describes_every_command_without_a_daemon_and_request_sends_one() {
+    let dir = scratch("e2e-schema");
+    let state = dir.join("s");
+    let output = client(&["--dir", state.to_str().unwrap(), "schema"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(!state.exists(), "schema starts no daemon");
+    let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<&str> = schema["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "look", "send", "go", "rest", "explore", "fight", "learn", "stop"
+        ]
+    );
+
+    let server = serve_game(&dir, MiniGame::cornered());
+    let session = Session::new(&dir, server.path());
+    let request = r#"{"cmd":"fight","direction":"l","count":1,"hp":4}"#;
+    let fought = session.run(&["--json", "request", request]);
+    assert_eq!(code(&fought), 0, "{}{}", stdout(&fought), stderr(&fought));
+    assert_eq!(
+        facts(&fought)["msgs"],
+        serde_json::json!(["You hit the jackal."])
+    );
+    assert_eq!(
+        code(&session.run(&["request", r#"{"cmd":"fight","direction":"l"}"#])),
+        64
+    );
 }

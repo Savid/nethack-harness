@@ -27,7 +27,8 @@ const REDRAW: u8 = 0x12;
 
 /// What an action does: send the caller's keys, one byte at a time so each prompt is seen before the key that
 /// answers it; walk a known route; walk to a corridor end and follow the corridor beyond it; search in place
-/// repeatedly; farlook a square (`;`, then the cursor keys in `keys`); or look underfoot (`:`).
+/// repeatedly; farlook a square (`;`, then the cursor keys in `keys`); look underfoot (`:`); attack once in a
+/// direction (`F` and the direction key in `keys`); or read the inventory (`i`, its pages, then Escape).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Keys,
@@ -36,11 +37,14 @@ pub enum Kind {
     Search,
     Farlook,
     LookHere,
+    Fight,
+    Inventory,
 }
 
 /// A bounded action: the keys of one step (or a farlook's cursor keys), the most steps to take, the square it is
-/// going to or looking at, the known route there, first step first, whether that route may step into water, and
-/// for a walk or rest the radius around the hero within which an arriving monster stops it (`None`: anywhere).
+/// going to or looking at, the known route there, first step first, whether that route may step into water, for
+/// a walk or rest the radius around the hero within which an arriving monster stops it (`None`: anywhere), and for
+/// the caller's keys the texts of prompts it does not answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     pub kind: Kind,
@@ -50,6 +54,7 @@ pub struct Action {
     pub route: Vec<Pos>,
     pub wet: bool,
     pub near: Option<u8>,
+    pub guard: Vec<String>,
 }
 
 /// Which observations changed and ended an action, as bit flags: the status line other than turn, HP and Pw (or
@@ -105,6 +110,12 @@ pub enum Stop {
     Link(LinkError),
     /// The game kept showing pages past the bound.
     Failed(String),
+    /// A prompt holding one of the caller's guard texts opened with keys still to send: its text, and how many
+    /// keys were left unsent.
+    Guarded {
+        prompt: String,
+        unsent: u32,
+    },
 }
 
 /// A monster that ended a rest or walk by arriving, and its distance from the hero then.
@@ -146,6 +157,28 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// Adds what `next`, the action after this one, did: its stop is the stop of both.
+    pub fn absorb(&mut self, next: Outcome) {
+        self.stop = next.stop;
+        self.changed = next.changed;
+        self.arrival = next.arrival;
+        self.steps += next.steps;
+        self.wet += next.wet;
+        self.told += next.told;
+        self.turns = match (self.turns, next.turns) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.messages_left_out += next.messages_left_out;
+        for text in next.messages {
+            self.message(text);
+        }
+        self.answered_left_out += next.answered_left_out;
+        for answered in next.answered {
+            self.answer(answered);
+        }
+    }
+
     fn message(&mut self, text: String) {
         capped(&mut self.messages, &mut self.messages_left_out, text);
     }
@@ -233,7 +266,10 @@ impl Executor {
             memory,
             outcome: Outcome::default(),
         };
-        let aside = matches!(action.kind, Kind::Farlook | Kind::LookHere);
+        let aside = matches!(
+            action.kind,
+            Kind::Farlook | Kind::LookHere | Kind::Inventory
+        );
         io.memory.set_aside(aside);
         let view = io.term.view();
         let (turn, ended_before) = (view.status.turn, view.ended);
@@ -243,9 +279,11 @@ impl Executor {
         } else {
             io.memory.begin(view);
             match action.kind {
-                Kind::Keys => self.type_keys(&mut io, &action.keys),
+                Kind::Keys => self.type_keys(&mut io, &action.keys, &action.guard),
                 Kind::Farlook => self.farlook(&mut io, action),
                 Kind::LookHere => self.look_here(&mut io, action),
+                Kind::Fight => self.swing(&mut io, action),
+                Kind::Inventory => self.inventory(&mut io),
                 Kind::Travel | Kind::Explore | Kind::Search => self.walk(&mut io, action),
             }
             .unwrap_or_else(|stop| stop)
@@ -365,8 +403,9 @@ impl Executor {
     }
 
     /// The caller's keys, one byte at a time, except that text typed into a free-text prompt goes as one batch up
-    /// to the key that ends it. Each key that meets a prompt is recorded against it.
-    fn type_keys(&mut self, io: &mut Io, keys: &[u8]) -> Result<Stop, Stop> {
+    /// to the key that ends it. Each key that meets a prompt is recorded against it. A prompt whose text holds one
+    /// of `guard` gets none of the keys left: they stop there, unsent.
+    fn type_keys(&mut self, io: &mut Io, keys: &[u8], guard: &[String]) -> Result<Stop, Stop> {
         let after_run = self.after_run;
         // The prompt the previous key answered, while further keys may extend its answer.
         let mut open: Option<Phase> = None;
@@ -375,6 +414,15 @@ impl Executor {
             let view = io.term.view();
             let phase = view.phase();
             let mut end = i + 1;
+            if question(view) {
+                let prompt = strip_more(&view.msg).trim();
+                if guard.iter().any(|text| prompt.contains(text.as_str())) {
+                    return Ok(Stop::Guarded {
+                        prompt: prompt.to_owned(),
+                        unsent: (keys.len() - i) as u32,
+                    });
+                }
+            }
             // A question or a `--More--` takes the keys sent to it as its answer; a menu's keys select entries.
             if question(view) || view.more && phase != Phase::Menu {
                 if phase == Phase::Text {
@@ -438,6 +486,34 @@ impl Executor {
         {
             io.memory
                 .remember_look(hero, before, io.term.view(), LookSource::Here);
+        }
+        Ok(settled(io.term.view()))
+    }
+
+    /// One attack: `F` and the direction as one batch, then the `--More--` pages it brings.
+    fn swing(&mut self, io: &mut Io, action: &Action) -> Result<Stop, Stop> {
+        self.send(io, &action.keys)?;
+        io.outcome.steps = 1;
+        self.page(io)?;
+        Ok(settled(io.term.view()))
+    }
+
+    /// Reads the inventory: `i`, `>` for each further page of its menu, then Escape to close it. Memory keeps the
+    /// menu once every page has been shown; it takes no game time.
+    fn inventory(&mut self, io: &mut Io) -> Result<Stop, Stop> {
+        self.send(io, b"i")?;
+        io.outcome.steps = 1;
+        for _ in 0..PAGES {
+            let view = io.term.view();
+            match view.menu_page() {
+                Some((page, pages)) if view.phase() == Phase::Menu && page < pages => {
+                    self.send(io, b">")?;
+                }
+                _ => break,
+            }
+        }
+        if matches!(io.term.view().phase(), Phase::Menu | Phase::More) {
+            self.send(io, &[ESCAPE])?;
         }
         Ok(settled(io.term.view()))
     }
@@ -918,6 +994,7 @@ fn action(kind: Kind, keys: &[u8], steps: u32, target: Option<Pos>) -> Action {
         route: Vec::new(),
         wet: false,
         near: None,
+        guard: Vec::new(),
     }
 }
 
@@ -951,6 +1028,23 @@ pub fn look_here() -> Action {
 
 pub fn keys(keys: &[u8]) -> Action {
     action(Kind::Keys, keys, 1, None)
+}
+
+/// The caller's keys, stopping before any prompt whose text holds one of `guard`.
+pub fn guarded_keys(keys: &[u8], guard: &[String]) -> Action {
+    let mut action = action(Kind::Keys, keys, 1, None);
+    action.guard = guard.to_vec();
+    action
+}
+
+/// One attack toward `direction`, one of `hjklyubn`.
+pub fn swing(direction: u8) -> Action {
+    action(Kind::Fight, &[b'F', direction], 1, None)
+}
+
+/// A read of the inventory.
+pub fn inventory() -> Action {
+    action(Kind::Inventory, b"i", 1, None)
 }
 
 /// The farlook cursor keys from `start` to `target`: `@` to the hero, the fewest moves, then `.` to pick. The
@@ -1096,6 +1190,7 @@ mod tests {
             route: route.iter().map(|&(y, x)| Pos::new(y, x)).collect(),
             wet: false,
             near: None,
+            guard: Vec::new(),
         }
     }
 

@@ -1,5 +1,5 @@
-//! The commands a caller plays with: `look`, `send`, `go` and `rest`, each answered with a view, and `learn`, which
-//! takes in squares the caller tells of.
+//! The commands a caller plays with: `look`, `send`, `go`, `rest`, `explore` and `fight`, each answered with a
+//! view, and `learn`, which takes in squares the caller tells of.
 
 use crate::exec::{self, Changed, Executor, Kind, Outcome, Stop};
 use crate::glyphs::{is_engraving_text, numbered};
@@ -7,7 +7,7 @@ use crate::level::{Ground, Paths, Squares};
 use crate::link::{LinkError, Term, Terminal};
 use crate::observe::{Entity, EntityKind, Memory};
 use crate::screen::{Phase, strip_more};
-use crate::types::{Answered, ExitCode, MAP_TOP, Pos, Reply, Report, SquareSet};
+use crate::types::{Answered, COLS, ExitCode, MAP_BOTTOM, MAP_TOP, Pos, Reply, Report, SquareSet};
 use crate::view::{BLANK, Landmark, Names, Renderer, Scene, landmarks};
 
 /// Most keys one `send` takes.
@@ -16,6 +16,10 @@ pub const KEYS_MAX: usize = 256;
 pub const REST_MAX: u32 = 200;
 /// Most steps one `go` takes.
 pub const STEPS_MAX: u32 = 64;
+/// Most legs one `explore` walks.
+pub const LEGS_MAX: u32 = 30;
+/// Most attacks one `fight` makes.
+pub const SWINGS_MAX: u32 = 20;
 /// The refusal while a prompt is open.
 pub const PROMPT_OPEN: &str = "a prompt is open: answer or cancel it with send first";
 
@@ -35,6 +39,8 @@ pub struct Play<T: Terminal> {
     answered: Vec<Answered>,
     /// The last caller action, for its report.
     last: Option<exec::Action>,
+    /// Entities on screen, for `fight`'s target.
+    nearby: Vec<Entity>,
 }
 
 /// The phrase for each changed observation, in the order a report lists them.
@@ -77,6 +83,7 @@ impl<T: Terminal> Play<T> {
             edges: Vec::new(),
             answered: Vec::new(),
             last: None,
+            nearby: Vec::new(),
         }
     }
 
@@ -84,13 +91,15 @@ impl<T: Terminal> Play<T> {
         &mut self.term
     }
 
-    /// Reads the screen and renders it. While the map waits for a command, it first names monsters by farlook
-    /// (only new or moved ones, at most `FARLOOKS`) and re-reads a known engraving or object square underfoot with
-    /// `:` when the turn has advanced since its last reading; both take no game time.
+    /// Reads the screen and renders it. While the map waits for a command, it first reads the inventory (`i`)
+    /// unless it holds one from this turn, names monsters by farlook (only new or moved ones, at most `FARLOOKS`)
+    /// and re-reads a known engraving or object square underfoot with `:` when the turn has advanced since its last
+    /// reading; all take no game time.
     pub fn look(&mut self) -> Reply {
         if let Some(reply) = self.read("look") {
             return reply;
         }
+        self.reread_inventory();
         self.inquire();
         self.reply(self.over().unwrap_or(ExitCode::Done), None)
     }
@@ -103,12 +112,13 @@ impl<T: Terminal> Play<T> {
     }
 
     /// Sends the caller's keys, 1 to `KEYS_MAX` as the request check allows, and renders the result, with every
-    /// prompt they passed and its answer.
-    pub fn send(&mut self, keys: &[u8]) -> Reply {
+    /// prompt they passed and its answer. A prompt whose text holds one of `guard` stops the keys before it; the
+    /// rest are not sent and the prompt stays open.
+    pub fn send(&mut self, keys: &[u8], guard: &[String]) -> Reply {
         if let Some(reply) = self.prepare("send") {
             return reply;
         }
-        self.execute("send", exec::keys(keys))
+        self.execute("send", exec::guarded_keys(keys, guard))
     }
 
     /// Walks toward `target` (`x,y`, a map glyph, a feature kind, or `frontier`) along the known route over
@@ -135,15 +145,26 @@ impl<T: Terminal> Play<T> {
         if view.engulfed {
             return Reply::message(ExitCode::Failed, "go is unavailable while engulfed");
         }
+        match self.walk_to(target, ground, near) {
+            Ok(action) => self.execute(&verb, action),
+            Err(message) => Reply::message(ExitCode::Failed, message),
+        }
+    }
+
+    /// The walk toward `target` over `ground` along the known route, or why there is none. A walk to a frontier
+    /// square at a corridor's end follows the corridor beyond it.
+    fn walk_to(
+        &mut self,
+        target: &str,
+        ground: Ground,
+        near: Option<u8>,
+    ) -> Result<exec::Action, String> {
         let mut places = std::mem::take(&mut self.landmarks);
         let chosen = self
             .places(target, ground, &mut places)
             .and_then(|()| self.choose(target, &places));
         self.landmarks = places;
-        let goal = match chosen {
-            Ok(goal) => goal,
-            Err(message) => return Reply::message(ExitCode::Failed, message),
-        };
+        let goal = chosen?;
         let explore = target.trim().eq_ignore_ascii_case("frontier")
             && self
                 .memory
@@ -153,7 +174,180 @@ impl<T: Terminal> Play<T> {
         let wet = ground == Ground::Wet;
         let mut action = exec::walk(kind, &self.renderer.routes.paths, goal, STEPS_MAX, wet);
         action.near = near;
-        self.execute(&verb, action)
+        Ok(action)
+    }
+
+    /// Walks up to `legs` legs of `go frontier`, 1 to `LEGS_MAX` as the request check allows, each to the nearest
+    /// frontier by known route. A leg that ends the way a walk ends on its own (done, new terrain came into view,
+    /// the corridor ends or branches, the step limit) is followed by the next. Any other stop ends the exploration
+    /// with that leg's report, as do down stairs coming into view where the level showed none before, a leg that
+    /// takes no step, and no frontier left. With `near`, only a monster arriving within that many squares of the
+    /// hero stops a leg.
+    pub fn explore(&mut self, legs: u32, near: Option<u8>) -> Reply {
+        let verb = match near {
+            Some(near) => format!("explore --near {near} {legs}"),
+            None => format!("explore {legs}"),
+        };
+        if let Some(reply) = self.prepare(&verb) {
+            return reply;
+        }
+        let view = self.term.view();
+        if view.phase() != Phase::Play {
+            return Reply::message(ExitCode::Failed, PROMPT_OPEN);
+        }
+        if view.engulfed {
+            return Reply::message(ExitCode::Failed, "explore is unavailable while engulfed");
+        }
+        let stairs = self.stairs_down_shown();
+        let mut outcome = Outcome::default();
+        let mut walked = 0;
+        // Why the exploration stopped, when not for its last leg's own stop; or whether it walked every leg.
+        let mut end = None;
+        let mut all = false;
+        while walked < legs {
+            let action = match self.walk_to("frontier", Ground::Dry, near) {
+                Ok(action) => action,
+                Err(why) if walked == 0 => return Reply::message(ExitCode::Failed, why),
+                Err(why) => {
+                    end = Some(format!("no frontier is left: {why}"));
+                    break;
+                }
+            };
+            let leg = self.exec.run(&mut self.term, &mut self.memory, &action);
+            walked += 1;
+            let onward = leg.steps > 0 && walks_on(&leg);
+            let still = leg.steps == 0 && walks_on(&leg);
+            self.last = Some(action);
+            outcome.absorb(leg);
+            if still {
+                end = Some("a leg took no step".to_owned());
+            } else if onward && !stairs && self.stairs_down_shown() {
+                end = Some("down stairs came into view".to_owned());
+            }
+            all = onward && end.is_none() && walked == legs;
+            if !onward || end.is_some() {
+                break;
+            }
+        }
+        self.finish(&verb, outcome, |report| {
+            report.legs = Some(walked);
+            if all {
+                report.done = true;
+                report.stopped.clear();
+            }
+            if let Some(why) = end {
+                report.done = false;
+                report.stopped = vec![why];
+            }
+        })
+    }
+
+    /// Whether the current level shows down stairs it was not told of.
+    fn stairs_down_shown(&self) -> bool {
+        let Some(level) = self.memory.current() else {
+            return false;
+        };
+        (MAP_TOP..=MAP_BOTTOM).any(|y| {
+            (0..COLS as u8).any(|x| {
+                let p = Pos::new(y, x);
+                level.terrain(p) == Some('>') && !level.told.contains(p)
+            })
+        })
+    }
+
+    /// Attacks toward `direction`, one of `hjklyubn`, with `F` up to `swings` times, 1 to `SWINGS_MAX` as the
+    /// request check allows, while the monster shown there at the start is still shown there. It stops once HP is
+    /// at or below `hp`, a prompt opens, a condition changes, or the hero is engulfed or released; while engulfed it
+    /// attacks the engulfer whatever the direction, until released. It makes no attack with HP already at or below
+    /// `hp`, or with no monster shown there.
+    pub fn fight(&mut self, direction: u8, swings: u32, hp: i32) -> Reply {
+        let verb = format!("fight {} {swings} {hp}", char::from(direction));
+        if let Some(reply) = self.prepare(&verb) {
+            return reply;
+        }
+        let view = self.term.view();
+        if view.phase() != Phase::Play {
+            return Reply::message(ExitCode::Failed, PROMPT_OPEN);
+        }
+        if let Some(low) = low_hp(view, hp) {
+            return Reply::message(
+                ExitCode::Failed,
+                format!("{low}, at or below {hp}; no attack was made"),
+            );
+        }
+        let (engulfed, conditions) = (view.engulfed, view.cond);
+        let square = view.hero.and_then(|hero| beside(hero, direction));
+        let target = match (engulfed, square) {
+            (true, _) => None,
+            (false, Some(square)) => match self.shown_at(square) {
+                Some(entity) => Some(entity),
+                None => {
+                    return Reply::message(
+                        ExitCode::Failed,
+                        format!(
+                            "no monster is shown at {square}; send F{} to attack it anyway",
+                            char::from(direction)
+                        ),
+                    );
+                }
+            },
+            (false, None) => return Reply::message(ExitCode::Failed, "the hero is not shown"),
+        };
+        let mut outcome = Outcome::default();
+        let mut end = None;
+        for _ in 0..swings {
+            let action = exec::swing(direction);
+            let swing = self.exec.run(&mut self.term, &mut self.memory, &action);
+            let completed = swing.stop == Stop::Completed;
+            self.last = Some(action);
+            outcome.absorb(swing);
+            if !completed {
+                break;
+            }
+            let view = self.term.view();
+            end = if let Some(low) = low_hp(view, hp) {
+                Some(format!("{low}, at or below {hp}"))
+            } else if view.engulfed != engulfed {
+                Some(
+                    if engulfed {
+                        "the hero was released"
+                    } else {
+                        "the hero was engulfed"
+                    }
+                    .to_owned(),
+                )
+            } else if view.cond != conditions {
+                Some("a condition changed".to_owned())
+            } else if let (Some(target), Some(square)) = (target, square) {
+                match self.shown_at(square) {
+                    None => Some(format!("no monster is shown at {square}")),
+                    Some(now) if (now.glyph, now.shade) != (target.glyph, target.shade) => {
+                        Some(format!("another monster is shown at {square}"))
+                    }
+                    Some(_) => None,
+                }
+            } else {
+                None
+            };
+            if end.is_some() {
+                break;
+            }
+        }
+        self.finish(&verb, outcome, |report| {
+            if let Some(why) = end {
+                report.done = false;
+                report.stopped = vec![why];
+            }
+        })
+    }
+
+    /// The monster, or the `I` or warning digit, shown at `square`.
+    fn shown_at(&mut self, square: Pos) -> Option<Entity> {
+        self.memory.entities(self.term.view(), &mut self.nearby);
+        self.nearby
+            .iter()
+            .copied()
+            .find(|e| e.pos == square && matches!(e.kind, EntityKind::Monster | EntityKind::Unseen))
     }
 
     /// Searches in place up to `count` times, 1 to `REST_MAX` as the request check allows. With `near`, only a
@@ -353,6 +547,12 @@ impl<T: Terminal> Play<T> {
             }
             Stop::Link(error) => report.error = Some(error.to_string()),
             Stop::Failed(error) => report.error = Some(error.clone()),
+            Stop::Guarded { prompt, unsent } => {
+                let keys = if *unsent == 1 { "key was" } else { "keys were" };
+                stopped.push(format!(
+                    "the guarded prompt \"{prompt}\" opened; {unsent} {keys} not sent"
+                ));
+            }
             // The caller's own keys are done once sent, unless the game ended.
             stop if kind == Kind::Keys && *stop != Stop::GameOver => report.done = true,
             Stop::Completed if walked && target.is_some() && self.term.view().hero != target => {
@@ -482,9 +682,21 @@ impl<T: Terminal> Play<T> {
 
     /// Runs a caller's action and answers with its report and the view after it.
     fn execute(&mut self, verb: &str, action: exec::Action) -> Reply {
-        let mut outcome = self.exec.run(&mut self.term, &mut self.memory, &action);
-        let refused = refused_search(action.kind, &outcome);
+        let outcome = self.exec.run(&mut self.term, &mut self.memory, &action);
         self.last = Some(action);
+        self.finish(verb, outcome, |_| {})
+    }
+
+    /// Answers the last caller action, which did `outcome`, with its report, as `adjust` changes it, and the view
+    /// after it.
+    fn finish(
+        &mut self,
+        verb: &str,
+        mut outcome: Outcome,
+        adjust: impl FnOnce(&mut Report),
+    ) -> Reply {
+        let kind = self.last.as_ref().map_or(Kind::Keys, |last| last.kind);
+        let refused = refused_search(kind, &outcome);
         self.fresh.clear();
         let lines = outcome.messages_left_out;
         if lines > 0 {
@@ -501,7 +713,8 @@ impl<T: Terminal> Play<T> {
         }
         self.answered.append(&mut outcome.answered);
         self.reported = self.memory.message_total();
-        let report = self.report(verb, &outcome);
+        let mut report = self.report(verb, &outcome);
+        adjust(&mut report);
         let code = match &outcome.stop {
             Stop::Link(error) => error.code(),
             Stop::Failed(_) => ExitCode::Failed,
@@ -576,6 +789,21 @@ impl<T: Terminal> Play<T> {
             (None, Some(goal)) => Err(format!("already at {goal}")),
             (None, None) => Err(self.unreachable(target, places)),
         }
+    }
+
+    /// Reads the inventory while the game waits for a command, unless memory holds one from this turn.
+    fn reread_inventory(&mut self) {
+        let turn = self.term.view().status.turn;
+        if !self.plain()
+            || self
+                .memory
+                .inventory()
+                .is_some_and(|held| held.turn == turn)
+        {
+            return;
+        }
+        let action = exec::inventory();
+        self.exec.run(&mut self.term, &mut self.memory, &action);
     }
 
     /// Names monsters by farlook and looks underfoot, while the game waits for a command.
@@ -683,6 +911,44 @@ impl Play<Term> {
         self.term.sync()?;
         self.exec.dismiss(&mut self.term, &mut self.memory)
     }
+}
+
+/// Whether a walk leg ended the way a walk ends on its own, so an exploration walks on.
+fn walks_on(leg: &Outcome) -> bool {
+    match leg.stop {
+        Stop::Completed
+        | Stop::StepLimit
+        | Stop::FeatureDiscovered
+        | Stop::BranchDiscovered
+        | Stop::CorridorEnds => true,
+        Stop::Changed => leg.changed == Changed::TERRAIN,
+        _ => false,
+    }
+}
+
+/// `HP h of m` once the status line shows HP at or below `floor`.
+fn low_hp(view: &crate::screen::View, floor: i32) -> Option<String> {
+    let (hp, most) = (view.status.hp?, view.status.hpmax?);
+    (hp <= floor).then(|| format!("HP {hp} of {most}"))
+}
+
+/// The square beside `hero` toward `direction`, one of `hjklyubn`, while on the map.
+fn beside(hero: Pos, direction: u8) -> Option<Pos> {
+    let (dx, dy): (i16, i16) = match direction {
+        b'h' => (-1, 0),
+        b'j' => (0, 1),
+        b'k' => (0, -1),
+        b'l' => (1, 0),
+        b'y' => (-1, -1),
+        b'u' => (1, -1),
+        b'b' => (-1, 1),
+        b'n' => (1, 1),
+        _ => return None,
+    };
+    let x = u8::try_from(i16::from(hero.x) + dx).ok()?;
+    let y = u8::try_from(i16::from(hero.y) + dy).ok()?;
+    let p = Pos::new(y, x);
+    p.on_map().then_some(p)
 }
 
 fn failed(verb: &str, error: &str) -> Report {
@@ -843,8 +1109,12 @@ mod tests {
         view(&screen(top, rows, STATUS1, &status), y, x)
     }
 
+    /// Play over `views`, holding an inventory read on the first view's turn, so a look reads none.
     fn play(views: Vec<View>) -> Play<ScriptedTerm> {
-        Play::new(ScriptedTerm::new(views))
+        let turn = views.first().and_then(|view| view.status.turn);
+        let mut play = Play::new(ScriptedTerm::new(views));
+        play.memory.hold_inventory(turn);
+        play
     }
 
     fn sent(play: &Play<ScriptedTerm>) -> Vec<String> {
@@ -961,6 +1231,7 @@ mod tests {
         play.look();
         let unlooked = start().moved((6, 36), (6, 37), 2).view();
         play.term.views = vec![unlooked.clone()];
+        play.memory.hold_inventory(Some(2));
         let reply = play.look();
         assert!(has_line(
             &reply.text,
@@ -1013,7 +1284,7 @@ mod tests {
         let heard = map("You hear a door open.", &room, 2, 3);
         let mut play = play(vec![quiet, heard]);
         play.show();
-        let reply = play.send(b"s");
+        let reply = play.send(b"s", &[]);
         assert_eq!(reply.code, ExitCode::Done);
         assert!(has_line(&reply.text, "msg: You hear a door open."));
         assert!(!reply.text.starts_with("send"));
@@ -1525,7 +1796,7 @@ mod tests {
             view(&closing, 23, 8),
             View::parse(&scores, Pos::new(5, 0)),
         ]);
-        let reply = play.send(b"F");
+        let reply = play.send(b"F", &[]);
         assert_eq!(reply.code, ExitCode::Over, "{}", reply.text);
         assert_eq!(sent(&play), ["F", " ", "n", " ", " "]);
         let death = "killed by a jackal, while sleeping";
@@ -1591,6 +1862,7 @@ mod tests {
         play.look();
         assert_eq!(sent(&play), [":"]);
         play.term.views = vec![room(4, 402, ""), room(4, 402, second)];
+        play.memory.hold_inventory(Some(402));
         let reply = play.look();
         assert_eq!(sent(&play), [":", ":"]);
         let here = reply.facts.here.unwrap();
@@ -1845,7 +2117,7 @@ mod tests {
             at_turn("Count: 20", &room, 0, 9, 400),
             at_turn("", &room, 2, 4, 420),
         ]);
-        let reply = play.send(b"20s");
+        let reply = play.send(b"20s", &[]);
         assert_eq!(sent(&play)[..3], ["2", "0", "s"]);
         assert!(
             reply.facts.answered.is_empty(),
@@ -1859,10 +2131,295 @@ mod tests {
     fn held_input_is_reported_with_its_own_code() {
         let mut play = play(vec![start().view()]);
         play.term.failures = vec![Some(LinkError::Held("waiting to start".to_owned()))];
-        let reply = play.send(b"s");
+        let reply = play.send(b"s", &[]);
         assert_eq!(reply.code, ExitCode::Held);
         assert!(reply.text.starts_with("send: "), "{}", reply.text);
         assert!(play.term.sent.is_empty());
+    }
+
+    /// The corridor east of a hero at 3,2: walked up to `hero`, with a branch north-east of 5,2 once the hero
+    /// has reached it, and `extra` drawn on row 1.
+    fn corridor(hero: u8, extra: &str) -> View {
+        let mut row: Vec<char> = "   ".chars().collect();
+        row.extend(std::iter::repeat_n('#', usize::from(hero) - 3));
+        row.extend("@##".chars());
+        let row: String = row.into_iter().collect();
+        let mut above: Vec<char> = format!("{extra:<12}").chars().collect();
+        if hero >= 5 {
+            above[6] = '#';
+        }
+        let above: String = above.into_iter().collect();
+        map("", &[above.trim_end(), &row], 2, hero)
+    }
+
+    #[test]
+    fn explore_walks_leg_after_leg_until_a_stop_of_its_own() {
+        // The first leg ends past the branch, the way a walk ends on its own; the second goes on until a jackal
+        // comes into view.
+        let mut play = self::play(vec![
+            corridor(3, ""),
+            corridor(4, ""),
+            corridor(5, ""),
+            corridor(6, ""),
+            corridor(7, "           d"),
+        ]);
+        play.show();
+        let reply = play.explore(5, None);
+        assert_eq!(sent(&play).iter().filter(|keys| *keys == "ml").count(), 4);
+        assert_eq!(reply.code, ExitCode::Short);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some(
+                "explore 5: 2 legs, 4 steps, 0 turns, now at 7,2; stopped: a monster came into view or next to the hero (d 11,1)"
+            )
+        );
+        assert_eq!(reply.facts.report.unwrap().legs, Some(2));
+
+        // Out of legs after one that stopped where a walk stops on its own, it is done.
+        let views = (3..=7).map(|hero| corridor(hero, "")).collect();
+        let mut play = self::play(views);
+        play.show();
+        let reply = play.explore(1, None);
+        assert_eq!(reply.code, ExitCode::Done);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some("explore 1: 1 leg, 3 steps, 0 turns, now at 6,2; done")
+        );
+    }
+
+    #[test]
+    fn explore_stops_for_down_stairs_it_had_not_seen_and_at_the_end_of_the_frontier() {
+        let mut play = self::play(vec![
+            corridor(3, ""),
+            corridor(4, ""),
+            corridor(5, "         >"),
+        ]);
+        play.show();
+        let reply = play.explore(5, None);
+        assert_eq!(reply.code, ExitCode::Short);
+        assert!(
+            reply
+                .text
+                .starts_with("explore 5: 1 leg, 2 steps, 0 turns, now at 5,2; stopped: down stairs came into view"),
+            "{}",
+            reply.text
+        );
+
+        let room = [" -----", " |...|", " |.@.+", " |...|", " -----"];
+        let mut play = self::play(vec![map("", &room, 3, 3)]);
+        play.show();
+        let reply = play.explore(5, None);
+        assert_eq!(reply.code, ExitCode::Failed);
+        assert_eq!(
+            reply.text,
+            "no reachable known square borders unexplored ones"
+        );
+        assert!(play.term.sent.is_empty());
+    }
+
+    /// The hero at 3,2 in a lit room with `east` drawn beside it at 4,2, `hp` hit points of 16, and `top` as the
+    /// message line; the cursor waits after `top` when it asks something, else on the hero.
+    fn fighting(top: &str, east: char, hp: u32) -> View {
+        let row = format!(" |.@{east}.|");
+        let status = format!("Dlvl:3 $:0 HP:{hp}(16) Pw:2(2) AC:6 Xp:2 T:400");
+        let rows = screen(
+            top,
+            &[" ------", &row, " |....|", " ------"],
+            STATUS1,
+            &status,
+        );
+        if top.ends_with('?') || top.ends_with(')') {
+            view(&rows, 0, top.len() as u8 + 1)
+        } else {
+            view(&rows, 2, 3)
+        }
+    }
+
+    /// How many attacks `play` sent.
+    fn attacks(play: &Play<ScriptedTerm>) -> usize {
+        play.term
+            .sent
+            .iter()
+            .filter(|keys| keys.as_slice() == b"Fl")
+            .count()
+    }
+
+    #[test]
+    fn fight_attacks_while_its_monster_is_shown_and_stops_at_the_hp_floor() {
+        let mut play = self::play(vec![
+            fighting("", 'd', 12),
+            fighting("You hit the jackal.", 'd', 12),
+            fighting("You kill the jackal!", '.', 11),
+        ]);
+        play.show();
+        let reply = play.fight(b'l', 5, 4);
+        assert_eq!(attacks(&play), 2);
+        assert_eq!(reply.code, ExitCode::Short);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some(
+                "fight l 5 4: 2 attacks, 0 turns, now at 3,2; stopped: no monster is shown at 4,2"
+            )
+        );
+        assert!(has_line(&reply.text, "msg: You hit the jackal."));
+        assert!(has_line(&reply.text, "msg: You kill the jackal!"));
+
+        let mut play = self::play(vec![
+            fighting("", 'd', 12),
+            fighting("The jackal bites!", 'd', 6),
+        ]);
+        play.show();
+        let reply = play.fight(b'l', 5, 6);
+        assert_eq!(attacks(&play), 1);
+        assert!(
+            reply.text.starts_with(
+                "fight l 5 6: 1 attack, 0 turns, now at 3,2; stopped: HP 6 of 16, at or below 6"
+            ),
+            "{}",
+            reply.text
+        );
+
+        let mut play = self::play(vec![
+            fighting("", 'd', 12),
+            fighting("You miss the jackal.", 'd', 12),
+        ]);
+        play.show();
+        let reply = play.fight(b'l', 3, 0);
+        assert_eq!((reply.code, attacks(&play)), (ExitCode::Done, 3));
+        assert!(
+            reply.text.lines().next().unwrap().ends_with("; done"),
+            "{}",
+            reply.text
+        );
+    }
+
+    #[test]
+    fn fight_stops_at_a_prompt_or_another_monster_and_refuses_to_start_without_a_target() {
+        let mut play = self::play(vec![
+            fighting("", 'd', 12),
+            fighting("Really attack the jackal? [yn] (n)", 'd', 12),
+        ]);
+        play.show();
+        let reply = play.fight(b'l', 5, 4);
+        assert_eq!(
+            (reply.code, sent(&play)),
+            (ExitCode::Short, vec!["Fl".to_owned()])
+        );
+        assert_eq!(
+            reply.facts.prompt.as_deref(),
+            Some("Really attack the jackal? [yn] (n)")
+        );
+        assert!(
+            reply
+                .text
+                .lines()
+                .next()
+                .unwrap()
+                .ends_with("stopped: a prompt opened"),
+            "{}",
+            reply.text
+        );
+
+        let mut play = self::play(vec![
+            fighting("", 'd', 12),
+            fighting("You hit the jackal.", 'j', 12),
+        ]);
+        play.show();
+        let reply = play.fight(b'l', 5, 4);
+        assert!(
+            reply
+                .text
+                .lines()
+                .next()
+                .unwrap()
+                .ends_with("stopped: another monster is shown at 4,2"),
+            "{}",
+            reply.text
+        );
+
+        let mut play = self::play(vec![fighting("", '.', 12)]);
+        play.show();
+        let reply = play.fight(b'l', 5, 4);
+        assert_eq!(reply.code, ExitCode::Failed);
+        assert!(
+            reply.text.contains("no monster is shown at 4,2; send Fl"),
+            "{}",
+            reply.text
+        );
+        let reply = play.fight(b'h', 5, 4);
+        assert!(
+            reply.text.contains("no monster is shown at 2,2"),
+            "{}",
+            reply.text
+        );
+
+        let mut play = self::play(vec![fighting("", 'd', 4)]);
+        play.show();
+        let reply = play.fight(b'l', 5, 4);
+        assert_eq!(reply.code, ExitCode::Failed);
+        assert_eq!(reply.text, "HP 4 of 16, at or below 4; no attack was made");
+        assert!(play.term.sent.is_empty());
+    }
+
+    #[test]
+    fn a_guarded_prompt_stops_the_keys_before_it() {
+        let views = || {
+            vec![
+                fighting("", 'd', 12),
+                fighting("In what direction?", 'd', 12),
+                fighting("Really attack the jackal? [yn] (n)", 'd', 12),
+                fighting("You hit the jackal.", 'd', 12),
+            ]
+        };
+        let guard = ["Really attack".to_owned(), "Really quit".to_owned()];
+        let mut play = self::play(views());
+        play.show();
+        let reply = play.send(b"Fly", &guard);
+        assert_eq!(sent(&play), ["F", "l"]);
+        assert_eq!(reply.code, ExitCode::Short);
+        assert_eq!(
+            reply.text.lines().next(),
+            Some(
+                "send: 2 keys, 0 turns; stopped: the guarded prompt \"Really attack the jackal? [yn] (n)\" opened; 1 key was not sent"
+            )
+        );
+        assert_eq!(
+            reply.facts.prompt.as_deref(),
+            Some("Really attack the jackal? [yn] (n)")
+        );
+        // Unguarded, the same keys answer it.
+        let mut play = self::play(views());
+        play.show();
+        let reply = play.send(b"Fly", &[]);
+        assert_eq!(
+            (reply.code, sent(&play)[..3].join("")),
+            (ExitCode::Done, "Fly".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_look_reads_the_inventory_once_a_turn() {
+        let start = Data::load("seed4242-start").view();
+        let menu = Data::load("seed4242-inventory").view();
+        let mut play = Play::new(ScriptedTerm::new(vec![start.clone(), menu, start.clone()]));
+        let reply = play.look();
+        assert_eq!(sent(&play)[..2], ["i", "\u{1b}"]);
+        let inventory = reply.facts.inventory.unwrap();
+        assert_eq!(inventory.turn, Some(1));
+        assert!(
+            inventory
+                .lines
+                .iter()
+                .any(|line| line == "c - an uncursed stethoscope")
+        );
+        assert!(!reply.text.contains("msg: "), "{}", reply.text);
+        let before = play.term.sent.len();
+        play.look();
+        assert!(
+            play.term.sent[before..]
+                .iter()
+                .all(|keys| keys.as_slice() != b"i")
+        );
     }
 
     #[test]
