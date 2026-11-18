@@ -47,10 +47,12 @@ are deployed.
 - `glyphs.rs`: what symbols and colours on screen are.
 - `level.rs`: remembered terrain per level, squares the caller told of, routes and frontier.
 - `observe.rs`: memory across screens: messages, underfoot notes, inventory, end-of-game text, level identity.
-- `exec.rs`: bounded execution of keys, walks, searches, farlook and look-here.
-- `view.rs`, `play.rs`: the text view and facts, and the `look`, `send`, `go`, `rest` and `learn` commands.
+- `exec.rs`: bounded execution of keys, walks, searches, attacks, farlook, look-here and the inventory read.
+- `view.rs`, `play.rs`: the text view and facts, and the `look`, `send`, `go`, `rest`, `explore`, `fight` and
+  `learn` commands.
 - `link.rs`: the HTTP/1.1 link to the terminal server.
-- `daemon.rs`, `cli.rs`: the socket API and the command line.
+- `daemon.rs`, `cli.rs`, `schema.rs`: the socket API, the command line and each command's request as JSON
+  Schema.
 
 ## Verification
 

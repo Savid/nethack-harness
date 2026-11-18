@@ -1,6 +1,8 @@
 //! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] COMMAND`, where COMMAND is
-//! `look`, `send KEYS`, `go [--wet|--inland] [--near N] TARGET`, `rest [--near N] COUNT`, `learn ROW… COLOURS…`,
-//! `stop` or `serve`.
+//! `look`, `send [--guard TEXT]… KEYS`, `go [--wet|--inland] [--near N] TARGET`, `rest [--near N] COUNT`,
+//! `explore [--near N] LEGS`, `fight DIR COUNT HP`, `learn ROW… COLOURS…`, `request JSON`, `stop`, `schema` or
+//! `serve`. `schema` prints every command's request as JSON Schema without a daemon; `request` sends a request
+//! object as `schema` describes it.
 //!
 //! A client command connects to `<dir>/sock`, sends one request line, prints the reply's text (or, with `--json`,
 //! the reply object) and exits with its code. When nothing answers it takes `flock(<dir>/lock)`, checks again, and
@@ -19,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::daemon::{COMMAND_TIME, Cmd, NEAR_MAX, Request, check, serve, serving};
+use crate::daemon::{COMMAND_TIME, Cmd, NEAR_MAX, Request, check, parse_request, serve, serving};
 use crate::level::Ground;
 use crate::types::ExitCode;
 
@@ -33,16 +35,18 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] \
-                         look | send KEYS | go [--wet|--inland] [--near N] TARGET | rest [--near N] COUNT | \
-                         learn ROW... COLOURS... | stop | serve";
+                         look | send [--guard TEXT]... KEYS | go [--wet|--inland] [--near N] TARGET | \
+                         rest [--near N] COUNT | explore [--near N] LEGS | fight DIR COUNT HP | \
+                         learn ROW... COLOURS... | request JSON | stop | schema | serve";
 
-/// A parsed command line: the options, then the request for the daemon or `serve` (`None`).
+/// A parsed command line: the options, then the request for the daemon, or `schema`, or `serve` (neither).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args {
     pub dir: PathBuf,
     pub json: bool,
     pub socket: PathBuf,
     pub request: Option<Request>,
+    pub schema: bool,
 }
 
 /// The parts of a reply line the client acts on.
@@ -60,6 +64,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         json: false,
         socket: PathBuf::from(DEFAULT_SOCKET),
         request: None,
+        schema: false,
     };
     let mut rest = args;
     let (name, operands) = loop {
@@ -89,12 +94,47 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     };
     let request = match (name, operands.len()) {
         ("serve", 0) => return Ok(parsed),
+        ("schema", 0) => {
+            parsed.schema = true;
+            return Ok(parsed);
+        }
         ("look", 0) => request(Cmd::Look),
         ("stop", 0) => request(Cmd::Stop),
         ("send", 1) => Request {
             keys: operand,
             ..request(Cmd::Send)
         },
+        ("send", n) if n % 2 == 1 => {
+            // `--guard TEXT` pairs, then the keys, which are always the last operand.
+            let (pairs, keys) = operands.split_at(n - 1);
+            let mut guard = Vec::new();
+            for pair in pairs.chunks(2) {
+                match pair {
+                    [flag, text] if flag == "--guard" => guard.push(text.clone()),
+                    _ => return Err("send takes [--guard TEXT]... KEYS".to_owned()),
+                }
+            }
+            Request {
+                keys: keys.first().cloned(),
+                guard: Some(guard),
+                ..request(Cmd::Send)
+            }
+        }
+        ("explore", _) => {
+            let mut explore = request(Cmd::Explore);
+            match options(name, operands, &mut explore)?.as_slice() {
+                [legs] => explore.count = Some(legs.parse().unwrap_or(0)),
+                _ => return Err("explore takes [--near N] LEGS".to_owned()),
+            }
+            explore
+        }
+        ("fight", 3) => Request {
+            direction: operand,
+            count: Some(operands[1].parse().unwrap_or(0)),
+            hp: Some(operands[2].parse().unwrap_or(u32::MAX)),
+            ..request(Cmd::Fight)
+        },
+        ("request", 1) => parse_request(operands[0].as_bytes())?,
         ("go", _) => {
             let mut go = request(Cmd::Go);
             match options(name, operands, &mut go)?.as_slice() {
@@ -120,8 +160,12 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 ..request(Cmd::Learn)
             }
         }
-        ("look" | "stop" | "serve", _) => return Err(format!("{name} takes no arguments")),
-        ("send", _) => return Err("send takes one argument".to_owned()),
+        ("look" | "stop" | "schema" | "serve", _) => {
+            return Err(format!("{name} takes no arguments"));
+        }
+        ("send", _) => return Err("send takes [--guard TEXT]... KEYS".to_owned()),
+        ("fight", _) => return Err("fight takes DIR COUNT HP".to_owned()),
+        ("request", _) => return Err("request takes one JSON object".to_owned()),
         _ => return Err(format!("unknown command {name}")),
     };
     check(&request)?;
@@ -129,8 +173,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     Ok(parsed)
 }
 
-/// The operands of `go` or `rest` left once their options, anywhere among them, are set on `request`: `--near N`,
-/// and for `go` one of `--wet` and `--inland`.
+/// The operands of `go`, `rest` or `explore` left once their options, anywhere among them, are set on `request`:
+/// `--near N`, and for `go` one of `--wet` and `--inland`.
 fn options(name: &str, operands: &[String], request: &mut Request) -> Result<Vec<String>, String> {
     let mut left = Vec::new();
     let mut operands = operands.iter();
@@ -155,6 +199,16 @@ fn options(name: &str, operands: &[String], request: &mut Request) -> Result<Vec
 
 /// Runs a parsed command and returns the exit code.
 pub fn run(args: &Args) -> i32 {
+    if args.schema {
+        let mut stdout = std::io::stdout().lock();
+        let printed = serde_json::to_writer_pretty(&mut stdout, &crate::schema::schema())
+            .map_err(std::io::Error::from)
+            .and_then(|()| writeln!(stdout));
+        return match printed {
+            Ok(()) => ExitCode::Done.code(),
+            Err(e) => fail(format_args!("cannot print the schema: {e}")),
+        };
+    }
     match &args.request {
         None => {
             let (socket, _, _) = paths(&args.dir);
@@ -384,6 +438,68 @@ mod tests {
         assert_eq!((send.cmd, send.keys.as_deref()), (Cmd::Send, Some("-\\e")));
         assert_eq!(request(&["send", "--"]).keys.as_deref(), Some("--"));
         assert_eq!(request(&["send", "--json"]).keys.as_deref(), Some("--json"));
+    }
+
+    #[test]
+    fn explore_fight_guard_schema_and_request_parse() {
+        let explore = request(&["explore", "--near", "3", "8"]);
+        assert_eq!(
+            (explore.cmd, explore.count, explore.near),
+            (Cmd::Explore, Some(8), Some(3))
+        );
+        let fight = request(&["fight", "l", "6", "8"]);
+        assert_eq!(
+            (fight.cmd, fight.direction.as_deref(), fight.count, fight.hp),
+            (Cmd::Fight, Some("l"), Some(6), Some(8))
+        );
+        let send = request(&[
+            "send",
+            "--guard",
+            "Really attack",
+            "--guard",
+            "Really quit",
+            "Fly",
+        ]);
+        assert_eq!(send.keys.as_deref(), Some("Fly"));
+        assert_eq!(
+            send.guard,
+            Some(vec!["Really attack".to_owned(), "Really quit".to_owned()])
+        );
+        // One operand is always the keys, even when it reads like an option.
+        assert_eq!(
+            request(&["send", "--guard"]).keys.as_deref(),
+            Some("--guard")
+        );
+        let schema = args(&["--dir", "d", "schema"]).unwrap();
+        assert!(schema.schema && schema.request.is_none());
+        let sent = request(&[
+            "request",
+            r#"{"cmd":"fight","direction":"h","count":2,"hp":5}"#,
+        ]);
+        assert_eq!(
+            (sent.cmd, sent.direction.as_deref()),
+            (Cmd::Fight, Some("h"))
+        );
+        for bad in [
+            &["explore"][..],
+            &["explore", "0"],
+            &["explore", "31"],
+            &["explore", "--wet", "3"],
+            &["fight", "l", "6"],
+            &["fight", "x", "6", "8"],
+            &["fight", "l", "0", "8"],
+            &["fight", "l", "6", "-1"],
+            &["send", "--guard", "x"],
+            &["send", "--gaurd", "x", "Fly"],
+            &["send", "--guard", "", "Fly"],
+            &["schema", "x"],
+            &["request"],
+            &["request", "{\"cmd\":\"fight\"}"],
+            &["request", "{\"cmd\":\"look\",\"extra\":1}"],
+            &["request", "not json"],
+        ] {
+            assert!(args(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

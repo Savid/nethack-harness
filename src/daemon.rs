@@ -2,9 +2,10 @@
 //! line per connection, in order, so play is serialised. It holds all game memory in RAM, has no timers, and writes
 //! only its log, on errors.
 //!
-//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"learn"|"stop", "keys"?: str, "target"?: str,
-//! "ground"?: "dry"|"wet"|"inland", "count"?: u32, "near"?: int, "rows"?: [str], "colours"?: [str]}`; `keys` uses
-//! the escape syntax `\e \r \n \t \\ \xHH`. Reply: `{"code": int, "text": str, "facts": {…}}`.
+//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"explore"|"fight"|"learn"|"stop", "keys"?: str, "guard"?: [str],
+//! "target"?: str, "ground"?: "dry"|"wet"|"inland", "direction"?: str, "count"?: u32, "hp"?: u32, "near"?: int,
+//! "rows"?: [str], "colours"?: [str]}`; `keys` uses the escape syntax `\e \r \n \t \\ \xHH`. `schema` describes
+//! each command's request. Reply: `{"code": int, "text": str, "facts": {…}}`.
 
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{ErrorKind, Read, Write};
@@ -17,13 +18,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::level::Ground;
 use crate::link::Term;
-use crate::play::{KEYS_MAX, Play, REST_MAX};
+use crate::play::{KEYS_MAX, LEGS_MAX, Play, REST_MAX, SWINGS_MAX};
 use crate::types::{COLS, ExitCode, MAP_ROWS, Reply, unescape};
 
 /// Longest request line accepted, in bytes.
 const REQUEST_MAX: usize = 8192;
 /// Longest `go` target, in bytes.
-const TARGET_MAX: usize = 64;
+pub const TARGET_MAX: usize = 64;
+/// Most guard texts one `send` takes, and the longest one, in bytes.
+pub const GUARDS_MAX: usize = 16;
+pub const GUARD_MAX: usize = 80;
+/// Highest HP a `fight` may stop at.
+pub const HP_MAX: u32 = 9999;
+/// The direction keys `fight` takes.
+pub const DIRECTIONS: &str = "hjklyubn";
 /// Largest `near` radius, in squares: the map's width.
 pub const NEAR_MAX: u8 = 80;
 /// Longest the daemon waits on one client to send its whole request, and again to take its whole reply.
@@ -39,12 +47,42 @@ pub enum Cmd {
     Send,
     Go,
     Rest,
+    Explore,
+    Fight,
     Learn,
     Stop,
 }
 
-/// One request line: `keys` for `send`, `target` and optionally `ground` for `go`, `count` for `rest`, optionally
-/// `near` for `go` and `rest`, and `rows` and `colours` for `learn`.
+impl Cmd {
+    pub fn name(self) -> &'static str {
+        match self {
+            Cmd::Look => "look",
+            Cmd::Send => "send",
+            Cmd::Go => "go",
+            Cmd::Rest => "rest",
+            Cmd::Explore => "explore",
+            Cmd::Fight => "fight",
+            Cmd::Learn => "learn",
+            Cmd::Stop => "stop",
+        }
+    }
+
+    /// The request fields the command takes.
+    pub fn takes(self) -> &'static [&'static str] {
+        match self {
+            Cmd::Look | Cmd::Stop => &[],
+            Cmd::Send => &["keys", "guard"],
+            Cmd::Go => &["target", "ground", "near"],
+            Cmd::Rest | Cmd::Explore => &["count", "near"],
+            Cmd::Fight => &["direction", "count", "hp"],
+            Cmd::Learn => &["rows", "colours"],
+        }
+    }
+}
+
+/// One request line: `keys` and optionally `guard` for `send`, `target` and optionally `ground` for `go`, `count`
+/// for `rest` and `explore`, optionally `near` for `go`, `rest` and `explore`, `direction`, `count` and `hp` for
+/// `fight`, and `rows` and `colours` for `learn`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -52,11 +90,17 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ground: Option<Ground>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hp: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,7 +113,10 @@ pub struct Request {
 #[derive(Debug)]
 pub enum Checked<'a> {
     Look,
-    Send(Vec<u8>),
+    Send {
+        keys: Vec<u8>,
+        guard: &'a [String],
+    },
     Go {
         target: &'a str,
         ground: Ground,
@@ -78,6 +125,15 @@ pub enum Checked<'a> {
     Rest {
         count: u32,
         near: Option<u8>,
+    },
+    Explore {
+        legs: u32,
+        near: Option<u8>,
+    },
+    Fight {
+        direction: u8,
+        swings: u32,
+        hp: i32,
     },
     Learn {
         rows: &'a [String],
@@ -89,35 +145,54 @@ pub enum Checked<'a> {
 /// Checks that a request carries exactly the arguments its command takes, within their limits; the error is the
 /// message it is refused with under code 64.
 pub fn check(request: &Request) -> Result<Checked<'_>, String> {
-    let (keys, target, count, near, map) = (
-        request.keys.is_some(),
-        request.target.is_some() || request.ground.is_some(),
-        request.count.is_some(),
-        request.near,
-        request.rows.is_some() || request.colours.is_some(),
-    );
-    let any = keys || target || count || near.is_some();
-    let refuse = |why: &str| Err(why.to_owned());
+    let present = [
+        ("keys", request.keys.is_some()),
+        ("guard", request.guard.is_some()),
+        ("target", request.target.is_some()),
+        ("ground", request.ground.is_some()),
+        ("direction", request.direction.is_some()),
+        ("count", request.count.is_some()),
+        ("hp", request.hp.is_some()),
+        ("near", request.near.is_some()),
+        ("rows", request.rows.is_some()),
+        ("colours", request.colours.is_some()),
+    ];
+    let (name, takes) = (request.cmd.name(), request.cmd.takes());
+    if present
+        .iter()
+        .any(|&(field, given)| given && !takes.contains(&field))
+    {
+        return Err(match takes {
+            [] => format!("{name} takes no arguments"),
+            [only] => format!("{name} takes only {only}"),
+            [first @ .., last] => format!("{name} takes only {} and {last}", first.join(", ")),
+        });
+    }
+    let near = request.near;
+    if near.is_some_and(|n| !(1..=NEAR_MAX).contains(&n)) {
+        return Err(format!("near takes 1 to {NEAR_MAX} squares"));
+    }
     match request.cmd {
-        Cmd::Look if any || map => {
-            refuse("look takes no keys, target, ground, count, near, rows or colours")
-        }
-        Cmd::Stop if any || map => {
-            refuse("stop takes no keys, target, ground, count, near, rows or colours")
-        }
-        Cmd::Send if target || count || near.is_some() || map => refuse("send takes only keys"),
-        Cmd::Go if keys || count || map => refuse("go takes only a target, ground and near"),
-        Cmd::Rest if keys || target || map => refuse("rest takes only a count and near"),
-        Cmd::Learn if any => refuse("learn takes only rows and colours"),
-        Cmd::Go | Cmd::Rest if near.is_some_and(|n| !(1..=NEAR_MAX).contains(&n)) => {
-            Err(format!("near takes 1 to {NEAR_MAX} squares"))
-        }
         Cmd::Look => Ok(Checked::Look),
         Cmd::Stop => Ok(Checked::Stop),
-        Cmd::Send => match unescape(request.keys.as_deref().unwrap_or(""))? {
-            keys if (1..=KEYS_MAX).contains(&keys.len()) => Ok(Checked::Send(keys)),
-            _ => Err(format!("send takes 1 to {KEYS_MAX} keys")),
-        },
+        Cmd::Send => {
+            let keys = match unescape(request.keys.as_deref().unwrap_or(""))? {
+                keys if (1..=KEYS_MAX).contains(&keys.len()) => keys,
+                _ => return Err(format!("send takes 1 to {KEYS_MAX} keys")),
+            };
+            let guard = request.guard.as_deref().unwrap_or_default();
+            let text = |t: &String| {
+                (1..=GUARD_MAX).contains(&t.len()) && t.bytes().all(|b| matches!(b, b' '..=b'~'))
+            };
+            if request.guard.is_some()
+                && !((1..=GUARDS_MAX).contains(&guard.len()) && guard.iter().all(text))
+            {
+                return Err(format!(
+                    "guard takes 1 to {GUARDS_MAX} texts, each of 1 to {GUARD_MAX} printable ASCII characters"
+                ));
+            }
+            Ok(Checked::Send { keys, guard })
+        }
         Cmd::Go => match request.target.as_deref().map(str::trim) {
             Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go {
                 target,
@@ -132,6 +207,28 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
             Some(count) if (1..=REST_MAX).contains(&count) => Ok(Checked::Rest { count, near }),
             _ => Err(format!("rest takes 1 to {REST_MAX} searches")),
         },
+        Cmd::Explore => match request.count {
+            Some(legs) if (1..=LEGS_MAX).contains(&legs) => Ok(Checked::Explore { legs, near }),
+            _ => Err(format!("explore takes 1 to {LEGS_MAX} legs")),
+        },
+        Cmd::Fight => {
+            let direction = match request.direction.as_deref() {
+                Some(d) if d.len() == 1 && DIRECTIONS.contains(d) => d.as_bytes()[0],
+                _ => return Err(format!("fight takes a direction, one of {DIRECTIONS}")),
+            };
+            let swings = match request.count {
+                Some(swings) if (1..=SWINGS_MAX).contains(&swings) => swings,
+                _ => return Err(format!("fight takes 1 to {SWINGS_MAX} attacks")),
+            };
+            match request.hp {
+                Some(hp) if hp <= HP_MAX => Ok(Checked::Fight {
+                    direction,
+                    swings,
+                    hp: hp as i32,
+                }),
+                _ => Err(format!("fight takes the hp it stops at, 0 to {HP_MAX}")),
+            }
+        }
         Cmd::Learn => {
             let rows = request.rows.as_deref().unwrap_or_default();
             let colours = request.colours.as_deref().unwrap_or_default();
@@ -151,7 +248,9 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
             let coloured =
                 |(row, colours): (&String, &String)| row.bytes().zip(colours.bytes()).all(hex);
             if !rows.iter().zip(colours).all(coloured) {
-                return refuse("learn takes a colour digit, 0 to f, under each square of rows");
+                return Err(
+                    "learn takes a colour digit, 0 to f, under each square of rows".to_owned(),
+                );
             }
             Ok(Checked::Learn { rows, colours })
         }
@@ -319,7 +418,7 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
     let reply = match (play.sync(), command) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
         (Ok(()), Checked::Look) => play.look(),
-        (Ok(()), Checked::Send(keys)) => play.send(&keys),
+        (Ok(()), Checked::Send { keys, guard }) => play.send(&keys, guard),
         (
             Ok(()),
             Checked::Go {
@@ -329,6 +428,15 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
             },
         ) => play.go(target, ground, near),
         (Ok(()), Checked::Rest { count, near }) => play.rest(count, near),
+        (Ok(()), Checked::Explore { legs, near }) => play.explore(legs, near),
+        (
+            Ok(()),
+            Checked::Fight {
+                direction,
+                swings,
+                hp,
+            },
+        ) => play.fight(direction, swings, hp),
         (Ok(()), Checked::Learn { rows, colours }) => play.learn(rows, colours),
         (Ok(()), Checked::Stop) => Reply::message(ExitCode::Done, "stopped"),
     };
@@ -357,13 +465,7 @@ mod tests {
     fn request(cmd: Cmd) -> Request {
         Request {
             cmd,
-            keys: None,
-            target: None,
-            ground: None,
-            count: None,
-            near: None,
-            rows: None,
-            colours: None,
+            ..Request::default()
         }
     }
 
@@ -469,8 +571,93 @@ mod tests {
         go.rows = rows("", MAP_ROWS);
         assert_eq!(
             check(&go).unwrap_err(),
-            "go takes only a target, ground and near"
+            "go takes only target, ground and near"
         );
+    }
+
+    #[test]
+    fn explore_fight_and_guarded_send_are_checked() {
+        let mut explore = request(Cmd::Explore);
+        for (count, ok) in [
+            (None, false),
+            (Some(0), false),
+            (Some(1), true),
+            (Some(30), true),
+            (Some(31), false),
+        ] {
+            explore.count = count;
+            assert_eq!(check(&explore).is_ok(), ok, "{count:?}");
+        }
+        explore.count = Some(8);
+        explore.near = Some(4);
+        assert!(matches!(
+            check(&explore),
+            Ok(Checked::Explore {
+                legs: 8,
+                near: Some(4)
+            })
+        ));
+        explore.target = Some("frontier".to_owned());
+        assert_eq!(
+            check(&explore).unwrap_err(),
+            "explore takes only count and near"
+        );
+
+        let fight = |direction: &str, count: u32, hp: u32| Request {
+            direction: Some(direction.to_owned()),
+            count: Some(count),
+            hp: Some(hp),
+            ..request(Cmd::Fight)
+        };
+        assert!(matches!(
+            check(&fight("y", 20, 0)),
+            Ok(Checked::Fight {
+                direction: b'y',
+                swings: 20,
+                hp: 0
+            })
+        ));
+        for (bad, why) in [
+            (fight("x", 5, 8), "a direction"),
+            (fight("hj", 5, 8), "a direction"),
+            (fight("h", 0, 8), "1 to 20 attacks"),
+            (fight("h", 21, 8), "1 to 20 attacks"),
+            (fight("h", 5, HP_MAX + 1), "0 to 9999"),
+            (
+                Request {
+                    hp: None,
+                    ..fight("h", 5, 8)
+                },
+                "the hp it stops at",
+            ),
+            (
+                Request {
+                    near: Some(2),
+                    ..fight("h", 5, 8)
+                },
+                "takes only direction, count and hp",
+            ),
+        ] {
+            let refused = check(&bad).unwrap_err();
+            assert!(refused.contains(why), "{bad:?}: {refused}");
+        }
+
+        let mut send = request(Cmd::Send);
+        send.keys = Some("Fly".to_owned());
+        send.guard = Some(vec!["Really attack".to_owned()]);
+        assert!(
+            matches!(check(&send), Ok(Checked::Send { guard: [text], .. }) if text == "Really attack")
+        );
+        for guard in [
+            vec![],
+            vec![String::new()],
+            vec!["x".repeat(GUARD_MAX + 1)],
+            vec!["\u{2603}".to_owned()],
+            vec!["x".to_owned(); GUARDS_MAX + 1],
+        ] {
+            send.guard = Some(guard);
+            assert!(check(&send).unwrap_err().contains("guard takes"));
+        }
     }
 
     #[test]
@@ -508,7 +695,7 @@ mod tests {
         go.count = Some(1);
         assert_eq!(
             check(&go).unwrap_err(),
-            "go takes only a target, ground and near"
+            "go takes only target, ground and near"
         );
         let mut rest = request(Cmd::Rest);
         for (count, ok) in [
@@ -523,24 +710,18 @@ mod tests {
         }
         let mut look = request(Cmd::Look);
         look.keys = Some("x".to_owned());
-        assert_eq!(
-            check(&look).unwrap_err(),
-            "look takes no keys, target, ground, count, near, rows or colours"
-        );
+        assert_eq!(check(&look).unwrap_err(), "look takes no arguments");
         let mut look = request(Cmd::Look);
         look.near = Some(3);
         assert!(check(&look).is_err());
         let mut send = request(Cmd::Send);
         send.keys = Some("s".to_owned());
         send.ground = Some(Ground::Wet);
-        assert_eq!(check(&send).unwrap_err(), "send takes only keys");
+        assert_eq!(check(&send).unwrap_err(), "send takes only keys and guard");
         let mut rest = request(Cmd::Rest);
         rest.count = Some(1);
         rest.ground = Some(Ground::Dry);
-        assert_eq!(
-            check(&rest).unwrap_err(),
-            "rest takes only a count and near"
-        );
+        assert_eq!(check(&rest).unwrap_err(), "rest takes only count and near");
         rest.ground = None;
         for (near, ok) in [
             (Some(0), false),
@@ -561,6 +742,6 @@ mod tests {
         ));
         send.near = Some(3);
         send.ground = None;
-        assert_eq!(check(&send).unwrap_err(), "send takes only keys");
+        assert_eq!(check(&send).unwrap_err(), "send takes only keys and guard");
     }
 }

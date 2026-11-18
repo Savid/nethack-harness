@@ -340,7 +340,7 @@ impl Renderer {
             ..Facts::default()
         };
         if let Some(report) = scene.report {
-            if report.error.is_some() || report.verb != "send" {
+            if report.error.is_some() || report.verb != "send" || !report.done {
                 report_line(report, view.hero, &mut text);
             }
             facts.report = Some(report.clone());
@@ -688,7 +688,16 @@ pub fn report_line(report: &Report, hero: Option<Pos>, out: &mut String) {
         return;
     }
     let rest = report.verb.starts_with("rest");
-    let unit = if rest { "search" } else { "step" };
+    if let Some(legs) = report.legs {
+        plural(legs.into(), "leg", out);
+        out.push_str(", ");
+    }
+    let unit = match report.verb.split(' ').next() {
+        Some("rest") => "search",
+        Some("fight") => "attack",
+        Some("send") => "key",
+        _ => "step",
+    };
     plural(report.steps.into(), unit, out);
     if let Some(wet) = report.wet {
         let _ = write!(out, ", {wet} wet");

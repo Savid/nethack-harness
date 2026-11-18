@@ -49,12 +49,16 @@ nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 
 | Command | Effect |
 | --- | --- |
-| `look` | Print the view. Names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
-| `send KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. |
+| `look` | Print the view. Reads the inventory with `i` unless the one held is from this turn, names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
+| `send [--guard TEXT]… KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. Keys stop before a prompt whose text contains a `--guard` text. |
 | `go [--wet\|--inland] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water; `--inland` keeps it off every square beside remembered water. |
 | `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
+| `explore [--near N] LEGS` | Walk up to LEGS legs (1 to 30) of `go frontier`, then print the view. |
+| `fight DIR COUNT HP` | Attack toward `DIR` (one of `hjklyubn`) with `F` up to COUNT times (1 to 20), stopping once HP is at or below `HP` (0 to 9999), then print the view. |
 | `learn ROW… COLOURS…` | Tell the harness about squares of the current level it has not observed: the map's 21 rows, then their 21 rows of colours. Sends nothing to the game and prints `learned N squares`. |
+| `request JSON` | Send one request object, as the socket API and `schema` describe it. |
 | `stop` | Stop the session's daemon. With none running it prints `no daemon is running` and exits 0. |
+| `schema` | Print every command's request as JSON Schema, with its bounds and exit codes. Starts no daemon. |
 | `serve` | Run the daemon in the foreground (the client starts it on demand). |
 
 Options come before the command, so `send` keys may start with `-` (`send -` sends a minus). `send` escapes are
@@ -139,7 +143,34 @@ Told squares differ from observed ones in these ways only:
   change of terrain to the walk; one it shows otherwise is judged like any other change. A step the game refuses
   onto a told square is remembered like any refused step.
 
-After `send`, `go` and `rest`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
+`send --guard TEXT` (up to 16, each 1 to 80 printable ASCII characters, before the keys; the keys are always the
+last operand, so `send --guard` sends those seven keys) leaves alone any question whose text contains one of the
+texts: the key that would answer it and every key after are not sent, the question stays open under `prompt:`,
+and the report says `stopped: the guarded prompt "…" opened; N keys were not sent` (exit code 2). The caller
+answers it, or not, with another `send`.
+
+`explore N` walks `go frontier` leg after leg, each to the nearest frontier by known route, at most N legs. A leg
+that ends the way a walk ends on its own (done, `new terrain came into view`, `the corridor ends`, `the corridor
+branches`, `it reached its step limit`) is followed by the next; any other stop ends the exploration with that
+leg's reason, as do `down stairs came into view` on a level that showed none before, `a leg took no step`, and
+`no frontier is left: …`. With no frontier at the start it sends nothing and says why, as `go frontier` does
+(exit code 1). The report line counts the legs: `explore 8: 3 legs, 20 steps, 19 turns, now at 44,17; stopped:
+…`; it is `done` when the last leg walked ended on its own. `--near N` applies to every leg.
+
+`fight DIR COUNT HP` attacks toward `DIR` with `F` and the direction key, one attack at a time, while the monster
+(or `I` or warning digit) shown on that square at the start is still shown there, looking the same. It stops
+once the status line shows HP at or below `HP`, a prompt opens (such as the game asking whether to attack a
+peaceful monster), a condition changes, or the hero is engulfed or released, and is `done` after COUNT attacks.
+While the hero is engulfed it attacks whatever the direction, until released. With HP already at or below `HP`, or
+with no monster shown on the square, it attacks nothing and says why (exit code 1); `send F` and the direction
+attacks the square anyway. The report counts attacks: `fight l 6 4: 2 attacks, 2 turns, now at 22,4; stopped: no
+monster is shown at 23,4`, with the game's messages under `msg:`.
+
+`look` reads the inventory while the map waits for a command, unless memory holds one read on this turn: `i`,
+`>` for each further page of the menu, then Escape. It takes no game time, and its lines are the view's
+`inventory:` line and `facts.inventory`.
+
+After `send`, `go`, `rest`, `explore` and `fight`, as with `look`, the daemon names new or moved monsters by farlook (`;`, at most
 eight per command) and reads underfoot with `:` where the hero stands on a square never seen, an object square, or
 a known engraving last read on an earlier turn, or a square the game has just reported an object reaching or leaving
 (an inventory line for something picked up, `You drop`, `You put`, or nothing there to pick up). Both take no game time and run only while the map waits for a
@@ -163,7 +194,7 @@ the caller; the client waits at most 90 s for its reply.
 | Code | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | Refused or failed, with the message: no route, a prompt is open, a search that passed no time. |
+| 1 | Refused or failed, with the message: no route, a prompt is open, a search that passed no time, no monster to fight. |
 | 2 | Stopped short; the report line says why. |
 | 3 | The game is over; `end:` and `facts.end` hold the end text. |
 | 4 | The terminal is closed or cannot be reached. This is not a death. The daemon exits after telling a client. |
@@ -183,15 +214,20 @@ time, in order.
 {"cmd": "go", "target": ">", "ground": "wet"}
 {"cmd": "rest", "count": 20}
 {"cmd": "rest", "count": 20, "near": 3}
+{"cmd": "send", "keys": "#pray\\ry", "guard": ["Are you sure you want to pray"]}
+{"cmd": "explore", "count": 8}
+{"cmd": "fight", "direction": "l", "count": 6, "hp": 4}
 {"cmd": "learn", "rows": ["…80 characters…", …21 rows], "colours": ["…80 hex digits…", …21 rows]}
 {"cmd": "stop"}
 ```
 
-`keys` uses the escape syntax above. Each command takes exactly its own field: `send` requires `keys`, `go`
-requires `target` (at most 64 bytes) and takes an optional `ground` (`"dry"`, `"wet"` as `go --wet` or
-`"inland"` as `go --inland`), `rest` requires `count`
-(1 to 200), `go` and `rest` take an optional `near` (1 to 80, as `--near`), `learn` requires `rows` and `colours`,
-and any other field is refused with code 64. `rows` and `colours` are each 21 strings of 80 printable ASCII
+`keys` uses the escape syntax above. Each command takes exactly its own fields: `send` requires `keys` and takes an
+optional `guard`, `go` requires `target` (at most 64 bytes) and takes an optional `ground` (`"dry"`, `"wet"` as
+`go --wet` or `"inland"` as `go --inland`), `rest` requires `count` (1 to 200), `explore` requires `count` (legs, 1
+to 30), `go`, `rest` and `explore` take an optional `near` (1 to 80, as `--near`), `fight` requires `direction`,
+`count` (attacks, 1 to 20) and `hp` (0 to 9999), `learn` requires `rows` and `colours`, and any other field is
+refused with code 64. `nethack-harness schema` prints each command's fields as JSON Schema, and `nethack-harness
+request JSON` sends such an object through the client. `rows` and `colours` are each 21 strings of 80 printable ASCII
 characters, as the `learn` operands above: `rows[0]` is map row 1 and a string's first character is column 0. A
 request with another number of rows, a row of another length, or a character other than `0` to `9` or `a` to `f`
 under a square of `rows` that is not a space is refused with code 64. The reply is
@@ -317,7 +353,7 @@ underfoot that describe it.
 | `frontier` | object[] | `{x, y, steps}`. |
 | `stairs_up`, `stairs_down` | `[x, y]`? | Observed stairs on this level; told ones are only in `seen`. |
 | `inventory` | object? | `{turn?, lines[]}`, lines such as `a - a +0 scalpel (weapon in hand)`. |
-| `report` | object? | `{verb, done, stopped[], steps, wet?, told?, turns?, no_time?, no_time_why?, error?}` for `send`, `go` and `rest`; `wet` counts the steps `go --wet` sent into water, and `told`, present for every `go` that walked, the steps that entered squares that were told when the walk began. For a `rest` that saw the turn counter at its start and end, `no_time` counts the searches after which it read as before, and `no_time_why` lists what the screen showed with them, one `{searches, why, text?}` per distinct answer in the order first seen, at most eight: `why` is `message` or `prompt` with its `text`, `screen unchanged`, or `turn counter unchanged`. |
+| `report` | object? | `{verb, done, stopped[], steps, legs?, wet?, told?, turns?, no_time?, no_time_why?, error?}` for `send`, `go`, `rest`, `explore` and `fight`; `steps` counts keys, steps, searches or attacks, and `legs` the legs `explore` walked; `wet` counts the steps `go --wet` sent into water, and `told`, present for every `go` that walked, the steps that entered squares that were told when the walk began. For a `rest` that saw the turn counter at its start and end, `no_time` counts the searches after which it read as before, and `no_time_why` lists what the screen showed with them, one `{searches, why, text?}` per distinct answer in the order first seen, at most eight: `why` is `message` or `prompt` with its `text`, `screen unchanged`, or `turn counter unchanged`. |
 | `answered` | object[] | `{prompt, key, text_entry?}`; `key` in escape syntax. |
 | `end` | object? | `{death?, lines[]}` once the game is over; `death` is the death line, verbatim. |
 

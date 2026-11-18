@@ -308,6 +308,15 @@ impl Memory {
         self.inventory.as_ref()
     }
 
+    /// Holds an empty inventory read on `turn`, as if the game had shown it.
+    #[cfg(test)]
+    pub fn hold_inventory(&mut self, turn: Option<u32>) {
+        self.inventory = Some(Inventory {
+            turn,
+            lines: Vec::new(),
+        });
+    }
+
     pub fn end(&self) -> Option<&End> {
         self.end.as_ref()
     }

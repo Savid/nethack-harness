@@ -11,6 +11,7 @@ pub mod level;
 pub mod link;
 pub mod observe;
 pub mod play;
+pub mod schema;
 pub mod screen;
 pub mod types;
 pub mod view;
