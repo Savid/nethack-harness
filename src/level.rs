@@ -148,6 +148,12 @@ impl Paths {
         self.reached.contains(p)
     }
 
+    /// Refused steps on the route from the start to `p`, if reached.
+    pub fn refused(&self, p: Pos) -> Option<u16> {
+        let i = p.index()?;
+        self.reached.contains(p).then(|| self.cost[i].0)
+    }
+
     /// Steps from the start to `p`, if reached.
     pub fn distance(&self, p: Pos) -> Option<u32> {
         let i = p.index()?;
@@ -645,7 +651,8 @@ impl Level {
     }
 
     /// For each connected group of reachable frontier squares, its target and route length, nearest group first,
-    /// written into `out`.
+    /// written into `out`. A square whose only routes take a step the game refused is not reachable: the game
+    /// refuses it again, as a squeeze it does not let the hero through.
     ///
     /// A group's target is its farthest square that no walked square touches, such as the far end of a corridor seen
     /// but never walked. A group the walk has already passed alongside, such as the next strip of a dark room, has
@@ -654,7 +661,11 @@ impl Level {
     pub fn frontier_targets(&self, paths: &Paths, out: &mut Vec<(Pos, u32)>) {
         out.clear();
         let mut edge = SquareSet::new();
-        for p in paths.reached().iter().filter(|&p| self.frontier(p)) {
+        for p in paths
+            .reached()
+            .iter()
+            .filter(|&p| self.frontier(p) && paths.refused(p) == Some(0))
+        {
             edge.insert(p);
         }
         // Each square enters the stack once, as it leaves `edge`.
@@ -988,6 +999,12 @@ mod tests {
         assert!(level.frontier(at(3, 7)));
         assert!(!level.frontier(at(3, 4)));
         assert_eq!(frontier(&level, at(3, 6)), [(at(3, 7), 1)]);
+        // A frontier square reached only by a step the game refused, as a squeeze it does not let the hero
+        // through, is no target.
+        let mut refusing = observed(&map(&["", "   @#"]), 2, 3);
+        assert_eq!(frontier(&refusing, at(2, 3)), [(at(2, 4), 1)]);
+        refusing.refuse(at(2, 3), b'l');
+        assert_eq!(frontier(&refusing, at(2, 3)), []);
         let doorway = map(&[" -------", " |.....|", " |.d$..@", " -------"]);
         visit(&mut level, &doorway, 3, 7, 401);
         visit(&mut level, &first, 3, 6, 402);
