@@ -1,5 +1,5 @@
 //! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] COMMAND`, where COMMAND is
-//! `look`, `send [--guard TEXT]… KEYS`, `go [--wet|--inland] [--near N] TARGET`, `rest [--near N] COUNT`,
+//! `look`, `send [--guard TEXT]… KEYS`, `go [--wet|--lava|--inland] [--near N] TARGET`, `rest [--near N] COUNT`,
 //! `explore [--near N] LEGS`, `fight DIR COUNT HP`, `learn ROW… COLOURS…`, `request JSON`, `stop`, `schema` or
 //! `serve`. `schema` prints every command's request as JSON Schema without a daemon; `request` sends a request
 //! object as `schema` describes it.
@@ -35,7 +35,7 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] \
-                         look | send [--guard TEXT]... KEYS | go [--wet|--inland] [--near N] TARGET | \
+                         look | send [--guard TEXT]... KEYS | go [--wet|--lava|--inland] [--near N] TARGET | \
                          rest [--near N] COUNT | explore [--near N] LEGS | fight DIR COUNT HP | \
                          learn ROW... COLOURS... | request JSON | stop | schema | serve";
 
@@ -139,7 +139,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             let mut go = request(Cmd::Go);
             match options(name, operands, &mut go)?.as_slice() {
                 [target] => go.target = Some(target.clone()),
-                _ => return Err("go takes [--wet|--inland] [--near N] TARGET".to_owned()),
+                _ => return Err("go takes [--wet|--lava|--inland] [--near N] TARGET".to_owned()),
             }
             go
         }
@@ -174,18 +174,21 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
 }
 
 /// The operands of `go`, `rest` or `explore` left once their options, anywhere among them, are set on `request`:
-/// `--near N`, and for `go` one of `--wet` and `--inland`.
+/// `--near N`, and for `go` one of `--wet`, `--lava` and `--inland`.
 fn options(name: &str, operands: &[String], request: &mut Request) -> Result<Vec<String>, String> {
     let mut left = Vec::new();
     let mut operands = operands.iter();
     while let Some(operand) = operands.next() {
         match operand.as_str() {
-            "--wet" | "--inland" if name == "go" => {
+            "--wet" | "--lava" | "--inland" if name == "go" => {
                 if request.ground.is_some() {
-                    return Err("go takes one of --wet and --inland".to_owned());
+                    return Err("go takes one of --wet, --lava and --inland".to_owned());
                 }
-                let wet = operand == "--wet";
-                request.ground = Some(if wet { Ground::Wet } else { Ground::Inland });
+                request.ground = Some(match operand.as_str() {
+                    "--wet" => Ground::Wet,
+                    "--lava" => Ground::Lava,
+                    _ => Ground::Inland,
+                });
             }
             "--near" => {
                 let near = operands.next().and_then(|n| n.parse().ok());
@@ -515,8 +518,9 @@ mod tests {
         assert!(
             args(&["go", "--wet"])
                 .unwrap_err()
-                .contains("[--wet|--inland]")
+                .contains("[--wet|--lava|--inland]")
         );
+        assert_eq!(request(&["go", "--lava", "<"]).ground, Some(Ground::Lava));
         let near = request(&["go", "--near", "3", "--inland", "<"]);
         assert_eq!((near.near, near.ground), (Some(3), Some(Ground::Inland)));
         for both in [
@@ -526,7 +530,7 @@ mod tests {
             assert!(
                 args(&both)
                     .unwrap_err()
-                    .contains("one of --wet and --inland")
+                    .contains("one of --wet, --lava and --inland")
             );
         }
         let rest = request(&["rest", "20", "--near", "3"]);

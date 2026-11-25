@@ -17,17 +17,19 @@ use crate::types::{MAP_SQUARES, Pos, SquareSet};
 pub const REFUSED_STEPS: usize = 64;
 
 /// Remembered ground a route may enter. Water and lava (`}`) are not ground: routes, like the game's own travel,
-/// never cross them, unless a wet route is asked for, which may enter water.
+/// never cross them, unless a wet route is asked for, which may enter water, or a lava route, which may enter water
+/// and lava.
 const PASSABLE: &[char] = &['.', '#', '<', '>', '^', '{', '_', '\\'];
 
-/// What a route may enter besides ground: nothing more (`Dry`), also remembered water (`Wet`), or less: no square
-/// beside remembered water past the start (`Inland`). Lava is never entered.
+/// What a route may enter besides ground: nothing more (`Dry`), also remembered water (`Wet`), also remembered water
+/// and lava (`Lava`), or less: no square beside remembered water past the start (`Inland`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Ground {
     #[default]
     Dry,
     Wet,
+    Lava,
     Inland,
 }
 
@@ -502,6 +504,21 @@ impl Level {
         self.terrain(p) == Some('}') && self.colour(p).and_then(liquid_name) == Some("water")
     }
 
+    /// Whether `p` is remembered lava: a `}` in the colour the game draws lava in.
+    pub fn lava(&self, p: Pos) -> bool {
+        self.terrain(p) == Some('}') && self.colour(p).and_then(liquid_name) == Some("lava")
+    }
+
+    /// Whether a route over `ground` may step into the liquid remembered at `p`: water on a wet or lava route, lava
+    /// on a lava route.
+    pub fn wades(&self, ground: Ground, p: Pos) -> bool {
+        match ground {
+            Ground::Wet => self.water(p),
+            Ground::Lava => self.water(p) || self.lava(p),
+            Ground::Dry | Ground::Inland => false,
+        }
+    }
+
     /// Whether `p` is remembered as the screen showed it, terrain or an object, rather than told of or assumed.
     pub fn remembered_shown(&self, p: Pos) -> bool {
         self.seen.contains(p)
@@ -552,8 +569,8 @@ impl Level {
 
     /// Fills `paths` with shortest routes from `start` over `squares` avoiding `occupied`: fewest refused steps,
     /// then fewest remembered traps, then fewest steps, as the game's own travel prefers. A `Wet` search may also
-    /// enter remembered water, and of routes otherwise equal takes the one with fewest steps into water. An
-    /// `Inland` search enters no square beside remembered water.
+    /// enter remembered water, a `Lava` search remembered water and lava, and of routes otherwise equal either takes
+    /// the one with fewest steps into them. An `Inland` search enters no square beside remembered water.
     pub fn paths(
         &self,
         start: Pos,
@@ -572,7 +589,7 @@ impl Level {
         paths.reached.insert(start);
         let mut order: u32 = 0;
         paths.queue.push(Reverse(((0, 0, 0, 0), order, si as u16)));
-        let wet = |q| ground == Ground::Wet && self.water(q);
+        let wet = |q| self.wades(ground, q);
         let shore = |q| ground == Ground::Inland && self.shore(q);
         let door = |p| self.open_doors.contains(p) || self.maybe_doors.contains(p);
         while let Some(Reverse((cost, _, index))) = paths.queue.pop() {
@@ -1090,6 +1107,24 @@ mod tests {
             assert!(!level.water(at(2, 5)));
             assert!(route_on(Ground::Wet, &level, at(2, 3), at(2, 6), &[]).is_none());
         }
+    }
+
+    #[test]
+    fn lava_routes_cross_remembered_lava_and_water() {
+        let mut g = map(&["", "   @}}}>"]);
+        paint(&mut g, 2, 4, Colour::Red, false);
+        paint(&mut g, 2, 5, Colour::Blue, false);
+        paint(&mut g, 2, 6, Colour::Red, false);
+        let level = observed(&g, 2, 3);
+        assert!(level.lava(at(2, 4)) && level.water(at(2, 5)) && !level.lava(at(2, 5)));
+        assert!(route_on(Ground::Wet, &level, at(2, 3), at(2, 7), &[]).is_none());
+        assert_eq!(
+            route_on(Ground::Lava, &level, at(2, 3), at(2, 7), &[]),
+            Some(vec![at(2, 4), at(2, 5), at(2, 6), at(2, 7)])
+        );
+        // A `}` of neither colour is neither.
+        paint(&mut g, 2, 5, Colour::Green, false);
+        assert!(route_on(Ground::Lava, &observed(&g, 2, 3), at(2, 3), at(2, 7), &[]).is_none());
     }
 
     #[test]

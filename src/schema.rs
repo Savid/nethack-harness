@@ -53,8 +53,8 @@ pub fn schema() -> Value {
                     "description": "x,y; <; >; a map glyph; a kind listed under seen:; or frontier.",
                 },
                 "ground": {
-                    "type": "string", "enum": ["dry", "wet", "inland"], "default": "dry",
-                    "description": "wet lets the route step into remembered water; inland keeps it off every square beside remembered water.",
+                    "type": "string", "enum": ["dry", "wet", "lava", "inland"], "default": "dry",
+                    "description": "wet lets the route step into remembered water; lava into remembered water and lava; inland keeps it off every square beside remembered water.",
                 },
                 "near": near,
             }),

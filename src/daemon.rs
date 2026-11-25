@@ -684,7 +684,7 @@ mod tests {
                 near: None,
             })
         ));
-        for ground in [Ground::Wet, Ground::Inland] {
+        for ground in [Ground::Wet, Ground::Lava, Ground::Inland] {
             go.ground = Some(ground);
             assert!(matches!(check(&go), Ok(Checked::Go { ground: g, .. }) if g == ground));
         }
