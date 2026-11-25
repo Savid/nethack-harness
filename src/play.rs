@@ -122,13 +122,15 @@ impl<T: Terminal> Play<T> {
     }
 
     /// Walks toward `target` (`x,y`, a map glyph, a feature kind, or `frontier`) along the known route over
-    /// `ground`: a `Wet` route may step into remembered water, an `Inland` one steps beside none. With `near`, only
+    /// `ground`: a `Wet` route may step into remembered water, a `Lava` one into remembered water and lava, an
+    /// `Inland` one steps beside none. With `near`, only
     /// a monster arriving within that many squares of the hero stops the walk.
     pub fn go(&mut self, target: &str, ground: Ground, near: Option<u8>) -> Reply {
         let mut verb = "go ".to_owned();
         match ground {
             Ground::Dry => {}
             Ground::Wet => verb.push_str("--wet "),
+            Ground::Lava => verb.push_str("--lava "),
             Ground::Inland => verb.push_str("--inland "),
         }
         if let Some(near) = near {
@@ -171,8 +173,9 @@ impl<T: Terminal> Play<T> {
                 .current()
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
         let kind = if explore { Kind::Explore } else { Kind::Travel };
-        let wet = ground == Ground::Wet;
+        let wet = matches!(ground, Ground::Wet | Ground::Lava);
         let mut action = exec::walk(kind, &self.renderer.routes.paths, goal, STEPS_MAX, wet);
+        action.lava = ground == Ground::Lava;
         action.near = near;
         Ok(action)
     }

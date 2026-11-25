@@ -53,6 +53,7 @@ pub struct Action {
     pub target: Option<Pos>,
     pub route: Vec<Pos>,
     pub wet: bool,
+    pub lava: bool,
     pub near: Option<u8>,
     pub guard: Vec<String>,
 }
@@ -559,9 +560,9 @@ impl Executor {
                 let key = from.direction_to(to).ok_or(Stop::RouteChanged)?;
                 // The direction key goes after an `m` prefix, except where the level's memory says the game checks
                 // the square first (water, lava, traps, gas) or where the pet stands, so the game's own check or
-                // swap applies. A wet route's step into water keeps the prefix: it is how the game takes a
-                // deliberate move into known water without its swim check.
-                let wet = action.wet && level.water(to);
+                // swap applies. A wet route's step into water, or a lava route's into water or lava, keeps the
+                // prefix: it is how the game takes a deliberate move into known water or lava without its check.
+                let wet = action.wet && level.water(to) || action.lava && level.lava(to);
                 let plain = !wet && (level.guarded(to) || view.pet(to) && is_monster(view.ch(to)));
                 buf = [b'm', key];
                 (&buf[usize::from(plain)..], Some((from, to, key, wet)))
@@ -993,13 +994,15 @@ fn action(kind: Kind, keys: &[u8], steps: u32, target: Option<Pos>) -> Action {
         target,
         route: Vec::new(),
         wet: false,
+        lava: false,
         near: None,
         guard: Vec::new(),
     }
 }
 
 /// A travel or exploration along the known route to `target`, at most `max_steps` steps. Travel ends there;
-/// exploring goes on along the corridor beyond it. A `wet` walk's route may step into remembered water.
+/// exploring goes on along the corridor beyond it. A `wet` walk's route may step into remembered water; one whose
+/// `lava` is then set, into remembered lava too.
 pub fn walk(kind: Kind, paths: &Paths, target: Pos, max_steps: u32, wet: bool) -> Action {
     let mut walk = action(kind, &[], max_steps, Some(target));
     walk.wet = wet;
@@ -1189,6 +1192,7 @@ mod tests {
             target: Some(Pos::new(target.0, target.1)),
             route: route.iter().map(|&(y, x)| Pos::new(y, x)).collect(),
             wet: false,
+            lava: false,
             near: None,
             guard: Vec::new(),
         }
@@ -1263,6 +1267,11 @@ mod tests {
 
     /// A corridor `@#}}#` from column 3 with blue water at columns 5 and 6, the hero at `col` and `message` on top.
     fn moat(col: u8, turn: u32, message: &str) -> View {
+        liquid(col, turn, message, Colour::Blue)
+    }
+
+    /// The corridor of `moat` with its `}` in `colour`.
+    fn liquid(col: u8, turn: u32, message: &str, colour: Colour) -> View {
         let tiles = [((2, 4), '#'), ((2, 5), '}'), ((2, 6), '}'), ((2, 7), '#')];
         let mut rows = corridor_lines((2, 3), &tiles, turn, 12);
         put(&mut rows, (2, 3), '#');
@@ -1271,7 +1280,7 @@ mod tests {
         let mut grid = grid(&rows);
         for x in [5, 6] {
             if x != col {
-                grid.cells[2][x as usize].fg = Colour::Blue;
+                grid.cells[2][x as usize].fg = colour;
             }
         }
         parse(&grid, (2, col))
@@ -1305,6 +1314,29 @@ mod tests {
         // A dry walk sends a step into water bare, so the game's own check applies, and counts none wet.
         let (mut term, mut memory) = start(screens());
         let outcome = Executor::default().run(&mut term, &mut memory, &across_the_moat(false));
+        assert_eq!(sent(&term), ["ml", "l", "l", "ml"]);
+        assert_eq!(outcome.wet, 0);
+    }
+
+    #[test]
+    fn a_lava_walk_steps_into_lava_with_the_prefix_and_a_wet_walk_does_not() {
+        let screens = || {
+            (3..=7)
+                .map(|col| liquid(col, 397 + u32::from(col), "", Colour::Red))
+                .collect::<Vec<_>>()
+        };
+        let (mut term, mut memory) = start(screens());
+        assert!(memory.current().is_some_and(|l| l.lava(Pos::new(2, 5))));
+        let lava = Action {
+            lava: true,
+            ..across_the_moat(true)
+        };
+        let outcome = Executor::default().run(&mut term, &mut memory, &lava);
+        assert_eq!(sent(&term), ["ml", "ml", "ml", "ml"]);
+        assert_eq!((outcome.stop, outcome.wet), (Stop::Completed, 2));
+        // A wet walk sends a step into lava bare, so the game's own check applies.
+        let (mut term, mut memory) = start(screens());
+        let outcome = Executor::default().run(&mut term, &mut memory, &across_the_moat(true));
         assert_eq!(sent(&term), ["ml", "l", "l", "ml"]);
         assert_eq!(outcome.wet, 0);
     }
