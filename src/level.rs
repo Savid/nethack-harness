@@ -207,6 +207,8 @@ pub struct Level {
     pub maybe_doors: SquareSet,
     /// Open doors: `|` or `-` drawn brown or yellow.
     pub open_doors: SquareSet,
+    /// Graves: `|` drawn white, which a wall is not.
+    pub graves: SquareSet,
     /// Squares that show an engraving: a bright blue `` ` `` on room floor, remembered as floor `.`, or a bright
     /// blue `#` in a corridor.
     pub engravings: SquareSet,
@@ -238,6 +240,7 @@ impl Level {
             object_squares: SquareSet::new(),
             maybe_doors: SquareSet::new(),
             open_doors: SquareSet::new(),
+            graves: SquareSet::new(),
             engravings: SquareSet::new(),
             visits: BTreeMap::new(),
             inspections: BTreeMap::new(),
@@ -398,6 +401,7 @@ impl Level {
         mark(&mut self.engravings, p, engraved);
         let door = matches!(ch, '|' | '-') && colour.base == Base::Brown;
         mark(&mut self.open_doors, p, door);
+        mark(&mut self.graves, p, ch == '|' && colour.base == Base::White);
     }
 
     /// Forgets what the caller told of `p`, if it told anything.
@@ -411,6 +415,7 @@ impl Level {
             &mut self.object_squares,
             &mut self.maybe_doors,
             &mut self.open_doors,
+            &mut self.graves,
             &mut self.engravings,
         ] {
             set.remove(p);
@@ -532,10 +537,12 @@ impl Level {
         p.neighbours().any(|(_, q)| self.water(q))
     }
 
-    /// Whether a route may enter `p`: remembered ground, an open door, or a square seen only under an object.
+    /// Whether a route may enter `p`: remembered ground, an open door, a grave, or a square seen only under an
+    /// object.
     pub fn passable(&self, p: Pos) -> bool {
         self.terrain(p).is_some_and(|ch| PASSABLE.contains(&ch))
             || self.open_doors.contains(p)
+            || self.graves.contains(p)
             || self.object_squares.contains(p)
     }
 
@@ -1295,6 +1302,21 @@ mod tests {
         let paths = search(&level, at(3, 3), &[]);
         assert_eq!(paths.distance(at(3, 4)), Some(1));
         assert!(!paths.reaches(at(4, 8)));
+    }
+
+    #[test]
+    fn a_white_bar_is_a_grave_routes_cross_and_a_gray_one_a_wall() {
+        let rows = [" -------", " |..|..|", " |..|..|", " |..|..|", " -------"];
+        let mut g = map(&rows);
+        paint(&mut g, 3, 4, Colour::White, true);
+        let level = observed(&g, 2, 2);
+        assert!(level.graves.contains(at(3, 4)));
+        assert!(level.passable(at(3, 4)));
+        assert!(!level.passable(at(2, 4)));
+        assert_eq!(
+            route(&level, at(3, 3), at(3, 5), &[]),
+            Some(vec![at(3, 4), at(3, 5)])
+        );
     }
 
     #[test]
