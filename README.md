@@ -336,12 +336,12 @@ The parts, in order:
   it is the final summary line.
 
 An engraving on room floor (a bright blue `` ` ``) is passable floor; any other `` ` `` is a boulder. A bright
-white `0` is warning level 0, a monster sensed but not seen; any other `0` is a boulder. Traps are remembered
-from the map's `^` and from the game's description of the hero's square (`There is a dart trap here.`), which also
-names the trap. A trap going off (`A dart shoots out at you!`, `Kaablamm!`) is only a message: the game draws a
-trap the hero set off once the hero steps off it, and the same words report traps that monsters set off. A
-remembered trap whose square the screen shows with other terrain is forgotten, with its name and the notes
-underfoot that describe it.
+white `0` is warning level 0, a monster sensed but not seen; any other `0` is a boulder. A white `|` is a grave,
+which routes cross; a gray one is a wall. Traps are remembered from the map's `^` and from the game's description
+of the hero's square (`There is a dart trap here.`), which also names the trap. A trap going off (`A dart shoots
+out at you!`, `Kaablamm!`) is only a message: the game draws a trap the hero set off once the hero steps off it,
+and the same words report traps that monsters set off. A remembered trap whose square the screen shows with other
+terrain is forgotten, with its name and the notes underfoot that describe it.
 
 ## Facts
 
