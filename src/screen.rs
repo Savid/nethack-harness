@@ -450,13 +450,17 @@ pub struct MenuEntry {
 }
 
 /// Whether `row` continues the message on `line` above it: the game splits a long message at a space, so a
-/// continuation starts in column 0 with a word that would not have fitted, and not with map structure.
+/// continuation starts in column 0 with a word that would not have fitted, and not with map structure. A first
+/// word with no letter or digit is map, whatever its symbols: a top map row of lava (`}`) read as the message's
+/// end hid every prompt on those levels, the game-over question among them.
 fn continues(line: &str, row: &str) -> bool {
     let first = row.split(' ').next().unwrap_or("");
     !line.is_empty()
         && !first.is_empty()
         && line.chars().count() + 1 + first.chars().count() > 79
-        && (row.starts_with("--More--") || !row.starts_with(['|', '-', '#', '.', '+']))
+        && (row.starts_with("--More--")
+            || !row.starts_with(['|', '-', '#', '.', '+', '}'])
+                && first.chars().any(|c| c.is_alphanumeric()))
 }
 
 /// Keeps a targeting cursor distinct from the hero after the game's automatic descriptions.
@@ -938,6 +942,15 @@ mod tests {
     }
 
     #[test]
+    fn a_lava_top_row_leaves_the_game_over_question_whole() {
+        let ask = "Do you want your possessions identified? [ynq] (n) ";
+        let lava = "}".repeat(79);
+        let v = testkit::view(&scr(ask, &[&lava, "}}}}.@.}}}}"]), 0, ask.len() as u8);
+        assert_eq!(v.msg, ask.trim_end());
+        assert_eq!(v.yn.as_deref(), Some("ynq"));
+    }
+
+    #[test]
     fn continuation_with_dots_or_more_is_part_of_the_message() {
         for (first, rest) in [
             (
@@ -962,7 +975,9 @@ mod tests {
     #[test]
     fn map_rows_never_continue_a_message() {
         let first = "x".repeat(78);
-        for row in ["|....", "-----", "#....", ".....", "+...."] {
+        for row in [
+            "|....", "-----", "#....", ".....", "+....", "}}}}}", "{....", "^}}}}", "@}}}}",
+        ] {
             assert!(!continues(&first, row));
         }
         assert!(continues(&first, "--More--"));
