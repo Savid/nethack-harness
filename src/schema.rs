@@ -30,7 +30,7 @@ pub fn schema() -> Value {
         ),
         command(
             "send",
-            "Type keys, then print the view with the prompts they passed. A prompt opened by one key is seen before the next is sent; --More-- pages left open after the last key are dismissed.",
+            "Type keys, then print the view with the prompts they passed. A prompt opened by one key is seen before the next is sent, and a --More-- in the way is paged through first, so every key reaches what waits behind it; pages left open after the last key are dismissed.",
             json!({
                 "keys": {
                     "type": "string", "minLength": 1,

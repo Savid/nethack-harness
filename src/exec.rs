@@ -404,14 +404,24 @@ impl Executor {
     }
 
     /// The caller's keys, one byte at a time, except that text typed into a free-text prompt goes as one batch up
-    /// to the key that ends it. Each key that meets a prompt is recorded against it. A prompt whose text holds one
-    /// of `guard` gets none of the keys left: they stop there, unsent.
+    /// to the key that ends it. A `--More--` in the way is paged first, so the keys reach what waits behind it.
+    /// Each key that meets a prompt is recorded against it. A prompt whose text holds one of `guard` gets none of
+    /// the keys left: they stop there, unsent.
     fn type_keys(&mut self, io: &mut Io, keys: &[u8], guard: &[String]) -> Result<Stop, Stop> {
         let after_run = self.after_run;
         // The prompt the previous key answered, while further keys may extend its answer.
         let mut open: Option<Phase> = None;
         let mut i = 0;
         while i < keys.len() {
+            // A `--More--` takes every key but space, return and escape and drops it (getline.c
+            // xwaitforspace), so the keys behind one are paged through first and their pages reported: a wish
+            // typed as `7 blessed wax candles` reached a game as `wax candles` because the pages before its
+            // question took `7 ` and `blessed `. A space is the page's own key and still goes to it; an escape
+            // would set the message window's STOP flag, which drops the rest of the action's messages unshown.
+            if io.term.view().phase() == Phase::More && keys[i] != b' ' {
+                self.page(io)?;
+                open = None;
+            }
             let view = io.term.view();
             let phase = view.phase();
             let mut end = i + 1;
@@ -437,9 +447,23 @@ impl Executor {
             } else {
                 open = None;
             }
+            // A free-text prompt holding text takes two escapes: the first clears what was typed and leaves the
+            // prompt open (getline.c), where the next command's keys would be typed, so a prompt still open
+            // after an escape gets the second itself.
+            let cancelled = (phase == Phase::Text && keys[end - 1] == ESCAPE)
+                .then(|| strip_more(&view.msg).trim().to_owned());
             io.term.send(&keys[i..end]).map_err(Stop::Link)?;
             io.outcome.steps += (end - i) as u32;
             self.take(io);
+            if let Some(prompt) = cancelled {
+                let view = io.term.view();
+                // The same prompt stands, with what was typed into it, by an earlier send too, cleared off its
+                // end.
+                let open = strip_more(&view.msg).trim();
+                if view.phase() == Phase::Text && prompt.starts_with(open) {
+                    self.send(io, &[ESCAPE])?;
+                }
+            }
             i = end;
         }
         self.after_run = is_run(keys);
@@ -1980,21 +2004,100 @@ mod tests {
             asking("What do you want to write in the dust here?"),
             room(3, 12, 401, "", None),
         ]);
-        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"E-nnElbereth\r"));
-        assert_eq!(sent(&term), ["E", "-", "n", "nElbereth\r"]);
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"E-Elbereth\r"));
+        assert_eq!(sent(&term), ["E", "-", " ", "Elbereth\r"]);
         assert_eq!(
             outcome.answered,
             [
                 answer("What do you want to write with? [- a or ?*]", "-", false),
-                answer("You write in the dust with your fingertip.", "n", false),
                 answer(
                     "What do you want to write in the dust here?",
-                    "nElbereth\\r",
+                    "Elbereth\\r",
                     true
                 ),
             ]
         );
-        assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 13));
+        assert_eq!(
+            outcome.messages,
+            ["You write in the dust with your fingertip."]
+        );
+        assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 11));
+    }
+
+    /// A `--More--` drops every key but space, return and escape, so the keys behind one wait for its page to
+    /// be dismissed instead of being typed into it: `7 blessed wax candles` reached a game as `wax candles`
+    /// because the pages before the wish's question took `7 ` and `blessed `.
+    #[test]
+    fn keys_wait_for_a_page_instead_of_being_typed_into_it() {
+        let (mut term, mut memory) = start(vec![
+            at(3, 400),
+            asking("You feel a strange vibration beneath you.--More--"),
+            asking("You may wish for an object.--More--"),
+            asking("For what do you wish?"),
+            room(3, 12, 401, "", None),
+        ]);
+        let outcome =
+            Executor::default().run(&mut term, &mut memory, &keys(b"q7 blessed wax candles\r"));
+        assert_eq!(sent(&term), ["q", " ", " ", "7 blessed wax candles\r"]);
+        assert_eq!(
+            outcome.answered,
+            [answer(
+                "For what do you wish?",
+                "7 blessed wax candles\\r",
+                true
+            )]
+        );
+        assert_eq!(
+            outcome.messages,
+            [
+                "You feel a strange vibration beneath you.",
+                "You may wish for an object."
+            ]
+        );
+        assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 23));
+    }
+
+    /// A caller's space is the page's own key and still dismisses it.
+    #[test]
+    fn a_space_still_answers_a_page() {
+        let (mut term, mut memory) = start(vec![
+            at(3, 400),
+            asking("You hear a door open.--More--"),
+            room(3, 12, 401, "", None),
+        ]);
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"s "));
+        assert_eq!(sent(&term), ["s", " "]);
+        assert_eq!((outcome.stop, outcome.steps), (Stop::Completed, 2));
+    }
+
+    /// An escape at a free-text prompt holding text only clears the text (getline.c), so the harness sends the
+    /// second escape the game needs rather than leaving the prompt open for the next command's keys.
+    #[test]
+    fn text_typed_into_a_prompt_is_cancelled_with_both_escapes() {
+        let prompt = asking("What do you want to name this object?");
+        let (mut term, mut memory) = start(vec![
+            at(3, 400),
+            prompt.clone(),
+            prompt.clone(),
+            prompt,
+            at(3, 400),
+        ]);
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"#name\rclub\x1b"));
+        assert_eq!(sent(&term), ["#", "name\r", "club\u{1b}", "\u{1b}"]);
+        assert_eq!(outcome.stop, Stop::Completed);
+    }
+
+    /// A prompt the escape did close takes no second one.
+    #[test]
+    fn an_escape_that_closes_a_prompt_is_not_repeated() {
+        let (mut term, mut memory) = start(vec![
+            at(3, 400),
+            asking("What do you want to name this object?"),
+            at(3, 400),
+        ]);
+        let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"#\x1b"));
+        assert_eq!(sent(&term), ["#", "\u{1b}"]);
+        assert_eq!(outcome.stop, Stop::Completed);
     }
 
     #[test]

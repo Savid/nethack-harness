@@ -64,9 +64,13 @@ nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 Options come before the command, so `send` keys may start with `-` (`send -` sends a minus). `send` escapes are
 `\e` Escape, `\r` Enter, `\n`, `\t`, `\\` and `\xHH`, which sends exactly that byte (`\xf0` is M-p); other
 characters must be ASCII. Keys are written one at a time, so a prompt opened by one is seen before the next
-arrives; text typed into a free-text prompt goes as one batch up to the key that ends it. `--More--` pages left
-open after the last key are dismissed and their text, including text windows such as "Things that are here", is
-reported.
+arrives; text typed into a free-text prompt goes as one batch up to the key that ends it. A `--More--` a key
+raises is paged through before the next key is sent, so keys always reach the prompt or the command line behind
+it: the game drops every key but space, return and escape at a page, and an escape there also hides the rest of
+that action's messages. A space of the caller's own still dismisses a page. `--More--` pages left open after the
+last key are dismissed too, and the text of every page, including text windows such as "Things that are here",
+is reported. An escape that ends text typed into a free-text prompt sends the second escape the game needs,
+since the first only clears what was typed.
 
 `go` takes `x,y`, `<`, `>`, a map glyph, a kind listed under `seen:` (`door`, `open door`, `altar`,
 `fountain`, `dart trap`, …) or `frontier`, and walks to the nearest match by known route. For a closed door it
