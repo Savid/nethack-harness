@@ -113,12 +113,13 @@ impl<T: Terminal> Play<T> {
 
     /// Sends the caller's keys, 1 to `KEYS_MAX` as the request check allows, and renders the result, with every
     /// prompt they passed and its answer. A prompt whose text holds one of `guard` stops the keys before it; the
-    /// rest are not sent and the prompt stays open.
-    pub fn send(&mut self, keys: &[u8], guard: &[String]) -> Reply {
+    /// rest are not sent and the prompt stays open. With `at`, the keys are typed only where the game waits at
+    /// one of its texts; anywhere else none is sent.
+    pub fn send(&mut self, keys: &[u8], guard: &[String], at: &[String]) -> Reply {
         if let Some(reply) = self.prepare("send") {
             return reply;
         }
-        self.execute("send", exec::guarded_keys(keys, guard))
+        self.execute("send", exec::guarded_keys(keys, guard, at))
     }
 
     /// Walks toward `target` (`x,y`, a map glyph, a feature kind, or `frontier`) along the known route over
@@ -554,6 +555,16 @@ impl<T: Terminal> Play<T> {
                 let keys = if *unsent == 1 { "key was" } else { "keys were" };
                 stopped.push(format!(
                     "the guarded prompt \"{prompt}\" opened; {unsent} {keys} not sent"
+                ));
+            }
+            Stop::Elsewhere {
+                waiting,
+                expected,
+                unsent,
+            } => {
+                let keys = if *unsent == 1 { "key was" } else { "keys were" };
+                stopped.push(format!(
+                    "the game waits at \"{waiting}\", not at {expected}; {unsent} {keys} not sent"
                 ));
             }
             // The caller's own keys are done once sent, unless the game ended.
@@ -1287,7 +1298,7 @@ mod tests {
         let heard = map("You hear a door open.", &room, 2, 3);
         let mut play = play(vec![quiet, heard]);
         play.show();
-        let reply = play.send(b"s", &[]);
+        let reply = play.send(b"s", &[], &[]);
         assert_eq!(reply.code, ExitCode::Done);
         assert!(has_line(&reply.text, "msg: You hear a door open."));
         assert!(!reply.text.starts_with("send"));
@@ -1799,7 +1810,7 @@ mod tests {
             view(&closing, 23, 8),
             View::parse(&scores, Pos::new(5, 0)),
         ]);
-        let reply = play.send(b"F", &[]);
+        let reply = play.send(b"F", &[], &[]);
         assert_eq!(reply.code, ExitCode::Over, "{}", reply.text);
         assert_eq!(sent(&play), ["F", " ", "n", " ", " "]);
         let death = "killed by a jackal, while sleeping";
@@ -2120,7 +2131,7 @@ mod tests {
             at_turn("Count: 20", &room, 0, 9, 400),
             at_turn("", &room, 2, 4, 420),
         ]);
-        let reply = play.send(b"20s", &[]);
+        let reply = play.send(b"20s", &[], &[]);
         assert_eq!(sent(&play)[..3], ["2", "0", "s"]);
         assert!(
             reply.facts.answered.is_empty(),
@@ -2134,7 +2145,7 @@ mod tests {
     fn held_input_is_reported_with_its_own_code() {
         let mut play = play(vec![start().view()]);
         play.term.failures = vec![Some(LinkError::Held("waiting to start".to_owned()))];
-        let reply = play.send(b"s", &[]);
+        let reply = play.send(b"s", &[], &[]);
         assert_eq!(reply.code, ExitCode::Held);
         assert!(reply.text.starts_with("send: "), "{}", reply.text);
         assert!(play.term.sent.is_empty());
@@ -2377,7 +2388,7 @@ mod tests {
         let guard = ["Really attack".to_owned(), "Really quit".to_owned()];
         let mut play = self::play(views());
         play.show();
-        let reply = play.send(b"Fly", &guard);
+        let reply = play.send(b"Fly", &guard, &[]);
         assert_eq!(sent(&play), ["F", "l"]);
         assert_eq!(reply.code, ExitCode::Short);
         assert_eq!(
@@ -2393,7 +2404,7 @@ mod tests {
         // Unguarded, the same keys answer it.
         let mut play = self::play(views());
         play.show();
-        let reply = play.send(b"Fly", &[]);
+        let reply = play.send(b"Fly", &[], &[]);
         assert_eq!(
             (reply.code, sent(&play)[..3].join("")),
             (ExitCode::Done, "Fly".to_owned())

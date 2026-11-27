@@ -41,6 +41,11 @@ pub fn schema() -> Value {
                     "items": {"type": "string", "minLength": 1, "maxLength": GUARD_MAX, "pattern": "^[ -~]*$"},
                     "description": "Texts of prompts not to answer: keys stop before a prompt whose text contains one, the rest are not sent and the prompt stays open.",
                 },
+                "at": {
+                    "type": "array", "minItems": 1, "maxItems": GUARDS_MAX,
+                    "items": {"type": "string", "minLength": 1, "maxLength": GUARD_MAX, "pattern": "^[ -~]*$"},
+                    "description": "Where these keys belong: a text of the prompt they answer, or what the game waits for (play, more, menu, item, direction, choice, text, position, spell). No key is sent anywhere else, so an answer for a prompt that never opened does not run as commands.",
+                },
             }),
             &["keys"],
         ),

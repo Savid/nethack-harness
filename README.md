@@ -50,7 +50,7 @@ nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 | Command | Effect |
 | --- | --- |
 | `look` | Print the view. Reads the inventory with `i` unless the one held is from this turn, names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
-| `send [--guard TEXT]… KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. Keys stop before a prompt whose text contains a `--guard` text. |
+| `send [--guard TEXT]… [--at TEXT]… KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. Keys stop before a prompt whose text contains a `--guard` text, and go only where an `--at` text says they belong. |
 | `go [--wet\|--lava\|--inland] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water; `--lava` into remembered water and lava; `--inland` keeps it off every square beside remembered water. |
 | `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
 | `explore [--near N] LEGS` | Walk up to LEGS legs (1 to 30) of `go frontier`, then print the view. |
@@ -160,6 +160,14 @@ texts: the key that would answer it and every key after are not sent, the questi
 and the report says `stopped: the guarded prompt "…" opened; N keys were not sent` (exit code 2). The caller
 answers it, or not, with another `send`.
 
+`send --at TEXT` (the same bounds, and the mirror of `--guard`) says where the keys belong: the text of the
+prompt they answer, or what the game waits for by name (`play` for the map, and `more`, `menu`, `item`,
+`direction`, `choice`, `text`, `position` or `spell`). Where the game waits at none of them, no key is sent at
+all and the report says `stopped: the game waits at "…", not at "…"; N keys were not sent`. Keys written for a
+prompt do something else where that prompt never opened: `z` and a wand's letter and a direction walked a hero
+two squares once the wand was gone, and a `>` meant as a direction is the stairs. `send --at "For what do you
+wish" "7 blessed wax candles\r"` types the wish or nothing.
+
 `explore N` walks `go frontier` leg after leg, each to the nearest frontier by known route, at most N legs. A leg
 that ends the way a walk ends on its own (done, `new terrain came into view`, `the corridor ends`, `the corridor
 branches`, `it reached its step limit`) is followed by the next; any other stop ends the exploration with that
@@ -233,7 +241,7 @@ time, in order.
 ```
 
 `keys` uses the escape syntax above. Each command takes exactly its own fields: `send` requires `keys` and takes an
-optional `guard`, `go` requires `target` (at most 64 bytes) and takes an optional `ground` (`"dry"`, `"wet"` as
+optional `guard` and `at`, `go` requires `target` (at most 64 bytes) and takes an optional `ground` (`"dry"`, `"wet"` as
 `go --wet`, `"lava"` as `go --lava` or `"inland"` as `go --inland`), `rest` requires `count` (1 to 200), `explore` requires `count` (legs, 1
 to 30), `go`, `rest` and `explore` take an optional `near` (1 to 80, as `--near`), `fight` requires `direction`,
 `count` (attacks, 1 to 20) and `hp` (0 to 9999), `learn` requires `rows` and `colours`, and any other field is
