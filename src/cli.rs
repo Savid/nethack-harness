@@ -1,5 +1,5 @@
 //! The command line: `nethack-harness [--dir D] [--json] [--socket PATH] COMMAND`, where COMMAND is
-//! `look`, `send [--guard TEXT]… KEYS`, `go [--wet|--lava|--inland] [--near N] TARGET`, `rest [--near N] COUNT`,
+//! `look`, `send [--guard TEXT]… [--at TEXT]… KEYS`, `go [--wet|--lava|--inland] [--near N] TARGET`, `rest [--near N] COUNT`,
 //! `explore [--near N] LEGS`, `fight DIR COUNT HP`, `learn ROW… COLOURS…`, `request JSON`, `stop`, `schema` or
 //! `serve`. `schema` prints every command's request as JSON Schema without a daemon; `request` sends a request
 //! object as `schema` describes it.
@@ -35,7 +35,7 @@ pub const START_TIMEOUT_MS: u64 = 10_000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(COMMAND_TIME.as_secs() + 30);
 /// The usage line printed with exit code 64.
 pub const USAGE: &str = "usage: nethack-harness [--dir D] [--json] [--socket PATH] \
-                         look | send [--guard TEXT]... KEYS | go [--wet|--lava|--inland] [--near N] TARGET | \
+                         look | send [--guard TEXT]... [--at TEXT]... KEYS | go [--wet|--lava|--inland] [--near N] TARGET | \
                          rest [--near N] COUNT | explore [--near N] LEGS | fight DIR COUNT HP | \
                          learn ROW... COLOURS... | request JSON | stop | schema | serve";
 
@@ -105,18 +105,20 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             ..request(Cmd::Send)
         },
         ("send", n) if n % 2 == 1 => {
-            // `--guard TEXT` pairs, then the keys, which are always the last operand.
+            // `--guard TEXT` and `--at TEXT` pairs, then the keys, which are always the last operand.
             let (pairs, keys) = operands.split_at(n - 1);
-            let mut guard = Vec::new();
+            let (mut guard, mut at) = (Vec::new(), Vec::new());
             for pair in pairs.chunks(2) {
                 match pair {
                     [flag, text] if flag == "--guard" => guard.push(text.clone()),
-                    _ => return Err("send takes [--guard TEXT]... KEYS".to_owned()),
+                    [flag, text] if flag == "--at" => at.push(text.clone()),
+                    _ => return Err("send takes [--guard TEXT]... [--at TEXT]... KEYS".to_owned()),
                 }
             }
             Request {
                 keys: keys.first().cloned(),
-                guard: Some(guard),
+                guard: (!guard.is_empty()).then_some(guard),
+                at: (!at.is_empty()).then_some(at),
                 ..request(Cmd::Send)
             }
         }
@@ -163,7 +165,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         ("look" | "stop" | "schema" | "serve", _) => {
             return Err(format!("{name} takes no arguments"));
         }
-        ("send", _) => return Err("send takes [--guard TEXT]... KEYS".to_owned()),
+        ("send", _) => return Err("send takes [--guard TEXT]... [--at TEXT]... KEYS".to_owned()),
         ("fight", _) => return Err("fight takes DIR COUNT HP".to_owned()),
         ("request", _) => return Err("request takes one JSON object".to_owned()),
         _ => return Err(format!("unknown command {name}")),

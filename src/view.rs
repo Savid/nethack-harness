@@ -353,9 +353,13 @@ impl Renderer {
         }
         let prompt = strip_more(&view.msg).trim().to_owned();
         for message in scene.fresh {
-            // A prompt's text, and on a screen printed in full any line it shows, would repeat what follows.
+            // A prompt's text, and on a screen printed in full any line it shows, would repeat what follows. A
+            // prompt the keys answered earlier in the same action is no message either: a reader of `msgs` would
+            // take the question for something the game said of its own accord, as a probe's refusal question did
+            // when it was read as the item's type. `answered:` is where those belong.
             if message.is_empty()
                 || phase != Phase::Play && *message == prompt
+                || scene.answered.iter().any(|a| a.prompt == *message)
                 || !map_shown && view.rows.iter().any(|row| row.trim() == message.trim())
             {
                 continue;

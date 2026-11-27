@@ -2,7 +2,7 @@
 //! line per connection, in order, so play is serialised. It holds all game memory in RAM, has no timers, and writes
 //! only its log, on errors.
 //!
-//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"explore"|"fight"|"learn"|"stop", "keys"?: str, "guard"?: [str],
+//! Request: `{"cmd": "look"|"send"|"go"|"rest"|"explore"|"fight"|"learn"|"stop", "keys"?: str, "guard"?: [str], "at"?: [str],
 //! "target"?: str, "ground"?: "dry"|"wet"|"inland", "direction"?: str, "count"?: u32, "hp"?: u32, "near"?: int,
 //! "rows"?: [str], "colours"?: [str]}`; `keys` uses the escape syntax `\e \r \n \t \\ \xHH`. `schema` describes
 //! each command's request. Reply: `{"code": int, "text": str, "facts": {…}}`.
@@ -71,7 +71,7 @@ impl Cmd {
     pub fn takes(self) -> &'static [&'static str] {
         match self {
             Cmd::Look | Cmd::Stop => &[],
-            Cmd::Send => &["keys", "guard"],
+            Cmd::Send => &["keys", "guard", "at"],
             Cmd::Go => &["target", "ground", "near"],
             Cmd::Rest | Cmd::Explore => &["count", "near"],
             Cmd::Fight => &["direction", "count", "hp"],
@@ -80,7 +80,7 @@ impl Cmd {
     }
 }
 
-/// One request line: `keys` and optionally `guard` for `send`, `target` and optionally `ground` for `go`, `count`
+/// One request line: `keys` and optionally `guard` and `at` for `send`, `target` and optionally `ground` for `go`, `count`
 /// for `rest` and `explore`, optionally `near` for `go`, `rest` and `explore`, `direction`, `count` and `hp` for
 /// `fight`, and `rows` and `colours` for `learn`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -91,6 +91,8 @@ pub struct Request {
     pub keys: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,6 +118,7 @@ pub enum Checked<'a> {
     Send {
         keys: Vec<u8>,
         guard: &'a [String],
+        at: &'a [String],
     },
     Go {
         target: &'a str,
@@ -148,6 +151,7 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
     let present = [
         ("keys", request.keys.is_some()),
         ("guard", request.guard.is_some()),
+        ("at", request.at.is_some()),
         ("target", request.target.is_some()),
         ("ground", request.ground.is_some()),
         ("direction", request.direction.is_some()),
@@ -184,14 +188,18 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
             let text = |t: &String| {
                 (1..=GUARD_MAX).contains(&t.len()) && t.bytes().all(|b| matches!(b, b' '..=b'~'))
             };
-            if request.guard.is_some()
-                && !((1..=GUARDS_MAX).contains(&guard.len()) && guard.iter().all(text))
-            {
-                return Err(format!(
-                    "guard takes 1 to {GUARDS_MAX} texts, each of 1 to {GUARD_MAX} printable ASCII characters"
-                ));
+            let at = request.at.as_deref().unwrap_or_default();
+            for (name, given, texts) in [
+                ("guard", request.guard.is_some(), guard),
+                ("at", request.at.is_some(), at),
+            ] {
+                if given && !((1..=GUARDS_MAX).contains(&texts.len()) && texts.iter().all(text)) {
+                    return Err(format!(
+                        "{name} takes 1 to {GUARDS_MAX} texts, each of 1 to {GUARD_MAX} printable ASCII characters"
+                    ));
+                }
             }
-            Ok(Checked::Send { keys, guard })
+            Ok(Checked::Send { keys, guard, at })
         }
         Cmd::Go => match request.target.as_deref().map(str::trim) {
             Some(target) if (1..=TARGET_MAX).contains(&target.len()) => Ok(Checked::Go {
@@ -418,7 +426,7 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
     let reply = match (play.sync(), command) {
         (Err(e), _) => Reply::message(e.code(), e.to_string()),
         (Ok(()), Checked::Look) => play.look(),
-        (Ok(()), Checked::Send { keys, guard }) => play.send(&keys, guard),
+        (Ok(()), Checked::Send { keys, guard, at }) => play.send(&keys, guard, at),
         (
             Ok(()),
             Checked::Go {
@@ -717,7 +725,10 @@ mod tests {
         let mut send = request(Cmd::Send);
         send.keys = Some("s".to_owned());
         send.ground = Some(Ground::Wet);
-        assert_eq!(check(&send).unwrap_err(), "send takes only keys and guard");
+        assert_eq!(
+            check(&send).unwrap_err(),
+            "send takes only keys, guard and at"
+        );
         let mut rest = request(Cmd::Rest);
         rest.count = Some(1);
         rest.ground = Some(Ground::Dry);
@@ -742,6 +753,9 @@ mod tests {
         ));
         send.near = Some(3);
         send.ground = None;
-        assert_eq!(check(&send).unwrap_err(), "send takes only keys and guard");
+        assert_eq!(
+            check(&send).unwrap_err(),
+            "send takes only keys, guard and at"
+        );
     }
 }

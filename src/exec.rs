@@ -44,7 +44,7 @@ pub enum Kind {
 /// A bounded action: the keys of one step (or a farlook's cursor keys), the most steps to take, the square it is
 /// going to or looking at, the known route there, first step first, whether that route may step into water, for
 /// a walk or rest the radius around the hero within which an arriving monster stops it (`None`: anywhere), and for
-/// the caller's keys the texts of prompts it does not answer.
+/// the caller's keys the texts of prompts it does not answer and the texts of what it expects to be typed at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     pub kind: Kind,
@@ -56,6 +56,7 @@ pub struct Action {
     pub lava: bool,
     pub near: Option<u8>,
     pub guard: Vec<String>,
+    pub at: Vec<String>,
 }
 
 /// Which observations changed and ended an action, as bit flags: the status line other than turn, HP and Pw (or
@@ -115,6 +116,13 @@ pub enum Stop {
     /// keys were left unsent.
     Guarded {
         prompt: String,
+        unsent: u32,
+    },
+    /// The game waited somewhere none of the caller's `at` texts names, so no key was sent: where it waited, what
+    /// the keys expected, and how many were left unsent.
+    Elsewhere {
+        waiting: String,
+        expected: String,
         unsent: u32,
     },
 }
@@ -280,7 +288,7 @@ impl Executor {
         } else {
             io.memory.begin(view);
             match action.kind {
-                Kind::Keys => self.type_keys(&mut io, &action.keys, &action.guard),
+                Kind::Keys => self.type_keys(&mut io, &action.keys, &action.guard, &action.at),
                 Kind::Farlook => self.farlook(&mut io, action),
                 Kind::LookHere => self.look_here(&mut io, action),
                 Kind::Fight => self.swing(&mut io, action),
@@ -407,7 +415,31 @@ impl Executor {
     /// to the key that ends it. A `--More--` in the way is paged first, so the keys reach what waits behind it.
     /// Each key that meets a prompt is recorded against it. A prompt whose text holds one of `guard` gets none of
     /// the keys left: they stop there, unsent.
-    fn type_keys(&mut self, io: &mut Io, keys: &[u8], guard: &[String]) -> Result<Stop, Stop> {
+    fn type_keys(
+        &mut self,
+        io: &mut Io,
+        keys: &[u8],
+        guard: &[String],
+        at: &[String],
+    ) -> Result<Stop, Stop> {
+        // Keys written for a prompt do something else where that prompt never opened: the direction of a zap
+        // walks the hero when the wand is gone, and a `>` meant as down is the stairs. `at` says where the keys
+        // belong, and nothing is sent anywhere else.
+        if !at.is_empty() {
+            let view = io.term.view();
+            let (text, phase) = (strip_more(&view.msg).trim(), view.phase());
+            let open = phase != Phase::Play && !text.is_empty();
+            let here = |want: &String| want == phase.name() || open && text.contains(want.as_str());
+            if !at.iter().any(here) {
+                let waiting = waiting_at(view);
+                let quoted: Vec<String> = at.iter().map(|text| format!("\"{text}\"")).collect();
+                return Ok(Stop::Elsewhere {
+                    waiting,
+                    expected: quoted.join(" or "),
+                    unsent: keys.len() as u32,
+                });
+            }
+        }
         let after_run = self.after_run;
         // The prompt the previous key answered, while further keys may extend its answer.
         let mut open: Option<Phase> = None;
@@ -829,6 +861,17 @@ impl Executor {
     }
 }
 
+/// Where the game waits on `view`, as the caller's `at` texts name it: the text of the prompt or page on screen,
+/// else the name of what it waits for, such as `play` for the map or `menu` for a menu.
+fn waiting_at(view: &View) -> String {
+    let text = strip_more(&view.msg).trim();
+    let phase = view.phase();
+    if text.is_empty() || phase == Phase::Play {
+        return phase.name().to_owned();
+    }
+    format!("{text} ({})", phase.name())
+}
+
 /// Whether `view` asks a question: a choice, free text, a direction, an object, a spell or a position.
 fn question(view: &View) -> bool {
     match view.phase() {
@@ -1021,6 +1064,7 @@ fn action(kind: Kind, keys: &[u8], steps: u32, target: Option<Pos>) -> Action {
         lava: false,
         near: None,
         guard: Vec::new(),
+        at: Vec::new(),
     }
 }
 
@@ -1057,10 +1101,12 @@ pub fn keys(keys: &[u8]) -> Action {
     action(Kind::Keys, keys, 1, None)
 }
 
-/// The caller's keys, stopping before any prompt whose text holds one of `guard`.
-pub fn guarded_keys(keys: &[u8], guard: &[String]) -> Action {
+/// The caller's keys, sent only where one of `at` says the game waits, and stopping before any prompt whose text
+/// holds one of `guard`.
+pub fn guarded_keys(keys: &[u8], guard: &[String], at: &[String]) -> Action {
     let mut action = action(Kind::Keys, keys, 1, None);
     action.guard = guard.to_vec();
+    action.at = at.to_vec();
     action
 }
 
@@ -1213,6 +1259,7 @@ mod tests {
             kind,
             keys: Vec::new(),
             steps,
+            at: Vec::new(),
             target: Some(Pos::new(target.0, target.1)),
             route: route.iter().map(|&(y, x)| Pos::new(y, x)).collect(),
             wet: false,
@@ -2085,6 +2132,61 @@ mod tests {
         let outcome = Executor::default().run(&mut term, &mut memory, &keys(b"#name\rclub\x1b"));
         assert_eq!(sent(&term), ["#", "name\r", "club\u{1b}", "\u{1b}"]);
         assert_eq!(outcome.stop, Stop::Completed);
+    }
+
+    /// Keys written for a prompt run as commands where that prompt never opened, so `at` says where they belong
+    /// and nothing is sent anywhere else: `z<wand><direction>` walked the hero two squares when the wand was
+    /// gone, and a `>` meant as a direction is the stairs.
+    #[test]
+    fn keys_are_sent_only_where_at_says_they_belong() {
+        let elsewhere = |want: &[&str], keys: &[u8]| {
+            let want: Vec<String> = want.iter().map(|t| (*t).to_string()).collect();
+            let (mut term, mut memory) = start(vec![
+                at(3, 400),
+                asking("For what do you wish?"),
+                room(3, 12, 401, "", None),
+            ]);
+            let action = guarded_keys(keys, &[], &want);
+            let outcome = Executor::default().run(&mut term, &mut memory, &action);
+            (sent(&term), outcome.stop)
+        };
+        // The game waits for a command, not at the wish prompt: nothing is sent.
+        let (sent, stop) = elsewhere(&["For what do you wish"], b"wax candles\r");
+        assert!(sent.is_empty());
+        assert_eq!(
+            stop,
+            Stop::Elsewhere {
+                waiting: "play".to_owned(),
+                expected: "\"For what do you wish\"".to_owned(),
+                unsent: 12
+            }
+        );
+        // The map is where "play" expects them, so they go; the script's next screen is a prompt.
+        let (sent, stop) = elsewhere(&["play"], b"s");
+        assert_eq!(sent, ["s"]);
+        assert_eq!(stop, Stop::Prompt);
+    }
+
+    /// At the prompt it names, `at` sends the keys as any other send does.
+    #[test]
+    fn at_the_prompt_it_names_the_keys_are_typed() {
+        let (mut term, mut memory) = start(vec![
+            asking("For what do you wish?"),
+            room(3, 12, 401, "", None),
+        ]);
+        let want = ["For what do you wish".to_owned()];
+        let action = guarded_keys(b"7 blessed wax candles\r", &[], &want);
+        let outcome = Executor::default().run(&mut term, &mut memory, &action);
+        // The keys start with a digit, so a redraw follows the count they might have been.
+        assert_eq!(sent(&term), ["7 blessed wax candles\r", "\u{12}"]);
+        assert_eq!(
+            outcome.answered,
+            [answer(
+                "For what do you wish?",
+                "7 blessed wax candles\\r",
+                true
+            )]
+        );
     }
 
     /// A prompt the escape did close takes no second one.
