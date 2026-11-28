@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::level::Ground;
 use crate::link::Term;
 use crate::play::{KEYS_MAX, LEGS_MAX, Play, REST_MAX, SWINGS_MAX};
-use crate::types::{COLS, ExitCode, MAP_ROWS, Reply, unescape};
+use crate::types::{COLS, ExitCode, MAP_ROWS, Pos, Reply, SquareSet, unescape};
 
 /// Longest request line accepted, in bytes.
 const REQUEST_MAX: usize = 8192;
@@ -34,6 +34,8 @@ pub const HP_MAX: u32 = 9999;
 pub const DIRECTIONS: &str = "hjklyubn";
 /// Largest `near` radius, in squares: the map's width.
 pub const NEAR_MAX: u8 = 80;
+/// Most squares one `go` may be told to avoid.
+pub const AVOID_MAX: usize = 64;
 /// Longest the daemon waits on one client to send its whole request, and again to take its whole reply.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Longest one command keeps sending to the game; past it the command stops short.
@@ -72,12 +74,33 @@ impl Cmd {
         match self {
             Cmd::Look | Cmd::Stop => &[],
             Cmd::Send => &["keys", "guard", "at"],
-            Cmd::Go => &["target", "ground", "near"],
+            Cmd::Go => &["target", "ground", "near", "avoid"],
             Cmd::Rest | Cmd::Explore => &["count", "near"],
             Cmd::Fight => &["direction", "count", "hp"],
             Cmd::Learn => &["rows", "colours"],
         }
     }
+}
+
+/// The squares `avoid` names, each `x,y` on the map, as a set. An empty list is an empty set; a square off the
+/// map or a word that is no `x,y` is refused, since a caller that meant to keep the hero out of somewhere should
+/// hear that it did not.
+fn avoided(squares: &[String]) -> Result<SquareSet, String> {
+    if squares.len() > AVOID_MAX {
+        return Err(format!("avoid takes at most {AVOID_MAX} squares"));
+    }
+    let mut out = SquareSet::new();
+    for square in squares {
+        let bad = || format!("avoid takes squares as x,y on the map; {square:?} is not one");
+        let (x, y) = square.split_once(',').ok_or_else(bad)?;
+        let number = |s: &str| s.trim().parse::<u8>().ok();
+        let pos = Pos::new(number(y).ok_or_else(bad)?, number(x).ok_or_else(bad)?);
+        if !pos.on_map() {
+            return Err(bad());
+        }
+        out.insert(pos);
+    }
+    Ok(out)
 }
 
 /// One request line: `keys` and optionally `guard` and `at` for `send`, `target` and optionally `ground` for `go`, `count`
@@ -106,6 +129,8 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avoid: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colours: Option<Vec<String>>,
@@ -124,6 +149,7 @@ pub enum Checked<'a> {
         target: &'a str,
         ground: Ground,
         near: Option<u8>,
+        avoid: SquareSet,
     },
     Rest {
         count: u32,
@@ -158,6 +184,7 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
         ("count", request.count.is_some()),
         ("hp", request.hp.is_some()),
         ("near", request.near.is_some()),
+        ("avoid", request.avoid.is_some()),
         ("rows", request.rows.is_some()),
         ("colours", request.colours.is_some()),
     ];
@@ -206,6 +233,7 @@ pub fn check(request: &Request) -> Result<Checked<'_>, String> {
                 target,
                 ground: request.ground.unwrap_or_default(),
                 near,
+                avoid: avoided(request.avoid.as_deref().unwrap_or_default())?,
             }),
             _ => Err(format!(
                 "go takes a target of 1 to {TARGET_MAX} bytes: x,y, a map glyph, a feature or frontier"
@@ -433,8 +461,9 @@ pub fn handle(play: &mut Play<Term>, request: &Request) -> (Reply, bool) {
                 target,
                 ground,
                 near,
+                avoid,
             },
-        ) => play.go(target, ground, near),
+        ) => play.go(target, ground, near, &avoid),
         (Ok(()), Checked::Rest { count, near }) => play.rest(count, near),
         (Ok(()), Checked::Explore { legs, near }) => play.explore(legs, near),
         (
@@ -579,7 +608,7 @@ mod tests {
         go.rows = rows("", MAP_ROWS);
         assert_eq!(
             check(&go).unwrap_err(),
-            "go takes only target, ground and near"
+            "go takes only target, ground, near and avoid"
         );
     }
 
@@ -690,6 +719,7 @@ mod tests {
                 target: "23,3",
                 ground: Ground::Dry,
                 near: None,
+                ..
             })
         ));
         for ground in [Ground::Wet, Ground::Lava, Ground::Inland] {
@@ -703,7 +733,7 @@ mod tests {
         go.count = Some(1);
         assert_eq!(
             check(&go).unwrap_err(),
-            "go takes only target, ground and near"
+            "go takes only target, ground, near and avoid"
         );
         let mut rest = request(Cmd::Rest);
         for (count, ok) in [

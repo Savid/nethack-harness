@@ -51,7 +51,7 @@ nethack-harness [--dir D] [--json] [--socket PATH] COMMAND
 | --- | --- |
 | `look` | Print the view. Reads the inventory with `i` unless the one held is from this turn, names monsters by farlook and reads underfoot with `:` when needed; uses no game time. |
 | `send [--guard TEXT]… [--at TEXT]… KEYS` | Type 1 to 256 bytes, then print the view with the prompts they passed. Keys stop before a prompt whose text contains a `--guard` text, and go only where an `--at` text says they belong. |
-| `go [--wet\|--lava\|--inland] [--near N] TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water; `--lava` into remembered water and lava; `--inland` keeps it off every square beside remembered water. |
+| `go [--wet\|--lava\|--inland] [--near N] [--avoid X,Y]… TARGET` | Walk the shortest known route to `TARGET`, at most 64 steps, then print the view. `--wet` lets the route step into remembered water; `--lava` into remembered water and lava; `--inland` keeps it off every square beside remembered water. `--avoid X,Y` keeps the route out of a square. |
 | `rest [--near N] COUNT` | Search in place up to COUNT times (1 to 200), then print the view. |
 | `explore [--near N] LEGS` | Walk up to LEGS legs (1 to 30) of `go frontier`, then print the view. |
 | `fight DIR COUNT HP` | Attack toward `DIR` (one of `hjklyubn`) with `F` up to COUNT times (1 to 20), stopping once HP is at or below `HP` (0 to 9999), then print the view. |
@@ -79,10 +79,15 @@ corridor follows the corridor on. In a group, it walks to the farthest square th
 the hero has walked beside every square of the group, such as the next strip of a dark room, it walks to the square
 that shows the most unknown squares around it, the nearest of those first. A frontier square that only a step the
 game refused reaches, such as a squeeze between two obstacles it does not let a laden hero through, is no frontier
-target until the hero leaves the level. Routes never cross remembered water except with `--wet` or `--lava`, nor
+target until the hero leaves the level. A square that showed only a monster, sensed beyond sight by telepathy,
+detection or infravision, and shows none now, never showed its ground: when no other frontier is left, a square
+beside one is a frontier square. Routes never cross remembered water except with `--wet` or `--lava`, nor
 lava except with `--lava` (below), cross a remembered trap or a step the game refused only where no other route
 exists, and pass through the highlighted pet. When no route exists `go` sends nothing and says why, such as
-`no known route to >: it is behind the closed door at 33,5` (as `seen:` names it). A walk or rest
+`no known route to >: it is behind the closed door at 33,5` (as `seen:` names it). With no frontier to reach,
+`go frontier` names the nearest unexplored squares beside remembered ground, up to four, marking one that showed
+only a monster: `no reachable known square borders unexplored ones; unexplored beside remembered ground, none
+reachable: 23,17 (only a monster showed there), 31,11`. A walk or rest
 stops short when a monster arrives (a
 monster with no monster of the same glyph and colour within one square of it at the previous step; `I` and warning
 digits never count), a message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is
@@ -112,6 +117,14 @@ into water. Without `--wet`, nothing changes.
 remembered lava (a red `}`), and is otherwise a wet route. Each step into lava is sent after the `m` prefix too, a
 refused one stops the walk as a refused wet step does, and the report counts steps into lava with those into water.
 The harness does not judge whether the hero can cross.
+
+`go --avoid X,Y TARGET`, repeated for up to 64 squares, routes around those squares as it routes around
+monsters. The harness reads the map, not the game's rules, so it cannot know that a square is a trap door, inside
+a monster's reach, or part of a crowd the caller will not walk into: the caller names them. The target itself is
+never avoided, so naming the square the walk ends on changes nothing. When no route reaches the target without
+entering one of them the walk is refused with `no route to TARGET that keeps out of the N squares told of`, and
+nothing is sent — a caller that meant to keep the hero out of somewhere hears that it could not, rather than
+being walked through it.
 
 `go --inland TARGET` takes a route that enters no square beside remembered water (any of its eight neighbours a
 blue `}`); the hero's own square may be one. When only a route beside water reaches the target, `go` sends nothing
@@ -242,7 +255,7 @@ time, in order.
 
 `keys` uses the escape syntax above. Each command takes exactly its own fields: `send` requires `keys` and takes an
 optional `guard` and `at`, `go` requires `target` (at most 64 bytes) and takes an optional `ground` (`"dry"`, `"wet"` as
-`go --wet`, `"lava"` as `go --lava` or `"inland"` as `go --inland`), `rest` requires `count` (1 to 200), `explore` requires `count` (legs, 1
+`go --wet`, `"lava"` as `go --lava` or `"inland"` as `go --inland`) and `avoid` (up to 64 squares as `x,y`), `rest` requires `count` (1 to 200), `explore` requires `count` (legs, 1
 to 30), `go`, `rest` and `explore` take an optional `near` (1 to 80, as `--near`), `fight` requires `direction`,
 `count` (attacks, 1 to 20) and `hp` (0 to 9999), `learn` requires `rows` and `colours`, and any other field is
 refused with code 64. `nethack-harness schema` prints each command's fields as JSON Schema, and `nethack-harness

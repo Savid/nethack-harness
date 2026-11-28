@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::daemon::{DIRECTIONS, GUARD_MAX, GUARDS_MAX, HP_MAX, NEAR_MAX, TARGET_MAX};
+use crate::daemon::{AVOID_MAX, DIRECTIONS, GUARD_MAX, GUARDS_MAX, HP_MAX, NEAR_MAX, TARGET_MAX};
 use crate::play::{KEYS_MAX, LEGS_MAX, REST_MAX, SWINGS_MAX};
 use crate::types::{COLS, MAP_ROWS};
 
@@ -62,6 +62,10 @@ pub fn schema() -> Value {
                     "description": "wet lets the route step into remembered water; lava into remembered water and lava; inland keeps it off every square beside remembered water.",
                 },
                 "near": near,
+                "avoid": {
+                    "type": "array", "maxItems": AVOID_MAX, "items": {"type": "string"},
+                    "description": "Squares as x,y the route must not enter, such as a monster's reach, a row of trap doors or a crowded stair. The target itself is never avoided. With no route around them the walk is refused and says so, rather than taking one through them.",
+                },
             }),
             &["target"],
         ),

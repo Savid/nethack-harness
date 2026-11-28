@@ -130,6 +130,11 @@ impl SquareSet {
         self.bits.iter().all(|&w| w == 0)
     }
 
+    /// How many squares the set holds.
+    pub fn len(&self) -> usize {
+        self.bits.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
     /// The squares in row-then-column order.
     pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
         (0..MAP_SQUARES)
