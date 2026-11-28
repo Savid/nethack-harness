@@ -185,6 +185,9 @@ pub struct Routes {
     pub paths: Paths,
     ground: Ground,
     squares: Squares,
+    /// The hero the last search ran from, for a later search around told squares (see avoiding).
+    hero: Option<Pos>,
+    avoided: Paths,
     terrain: Paths,
     terrain_from: Option<(u16, Pos, Ground, Squares)>,
     shown: Paths,
@@ -205,6 +208,7 @@ impl Routes {
         self.terrain_from = None;
         self.ground = ground;
         self.squares = squares;
+        self.hero = view.hero;
         if let (Some(level), Some(hero)) = (memory.current(), view.hero) {
             level.paths(hero, &self.occupied, ground, squares, &mut self.paths);
         }
@@ -230,6 +234,24 @@ impl Routes {
     /// The closed door `goal` lies behind, as `Level::behind` finds it from `hero`.
     pub fn behind(&mut self, level: &Level, hero: Pos, goal: Pos) -> Option<Pos> {
         level.behind(goal, hero, &mut self.region)
+    }
+
+    /// The routes of the last search from the hero around `avoid` as well as around the monsters, or `None` when
+    /// `avoid` is empty, when `goal` is itself one of its squares, or when no level or hero is known. The caller
+    /// names squares the harness cannot know to keep out of: a monster's reach, a row of trap doors, a crowded
+    /// stair. Searched afresh each call, since the caller may name different squares each time.
+    pub fn avoiding(&mut self, memory: &Memory, goal: Pos, avoid: &SquareSet) -> Option<&Paths> {
+        if avoid.is_empty() || avoid.contains(goal) {
+            return None;
+        }
+        let (level, hero) = (memory.current()?, self.hero?);
+        let mut occupied = self.occupied.clone();
+        for square in avoid.iter() {
+            occupied.insert(square);
+        }
+        let (ground, squares) = (self.ground, self.squares);
+        level.paths(hero, &occupied, ground, squares, &mut self.avoided);
+        Some(&self.avoided)
     }
 
     /// The routes of the last search from the hero that enter no square the caller told of: that search itself

@@ -126,7 +126,13 @@ impl<T: Terminal> Play<T> {
     /// `ground`: a `Wet` route may step into remembered water, a `Lava` one into remembered water and lava, an
     /// `Inland` one steps beside none. With `near`, only
     /// a monster arriving within that many squares of the hero stops the walk.
-    pub fn go(&mut self, target: &str, ground: Ground, near: Option<u8>) -> Reply {
+    pub fn go(
+        &mut self,
+        target: &str,
+        ground: Ground,
+        near: Option<u8>,
+        avoid: &SquareSet,
+    ) -> Reply {
         let mut verb = "go ".to_owned();
         match ground {
             Ground::Dry => {}
@@ -136,6 +142,9 @@ impl<T: Terminal> Play<T> {
         }
         if let Some(near) = near {
             verb.push_str(&format!("--near {near} "));
+        }
+        if !avoid.is_empty() {
+            verb.push_str(&format!("--avoid {} ", avoid.len()));
         }
         verb.push_str(target);
         if let Some(reply) = self.prepare(&verb) {
@@ -148,7 +157,7 @@ impl<T: Terminal> Play<T> {
         if view.engulfed {
             return Reply::message(ExitCode::Failed, "go is unavailable while engulfed");
         }
-        match self.walk_to(target, ground, near) {
+        match self.walk_to(target, ground, near, avoid) {
             Ok(action) => self.execute(&verb, action),
             Err(message) => Reply::message(ExitCode::Failed, message),
         }
@@ -161,6 +170,7 @@ impl<T: Terminal> Play<T> {
         target: &str,
         ground: Ground,
         near: Option<u8>,
+        avoid: &SquareSet,
     ) -> Result<exec::Action, String> {
         let mut places = std::mem::take(&mut self.landmarks);
         let chosen = self
@@ -175,7 +185,21 @@ impl<T: Terminal> Play<T> {
                 .is_some_and(|level| level.corridor(goal) && level.corridor_links(goal).len() <= 1);
         let kind = if explore { Kind::Explore } else { Kind::Travel };
         let wet = matches!(ground, Ground::Wet | Ground::Lava);
-        let mut action = exec::walk(kind, &self.renderer.routes.paths, goal, STEPS_MAX, wet);
+        // Told squares to keep out of, the route is searched again around them as well as around the monsters:
+        // the caller knows what this level holds that the harness cannot see in it, a Rider's reach, a row of
+        // trap doors, the crowd on the stairs. A goal with no route around them is no route at all, and says so.
+        let paths = match self.renderer.routes.avoiding(&self.memory, goal, avoid) {
+            Some(paths) if !paths.reached().contains(goal) => {
+                return Err(format!(
+                    "no route to {target} that keeps out of the {} square{} told of",
+                    avoid.len(),
+                    if avoid.len() == 1 { "" } else { "s" }
+                ));
+            }
+            Some(paths) => paths,
+            None => &self.renderer.routes.paths,
+        };
+        let mut action = exec::walk(kind, paths, goal, STEPS_MAX, wet);
         action.lava = ground == Ground::Lava;
         action.near = near;
         Ok(action)
@@ -209,7 +233,7 @@ impl<T: Terminal> Play<T> {
         let mut end = None;
         let mut all = false;
         while walked < legs {
-            let action = match self.walk_to("frontier", Ground::Dry, near) {
+            let action = match self.walk_to("frontier", Ground::Dry, near, &SquareSet::new()) {
                 Ok(action) => action,
                 Err(why) if walked == 0 => return Reply::message(ExitCode::Failed, why),
                 Err(why) => {
@@ -1325,7 +1349,7 @@ mod tests {
             at(4, 402, "You hear a door open."),
         ]);
         play.show();
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert_eq!(sent(&play), ["ml", "ml"]);
         assert_eq!(reply.code, ExitCode::Short);
         assert_eq!(
@@ -1345,7 +1369,7 @@ mod tests {
             ("4,2", "already at"),
             ("9,9", "has not been seen"),
         ] {
-            let reply = play.go(target, Ground::Dry, None);
+            let reply = play.go(target, Ground::Dry, None, &SquareSet::new());
             assert_eq!(reply.code, ExitCode::Failed, "{target}");
             assert!(reply.text.contains(error), "{target}: {}", reply.text);
         }
@@ -1383,7 +1407,7 @@ mod tests {
             at((3, 4), 402, ""),
         ]);
         play.show();
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert_eq!(
             reply.text.lines().next(),
             Some(
@@ -1391,7 +1415,7 @@ mod tests {
             )
         );
         assert_eq!(reply.code, ExitCode::Short);
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert_eq!(sent(&play), ["mn", ":", "mj", "ml"]);
         assert_eq!(
             reply.text.lines().next(),
@@ -1403,7 +1427,7 @@ mod tests {
     #[test]
     fn go_door_walks_beside_another_door_when_already_beside_one() {
         let mut play = play(vec![start().view()]);
-        play.go("door", Ground::Dry, None);
+        play.go("door", Ground::Dry, None, &SquareSet::new());
         assert_eq!(
             play.last.as_ref().and_then(|last| last.target),
             Some(Pos::new(5, 31))
@@ -1413,12 +1437,12 @@ mod tests {
     #[test]
     fn go_to_a_closed_door_square_walks_beside_it() {
         let mut play = play(vec![start().view()]);
-        play.go("30,5", Ground::Dry, None);
+        play.go("30,5", Ground::Dry, None, &SquareSet::new());
         assert_eq!(
             play.last.as_ref().and_then(|last| last.target),
             Some(Pos::new(5, 31))
         );
-        let reply = play.go("32,7", Ground::Dry, None);
+        let reply = play.go("32,7", Ground::Dry, None, &SquareSet::new());
         assert_eq!(reply.code, ExitCode::Failed);
         assert!(reply.text.contains("already at 32,6"), "{}", reply.text);
     }
@@ -1427,7 +1451,7 @@ mod tests {
     fn go_names_the_monster_blocking_the_only_route() {
         let mut play = play(vec![map("", &["", " >##F#@"], 2, 6)]);
         play.memory.ingest(&map("", &["", " >####@"], 2, 6));
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert!(
             reply.text.contains("blocked by a monster at 4,2"),
             "{}",
@@ -1436,12 +1460,74 @@ mod tests {
         assert!(play.term.sent.is_empty());
     }
 
+    /// `avoid` keeps the route out of squares only the caller knows about: a monster's reach, a row of trap
+    /// doors, a crowded stair. The harness cannot see why they are dangerous, so it is told.
+    #[test]
+    fn go_routes_around_the_squares_it_is_told_to_avoid() {
+        // A three-row room, the hero at 3,3 and the target two steps west at
+        // 1,3: one way straight along row 3, others around by rows 2 and 4.
+        let room = || map("", &["", " .......", " ..@....", " ......."], 3, 3);
+        let squares = |list: &[(u8, u8)]| {
+            let mut out = SquareSet::new();
+            for &(x, y) in list {
+                out.insert(Pos::new(y, x));
+            }
+            out
+        };
+        // The route the walk planned, which is what `avoid` decides; the
+        // scripted terminal never moves the hero, so the walk itself stops at
+        // its first step either way.
+        let route = |p: &Play<ScriptedTerm>| {
+            p.last
+                .as_ref()
+                .map(|last| last.route.clone())
+                .unwrap_or_default()
+        };
+        // Told nothing, the route goes straight along the hero's own row.
+        let mut p = play(vec![room()]);
+        p.go("1,3", Ground::Dry, None, &SquareSet::new());
+        assert_eq!(route(&p), [Pos::new(3, 2), Pos::new(3, 1)]);
+        // Told to keep off the square between, it goes round by another row.
+        let mut p = play(vec![room()]);
+        p.go("1,3", Ground::Dry, None, &squares(&[(2, 3)]));
+        let around = route(&p);
+        assert!(
+            !around.is_empty()
+                && !around.contains(&Pos::new(3, 2))
+                && around.last() == Some(&Pos::new(3, 1)),
+            "routed {around:?}; want a way to 1,3 that never enters 2,3"
+        );
+        // Walled in by what it was told to avoid, the walk is refused and says
+        // so rather than taking a route through them.
+        let mut p = play(vec![room()]);
+        let reply = p.go(
+            "1,3",
+            Ground::Dry,
+            None,
+            &squares(&[(2, 2), (2, 3), (2, 4)]),
+        );
+        assert_eq!(reply.code, ExitCode::Failed, "{}", reply.text);
+        assert!(
+            reply
+                .text
+                .contains("no route to 1,3 that keeps out of the 3 squares told of"),
+            "{}",
+            reply.text
+        );
+        assert!(p.term.sent.is_empty(), "sent {:?}", p.term.sent);
+        // The target itself is never avoided: a caller that names the square it
+        // walks to still gets there, straight.
+        let mut p = play(vec![room()]);
+        p.go("1,3", Ground::Dry, None, &squares(&[(1, 3)]));
+        assert_eq!(route(&p), [Pos::new(3, 2), Pos::new(3, 1)]);
+    }
+
     #[test]
     fn a_named_corridor_end_is_the_destination_and_frontier_explores_on() {
         for (target, kind) in [("5,2", Kind::Travel), ("frontier", Kind::Explore)] {
             let mut play = Play::new(ScriptedTerm::new(vec![map("", &["", "   @##"], 2, 3)]));
             play.show();
-            play.go(target, Ground::Dry, None);
+            play.go(target, Ground::Dry, None, &SquareSet::new());
             assert_eq!(
                 play.last.as_ref().map(|last| last.kind),
                 Some(kind),
@@ -1513,7 +1599,7 @@ mod tests {
             rest.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
             "{frontier}"
         );
-        play.go("frontier", Ground::Dry, None);
+        play.go("frontier", Ground::Dry, None, &SquareSet::new());
         let goal = &reply.facts.frontier[0];
         let goal = Pos::new(goal.y, goal.x);
         assert_eq!(play.last.as_ref().and_then(|last| last.target), Some(goal));
@@ -1542,7 +1628,7 @@ mod tests {
         }
         assert!(!play.show().text.contains("frontier:"));
         play.rest(2, None);
-        let reply = play.go("frontier", Ground::Dry, None);
+        let reply = play.go("frontier", Ground::Dry, None, &SquareSet::new());
         assert_eq!(reply.code, ExitCode::Failed);
         assert_eq!(
             reply.text,
@@ -1555,7 +1641,7 @@ mod tests {
         let rows = [" -----", " |...|", " |.@.+", " |...|", " -----"];
         let mut play = play(vec![map("", &rows, 3, 3)]);
         play.show();
-        let reply = play.go("frontier", Ground::Dry, None);
+        let reply = play.go("frontier", Ground::Dry, None, &SquareSet::new());
         assert_eq!(reply.code, ExitCode::Failed);
         assert_eq!(
             reply.text,
@@ -1567,7 +1653,7 @@ mod tests {
         let mut blocked = Play::new(ScriptedTerm::new(vec![map("", &rows, 3, 3)]));
         blocked.memory.ingest(&map("", &empty, 3, 3));
         blocked.show();
-        let reply = blocked.go("frontier", Ground::Dry, None);
+        let reply = blocked.go("frontier", Ground::Dry, None, &SquareSet::new());
         assert_eq!(
             reply.text,
             "the known route to frontier is blocked by a monster at 5,3"
@@ -1594,7 +1680,7 @@ mod tests {
             look.text
         );
         assert_eq!(look.facts.seen[0].behind, Some(Pos::new(4, 11)));
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert_eq!(reply.code, ExitCode::Failed);
         assert_eq!(
             reply.text,
@@ -1606,7 +1692,7 @@ mod tests {
         let mut walled = Play::new(ScriptedTerm::new(vec![map("", &walls, 3, 3)]));
         assert!(walled.show().text.contains("> down stairs 14,3 (no route)"));
         assert_eq!(
-            walled.go("14,3", Ground::Dry, None).text,
+            walled.go("14,3", Ground::Dry, None, &SquareSet::new()).text,
             "no known route to 14,3"
         );
         assert!(play.term.sent.is_empty() && walled.term.sent.is_empty());
@@ -1644,7 +1730,7 @@ mod tests {
             corridor(8, "   #####@>"),
             corridor(9, "   ######@"),
         ]);
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert_eq!(
             reply.text.lines().next(),
             Some("go >: 6 steps, 4 told, 6 turns, now at 9,2; done")
@@ -1652,7 +1738,7 @@ mod tests {
         assert_eq!(reply.facts.report.and_then(|report| report.told), Some(4));
         assert!(!reply.text.contains("(told)"), "{}", reply.text);
         assert_eq!(reply.facts.stairs_down, Some(Pos::new(2, 9)));
-        let reply = shown.go("frontier", Ground::Dry, None);
+        let reply = shown.go("frontier", Ground::Dry, None, &SquareSet::new());
         assert_eq!(reply.facts.report.and_then(|report| report.told), Some(0));
     }
 
@@ -1826,7 +1912,7 @@ mod tests {
             &reply.text,
             "answered: \"Do you want your possessions identified? [ynq] (n)\" \u{2190} n"
         ));
-        let reply = play.go(">", Ground::Dry, None);
+        let reply = play.go(">", Ground::Dry, None, &SquareSet::new());
         assert_eq!(reply.code, ExitCode::Over);
         assert!(
             reply
