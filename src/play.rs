@@ -20,6 +20,8 @@ pub const STEPS_MAX: u32 = 64;
 pub const LEGS_MAX: u32 = 30;
 /// Most attacks one `fight` makes.
 pub const SWINGS_MAX: u32 = 20;
+/// Most unexplored squares a stop for no reachable frontier names.
+const UNEXPLORED_SHOWN: usize = 4;
 /// The refusal while a prompt is open.
 pub const PROMPT_OPEN: &str = "a prompt is open: answer or cancel it with send first";
 
@@ -493,7 +495,12 @@ impl<T: Terminal> Play<T> {
         let mut route = Vec::new();
         let mut goals = Vec::new();
         if frontier {
-            goals.extend(terrain.reached().iter().filter(|&p| level.frontier(p)));
+            goals.extend(
+                terrain
+                    .reached()
+                    .iter()
+                    .filter(|&p| level.frontier_sensed(p)),
+            );
         } else {
             goals.extend(places.iter().flat_map(|place| place.goals.as_slice()));
         }
@@ -518,7 +525,7 @@ impl<T: Terminal> Play<T> {
             let mut dry = Paths::default();
             level.paths(hero, &SquareSet::new(), Ground::Dry, squares, &mut dry);
             let ashore = if frontier {
-                dry.reached().iter().any(|p| level.frontier(p))
+                dry.reached().iter().any(|p| level.frontier_sensed(p))
             } else {
                 places
                     .iter()
@@ -542,6 +549,32 @@ impl<T: Terminal> Play<T> {
             .find_map(|place| routes.behind(level, hero, place.pos));
         match behind {
             Some(door) => format!("{none}: it is behind the closed door at {door}"),
+            None if frontier => {
+                // What is still unexplored, so a stop beside ground no one looked at shows where it is.
+                let mut left = Vec::new();
+                level.unexplored(hero, UNEXPLORED_SHOWN + 1, &mut left);
+                if left.is_empty() {
+                    return none;
+                }
+                let mut names: Vec<String> = left
+                    .iter()
+                    .take(UNEXPLORED_SHOWN)
+                    .map(|&(q, sensed)| {
+                        if sensed {
+                            format!("{q} (only a monster showed there)")
+                        } else {
+                            q.to_string()
+                        }
+                    })
+                    .collect();
+                if left.len() > UNEXPLORED_SHOWN {
+                    names.push("more".to_owned());
+                }
+                format!(
+                    "{none}; unexplored beside remembered ground, none reachable: {}",
+                    names.join(", ")
+                )
+            }
             None => none,
         }
     }
@@ -1657,6 +1690,17 @@ mod tests {
         assert_eq!(
             reply.text,
             "the known route to frontier is blocked by a monster at 5,3"
+        );
+        // Ground seen past the room's wall, beside squares no one looked at, but no route reaches it: the stop
+        // names them, nearest first.
+        let rows = [" -----", " |.@.|  .", " -----"];
+        let mut cut = Play::new(ScriptedTerm::new(vec![map("", &rows, 2, 3)]));
+        cut.show();
+        let reply = cut.go("frontier", Ground::Dry, None, &SquareSet::new());
+        assert_eq!(
+            reply.text,
+            "no reachable known square borders unexplored ones; unexplored beside remembered ground, none \
+             reachable: 7,2, 8,1, 8,3, 9,2"
         );
     }
 

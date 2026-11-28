@@ -79,10 +79,15 @@ corridor follows the corridor on. In a group, it walks to the farthest square th
 the hero has walked beside every square of the group, such as the next strip of a dark room, it walks to the square
 that shows the most unknown squares around it, the nearest of those first. A frontier square that only a step the
 game refused reaches, such as a squeeze between two obstacles it does not let a laden hero through, is no frontier
-target until the hero leaves the level. Routes never cross remembered water except with `--wet` or `--lava`, nor
+target until the hero leaves the level. A square that showed only a monster, sensed beyond sight by telepathy,
+detection or infravision, and shows none now, never showed its ground: when no other frontier is left, a square
+beside one is a frontier square. Routes never cross remembered water except with `--wet` or `--lava`, nor
 lava except with `--lava` (below), cross a remembered trap or a step the game refused only where no other route
 exists, and pass through the highlighted pet. When no route exists `go` sends nothing and says why, such as
-`no known route to >: it is behind the closed door at 33,5` (as `seen:` names it). A walk or rest
+`no known route to >: it is behind the closed door at 33,5` (as `seen:` names it). With no frontier to reach,
+`go frontier` names the nearest unexplored squares beside remembered ground, up to four, marking one that showed
+only a monster: `no reachable known square borders unexplored ones; unexplored beside remembered ground, none
+reachable: 23,17 (only a monster showed there), 31,11`. A walk or rest
 stops short when a monster arrives (a
 monster with no monster of the same glyph and colour within one square of it at the previous step; `I` and warning
 digits never count), a message appears, the status, conditions or terrain change, HP becomes full, the hero is engulfed, a step is

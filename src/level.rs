@@ -197,6 +197,8 @@ pub struct Level {
     pub inferred_floor: SquareSet,
     /// Squares that ever showed a glyph.
     pub seen: SquareSet,
+    /// Squares the last screen of this level showed a monster on.
+    monsters: SquareSet,
     /// Squares the caller told of that the screen has not shown since: what is remembered of them is what was
     /// told.
     pub told: SquareSet,
@@ -236,6 +238,7 @@ impl Level {
             colours: Box::new([None; MAP_SQUARES]),
             inferred_floor: SquareSet::new(),
             seen: SquareSet::new(),
+            monsters: SquareSet::new(),
             told: SquareSet::new(),
             object_squares: SquareSet::new(),
             maybe_doors: SquareSet::new(),
@@ -294,6 +297,7 @@ impl Level {
     pub fn observe(&mut self, view: &View) {
         let blind = view.cond.contains(BLIND);
         let sighted = !blind && !view.cond.contains(HALLU);
+        self.monsters.clear();
         for i in 0..MAP_SQUARES {
             let p = Pos::from_index(i);
             let cell = view.grid.cell(p);
@@ -304,6 +308,7 @@ impl Level {
             }
             let statue = !self.statues.is_empty() && self.statues.get(&p) == Some(&(ch, colour));
             if is_monster(ch) && !statue {
+                self.monsters.insert(p);
                 // A monster sensed while blind does not show its square.
                 if !blind {
                     self.seen.insert(p);
@@ -661,7 +666,24 @@ impl Level {
     ///
     /// Standing on a square shows all of its neighbours; one still blank afterwards is solid rock.
     pub fn unknown(&self, q: Pos) -> bool {
-        !self.seen.contains(q) && !q.neighbours().any(|(_, n)| self.visits.contains_key(&n))
+        self.unknown_in(q, false)
+    }
+
+    /// A square that showed only a monster, and shows none now: a monster sensed beyond sight, by telepathy,
+    /// detection or infravision, shows where it stands but not the ground under it, and the square goes blank again
+    /// once it moves on. One standing in a lit room shows the floor once it moves.
+    pub fn sensed(&self, q: Pos) -> bool {
+        self.seen.contains(q)
+            && self.terrain(q).is_none()
+            && !self.object_squares.contains(q)
+            && !self.told.contains(q)
+            && !self.monsters.contains(q)
+    }
+
+    /// `unknown`, counting a square that showed only a monster as unknown when `sensed` is set.
+    fn unknown_in(&self, q: Pos, sensed: bool) -> bool {
+        (!self.seen.contains(q) || sensed && self.sensed(q))
+            && !q.neighbours().any(|(_, n)| self.visits.contains_key(&n))
     }
 
     /// A square the hero has not stood on with an unknown square beside it in a cardinal direction.
@@ -669,9 +691,37 @@ impl Level {
     /// The game digs corridors one orthogonal step at a time, so the blank square diagonally past a corridor bend
     /// that a route cut across is no way on.
     pub fn frontier(&self, p: Pos) -> bool {
+        self.frontier_in(p, false)
+    }
+
+    /// `frontier`, or one beside a square that showed only a monster: the frontier `frontier_targets` falls back
+    /// on.
+    pub fn frontier_sensed(&self, p: Pos) -> bool {
+        self.frontier_in(p, true)
+    }
+
+    fn frontier_in(&self, p: Pos, sensed: bool) -> bool {
         !self.visits.contains_key(&p)
             && p.neighbours()
-                .any(|(key, q)| cardinal(key) && self.unknown(q))
+                .any(|(key, q)| cardinal(key) && self.unknown_in(q, sensed))
+    }
+
+    /// The unexplored squares beside remembered ground, nearest `from` first, at most `most`, written into `out`,
+    /// each with whether only a monster showed there: what an exploration that found no frontier to reach still
+    /// counts as unexplored.
+    pub fn unexplored(&self, from: Pos, most: usize, out: &mut Vec<(Pos, bool)>) {
+        out.clear();
+        for i in 0..MAP_SQUARES {
+            let q = Pos::from_index(i);
+            if self.unknown_in(q, true)
+                && q.neighbours()
+                    .any(|(key, n)| cardinal(key) && self.passable(n))
+            {
+                out.push((q, self.sensed(q)));
+            }
+        }
+        out.sort_unstable_by_key(|&(q, _)| (q.chebyshev(from), q));
+        out.truncate(most);
     }
 
     /// For each connected group of reachable frontier squares, its target and route length, nearest group first,
@@ -682,13 +732,24 @@ impl Level {
     /// but never walked. A group the walk has already passed alongside, such as the next strip of a dark room, has
     /// only squares a walked square touches; walking along it shows one more strip. Its target is then the square
     /// that shows the most unknown squares, nearest first, which steps across the strip into the unknown.
+    ///
+    /// With no such group, squares that showed only a monster count as unknown: a telepathic hero sees monsters
+    /// far beyond the ground it has seen, and their squares would end exploration beside ground no one looked at.
     pub fn frontier_targets(&self, paths: &Paths, out: &mut Vec<(Pos, u32)>) {
+        self.frontier_groups(paths, false, out);
+        if out.is_empty() {
+            self.frontier_groups(paths, true, out);
+        }
+    }
+
+    /// `frontier_targets` over `frontier_in` with `sensed`.
+    fn frontier_groups(&self, paths: &Paths, sensed: bool, out: &mut Vec<(Pos, u32)>) {
         out.clear();
         let mut edge = SquareSet::new();
         for p in paths
             .reached()
             .iter()
-            .filter(|&p| self.frontier(p) && paths.refused(p) == Some(0))
+            .filter(|&p| self.frontier_in(p, sensed) && paths.refused(p) == Some(0))
         {
             edge.insert(p);
         }
@@ -711,7 +772,10 @@ impl Level {
                 let d = paths.distance(p).unwrap_or(0);
                 near = near.min(d);
                 if p.neighbours().any(|(_, q)| self.visits.contains_key(&q)) {
-                    let shows = p.neighbours().filter(|&(_, q)| self.unknown(q)).count();
+                    let shows = p
+                        .neighbours()
+                        .filter(|&(_, q)| self.unknown_in(q, sensed))
+                        .count();
                     let here = (Reverse(shows), d, p);
                     beside = Some(beside.map_or(here, |b| b.min(here)));
                 } else {
@@ -1034,6 +1098,28 @@ mod tests {
         visit(&mut level, &first, 3, 6, 402);
         assert!(!level.frontier(at(3, 7)));
         assert_eq!(frontier(&level, at(3, 6)), []);
+    }
+
+    #[test]
+    fn a_square_only_a_monster_showed_on_falls_back_into_the_frontier() {
+        // A walled passage whose ground shows to 2,6; a telepathic hero sees a monster at 2,7, past the ground it
+        // has seen. While it stands there, the square is no way on.
+        let mut level = observed(&map(&["  -------", "  |@...d", "  -------"]), 2, 3);
+        assert!(level.seen.contains(at(2, 7)) && level.terrain(at(2, 7)).is_none());
+        assert_eq!(frontier(&level, at(2, 3)), []);
+        // It moves on and the screen shows the square blank again: it never showed its ground, so the passage
+        // goes on there.
+        level.observe(&view_at(
+            &map(&["  -------", "  |@...", "  -------"]),
+            2,
+            3,
+            401,
+        ));
+        assert!(level.sensed(at(2, 7)) && !level.unknown(at(2, 7)));
+        assert_eq!(frontier(&level, at(2, 3)), [(at(2, 6), 3)]);
+        let mut left = Vec::new();
+        level.unexplored(at(2, 3), 4, &mut left);
+        assert_eq!(left, [(at(2, 7), true)]);
     }
 
     #[test]
